@@ -15,8 +15,7 @@ export interface GoahConfig {
   profiles?: AgentProfile[];
   approvers?: string[];
   auditWriters?: string[];
-  heartbeatPolicies?: Array<{ agent: string; maxSilentMs: number; escalateTo: string; since?: string }>;
-  progressPolicies?: Array<{ rootGoalId: string; maxSilentMs: number; escalateTo: string }>;
+  silencePolicy?: { maxSilentMs?: number; notify?: string } | null;
   retryPolicy?: { maxAttempts: number; baseDelayMs: number };
   verifyMetricsAfterWake?: boolean;
   connectors?: Array<{ manifest: ConnectorManifest; command: string; args: string[]; env?: Record<string, string>; timeoutMs?: number }>;
@@ -38,12 +37,13 @@ const configRoots = new WeakMap<GoahConfig, string>();
 
 export function loadConfig(path = "goah.config.json", options: { resolveSecrets?: boolean } = {}): GoahConfig {
   const absolute = resolve(path);
-  const config = JSON.parse(readFileSync(absolute, "utf8")) as GoahConfig & { workspace?: string; limits?: unknown };
+  const config = JSON.parse(readFileSync(absolute, "utf8")) as GoahConfig & { workspace?: string; limits?: unknown; heartbeatPolicies?: unknown; progressPolicies?: unknown };
   if (config.version !== 1) throw new Error(`unsupported goah config version: ${String(config.version)}`);
   const base = dirname(absolute);
   const root = config.workspace ? absolutePath(base, config.workspace) : base;
-  delete config.workspace;
   delete config.limits;
+  delete config.heartbeatPolicies;
+  delete config.progressPolicies;
   configRoots.set(config, root);
   config.stateDir = absolutePath(base, config.stateDir);
   config.runner.command = resolveCommand(config.runner.command);
@@ -62,8 +62,7 @@ export function createRuntime(config: GoahConfig): { ledger: SqliteLedger; super
     ...(config.profiles ? { profiles: config.profiles } : {}),
     ...(config.approvers ? { approvers: config.approvers } : {}),
     ...(config.auditWriters ? { auditWriters: config.auditWriters } : {}),
-    ...(config.heartbeatPolicies ? { heartbeatPolicies: config.heartbeatPolicies } : {}),
-    ...(config.progressPolicies ? { progressPolicies: config.progressPolicies } : {}),
+    ...(config.silencePolicy !== undefined ? { silence: config.silencePolicy } : {}),
     ...(config.retryPolicy ? { retryPolicy: config.retryPolicy } : {}),
     ...(config.verifyMetricsAfterWake !== undefined ? { verifyMetricsAfterWake: config.verifyMetricsAfterWake } : {}),
   });
@@ -83,7 +82,7 @@ export function defaultConfig(directory: string, options: InitOptions = {}): Goa
     profiles: [{ agent: "ceo", role: "ceo" }, { agent: options.agent ?? "worker", role: "child" }],
     approvers: ["human", "ceo"],
     auditWriters: ["verifier", "audit"],
-    retryPolicy: { maxAttempts: 2, baseDelayMs: 5_000 },
+    silencePolicy: { maxSilentMs: 12 * 3_600_000, notify: "ceo" },
   };
 }
 

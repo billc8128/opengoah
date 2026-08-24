@@ -441,7 +441,7 @@ CEO is woken by:
 - unknown/high-risk action;
 - audit finding;
 - CEO’s own scheduled review;
-- heartbeat violation;
+- system-silence tripwire confirmation;
 - root or child observation-method revision;
 - stale, missing, or contradictory evidence under the current method.
 

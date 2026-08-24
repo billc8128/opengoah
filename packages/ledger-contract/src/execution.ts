@@ -90,6 +90,7 @@ export interface Ledger extends EventStore {
   unreadMail(agent: string): MailSnapshot[];
   unackedAuditAdvice(agent: string): ActionSnapshot[];
   lastEvent(actor: string, type: string): EventRecord | null;
+  latestEvent(): EventRecord | null;
   eventsForWake(wakeId: string): EventRecord[];
   wake(id: string): WakeSnapshot | null;
   wakeByTrigger(agent: string, triggerRef: string): WakeSnapshot | null;

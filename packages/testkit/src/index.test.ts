@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { CONTRACT_VERSION, controlStream, wakeStream, type Clock, type EventInput, type GoalSnapshot, type JsonValue, type WakeSnapshot } from "goah-ledger-contract";
 import { piWorkerPath, ProcessRunner, verificationWorkerPath } from "goah-runner-pi";
-import { calibrateVerificationThreshold, evaluateVerification, ProcessVerifierModel, renderDashboard, runSupervisorDaemon, Supervisor, VerificationPlane, type VerifierModel } from "goah-supervisor";
+import { calibrateVerificationThreshold, evaluateVerification, ProcessVerifierModel, renderDashboard, runSupervisorDaemon, Supervisor, VerificationPlane, type SupervisorOptions, type VerifierModel } from "goah-supervisor";
 import { assertLedgerConformance, createMemoryLedger, fauxRunnerWorkerPath, MockConnector, SimulatedClock } from "./index.js";
 
 const metric = { source: "test", window: "1h", direction: "at_least" as const, target: 1, freshnessMs: 60_000, onMissing: "abnormal" as const, onStale: "wake_owner" as const };
@@ -157,12 +157,10 @@ test("connector subprocess does not inherit ambient supervisor secrets", async (
   }
 });
 
-test("schedule, mail, metric, and heartbeat triggers are durable and coalesced", async () => {
+test("schedule, mail, and metric triggers are durable and coalesced", async () => {
   const clock = new SimulatedClock();
   const ledger = createMemoryLedger({ clock });
-  const supervisor = new Supervisor(ledger, fauxRunner([{ handoff: { handoff: { observations: [], results: [], nextSteps: [] }, mail: [], nextWakeAt: null } }]), clock, {
-    heartbeatPolicies: [{ agent: "silent", maxSilentMs: 100, escalateTo: "ceo", since: new Date(clock.now().getTime() - 1_000).toISOString() }],
-  });
+  const supervisor = new Supervisor(ledger, fauxRunner([{ handoff: { handoff: { observations: [], results: [], nextSteps: [] }, mail: [], nextWakeAt: null } }]), clock);
   supervisor.createGoal(goal());
   supervisor.registerMetricContract("root", metric);
   ledger.putMail({ id: "decision", to: "worker", from: "human", level: "decision", body: {}, readAt: null }, "human");
@@ -171,9 +169,7 @@ test("schedule, mail, metric, and heartbeat triggers are durable and coalesced",
   assert.equal(evaluation.status, "missed");
   await supervisor.tick();
   assert.equal(ledger.wakes().filter((wake) => wake.agent === "worker").length, 1);
-  assert.equal(ledger.wakes().some((wake) => wake.agent === "ceo" && wake.status === "queued"), true);
   assert.equal(ledger.events().some((event) => event.type === "wake.trigger_coalesced"), true);
-  assert.equal(ledger.events().some((event) => event.type === "watchdog.heartbeat_violation"), true);
   ledger.close();
 });
 
@@ -252,7 +248,7 @@ test("accelerated 30-day soak keeps wake context bounded and projections replaya
   const clock = new SimulatedClock();
   const ledger = createMemoryLedger({ clock });
   const contextFile = join(mkdtempSync(join(tmpdir(), "goah-soak-")), "context.json");
-  const supervisor = new Supervisor(ledger, fauxRunner([{ handoff: { handoff: { observations: ["healthy"], results: [], nextSteps: [] }, mail: [], nextWakeAt: null } }], contextFile), clock);
+  const supervisor = new Supervisor(ledger, fauxRunner([{ handoff: { handoff: { observations: ["healthy"], results: [], nextSteps: [] }, mail: [], nextWakeAt: null } }], contextFile), clock, { silence: null });
   supervisor.createGoal(goal());
   for (let day = 0; day < 30; day += 1) {
     supervisor.planWake("worker", clock.now().toISOString(), `day-${day}`);
@@ -443,27 +439,28 @@ test("CEO rejects a motionless active organization and injects the violation int
   ledger.close();
 });
 
-test("progress watchdog mechanically wakes a stalled active root goal", async () => {
+test("system-silence tripwire asks the CEO for confirmation after total ledger silence", async () => {
   const clock = new SimulatedClock();
   const ledger = createMemoryLedger({ clock });
-  const waiting = fauxRunner([{ handoff: { handoff: { observations: ["blocked externally"], results: [], nextSteps: [], blocker: "waiting for human data access" }, mail: [], nextWakeAt: null } }]);
-  const first = new Supervisor(ledger, waiting, clock, { profiles: [{ agent: "ceo", role: "ceo" }] });
+  const policy: SupervisorOptions = { profiles: [{ agent: "ceo", role: "ceo" }], silence: { maxSilentMs: 6 * 3_600_000 } };
+  const first = new Supervisor(ledger, fauxRunner([{ handoff: { handoff: { observations: ["explicit wait"], results: [], nextSteps: [], blocker: "waiting for human data access" }, mail: [], nextWakeAt: null } }]), clock, policy);
   first.startGoal("grow daily views", "views");
   assert.equal((await first.tick())?.status, "done");
-  assert.equal(ledger.events().some((event) => event.type === "watchdog.progress_stall"), false);
 
-  clock.advance(7 * 3_600_000);
-  const recovering = fauxRunner([{ handoff: { handoff: { observations: ["unstalled"], results: ["material step shipped"], nextSteps: [], material: true }, mail: [], nextWakeAt: "2030-01-01T00:00:00.000Z" } }]);
-  const second = new Supervisor(ledger, recovering, clock, {
-    profiles: [{ agent: "ceo", role: "ceo" }],
-    progressPolicies: [{ rootGoalId: "views", maxSilentMs: 6 * 3_600_000, escalateTo: "ceo" }],
-  });
-  assert.equal((await second.tick())?.status, "done");
-  assert.equal(ledger.events().some((event) => event.type === "watchdog.progress_stall"), true);
-  const stallMail = ledger.mailbox().find((mail) => mail.id.startsWith("stall:views:"));
-  assert.ok(stallMail);
-  assert.equal(stallMail.level, "emergency");
-  assert.equal(stallMail.readAt !== null, true);
+  clock.advance(5 * 3_600_000);
+  const quiet = new Supervisor(ledger, fauxRunner([{ handoff: { handoff: { observations: ["still waiting"], results: [], nextSteps: [] }, mail: [], nextWakeAt: null } }]), clock, policy);
+  assert.equal(await quiet.tick(), null);
+  assert.equal(ledger.events().some((event) => event.type === "watchdog.system_silence"), false);
+
+  clock.advance(2 * 3_600_000);
+  const confirming = new Supervisor(ledger, fauxRunner([{ handoff: { handoff: { observations: ["confirmed waiting"], results: [], nextSteps: [], blocker: "still waiting for human data access" }, mail: [], nextWakeAt: null } }]), clock, policy);
+  assert.equal((await confirming.tick())?.status, "done");
+  assert.equal(ledger.events().some((event) => event.type === "watchdog.system_silence"), true);
+  const silenceMail = ledger.mailbox().find((mail) => mail.id.startsWith("silence:"));
+  assert.ok(silenceMail);
+  assert.equal(silenceMail.to, "ceo");
+  assert.equal(silenceMail.level, "decision");
+  assert.equal(silenceMail.readAt !== null, true);
   assert.equal(ledger.lastEvent("ceo", "handoff.recorded") !== null, true);
   ledger.close();
 });

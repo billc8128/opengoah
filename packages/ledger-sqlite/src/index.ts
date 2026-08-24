@@ -495,6 +495,7 @@ export class SqliteLedger implements Ledger {
   unreadMail(agent: string): MailSnapshot[] { return (this.db.prepare("SELECT * FROM mailbox WHERE to_agent=? AND read_at IS NULL ORDER BY rowid").all(agent) as Row[]).map(mapMail); }
   unackedAuditAdvice(agent: string): ActionSnapshot[] { return (this.db.prepare("SELECT * FROM actions WHERE agent=? AND audit_advice IS NOT NULL AND advice_acked=0 ORDER BY rowid").all(agent) as Row[]).map(mapAction); }
   lastEvent(actor: string, type: string): EventRecord | null { const row = this.db.prepare("SELECT * FROM events WHERE actor=? AND type=? ORDER BY seq DESC LIMIT 1").get(actor, type) as Row | undefined; return row ? mapEvent(row) : null; }
+  latestEvent(): EventRecord | null { const row = this.db.prepare("SELECT * FROM events ORDER BY seq DESC LIMIT 1").get() as Row | undefined; return row ? mapEvent(row) : null; }
   eventsForWake(wakeId: string): EventRecord[] { return this.readStream(wakeStream(wakeId)); }
   wake(id: string): WakeSnapshot | null { const row = this.db.prepare("SELECT * FROM wakes WHERE id=?").get(id) as Row | undefined; return row ? mapWake(row) : null; }
   wakeByTrigger(agent: string, triggerRef: string): WakeSnapshot | null {

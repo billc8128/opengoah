@@ -39,7 +39,7 @@ Implemented and tested today:
 - Real runner subprocess boundary with sliding lease renewal, process-group termination, optional runner-specific timeout, and stale-event rejection
 - Mail acknowledged atomically with a valid handoff; abnormal wakes leave messages unread for redelivery
 - Injected clocks, schema v1→v8 migrations, indexed bounded queries, and a public ledger conformance suite
-- Optional mechanical metric evaluation (missing/stale/sustain/guardrails), heartbeat escalation, trigger coalescing, FTS5 fact search, and generic evidence-backed actions; Goal itself has no required metric or target
+- Optional mechanical metric evaluation (missing/stale/sustain/guardrails), a total-silence tripwire, trigger coalescing, FTS5 fact search, and generic evidence-backed actions; Goal itself has no required metric or target
 - Official Pi 0.84.2 worker binding with `read`, `write`, `edit`, and `bash` for every Agent plus model-view-only mid-turn compaction
 - Durable textual Goal observation methods with root human confirmation, atomic child assignment, revision invalidation, replay, and evidence-backed completion
 - Interactive `goah` CEO shell over a resident Supervisor local control socket, including live goal revisions while Supervisor remains the only SQLite writer

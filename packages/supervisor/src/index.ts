@@ -49,8 +49,7 @@ export interface SupervisorOptions {
   allowExternalActions?: boolean;
   approvers?: string[];
   auditWriters?: string[];
-  heartbeatPolicies?: Array<{ agent: string; maxSilentMs: number; escalateTo: string; since?: string }>;
-  progressPolicies?: Array<{ rootGoalId: string; maxSilentMs: number; escalateTo: string }>;
+  silence?: { maxSilentMs?: number; notify?: string } | null;
   retryPolicy?: { maxAttempts: number; baseDelayMs: number };
   profiles?: AgentProfile[];
   verifyMetricsAfterWake?: boolean;
@@ -68,8 +67,7 @@ export class Supervisor {
   readonly #connectors = new Map<string, ConnectorProcessSpec>();
   readonly #metricCollectors = new Map<string, MetricCollectorRegistration>();
   readonly #metricContracts = new Map<string, MetricContract>();
-  readonly #heartbeatPolicies: NonNullable<SupervisorOptions["heartbeatPolicies"]>;
-  readonly #progressPolicies: NonNullable<SupervisorOptions["progressPolicies"]>;
+  readonly #silence: { maxSilentMs: number; notify: string } | null;
   readonly #retryPolicy: NonNullable<SupervisorOptions["retryPolicy"]>;
   readonly #profiles: Map<string, AgentProfile>;
   readonly #verifyMetricsAfterWake: boolean;
@@ -80,8 +78,7 @@ export class Supervisor {
     this.#allowExternalActions = options.allowExternalActions ?? false;
     this.#approvers = new Set(options.approvers ?? ["human", "ceo"]);
     this.#auditWriters = new Set(options.auditWriters ?? ["verifier", "audit"]);
-    this.#heartbeatPolicies = options.heartbeatPolicies ?? [];
-    this.#progressPolicies = options.progressPolicies ?? [];
+    this.#silence = options.silence === null ? null : { maxSilentMs: options.silence?.maxSilentMs ?? 12 * 3_600_000, notify: options.silence?.notify ?? "ceo" };
     this.#retryPolicy = options.retryPolicy ?? { maxAttempts: 0, baseDelayMs: 1_000 };
     this.#profiles = new Map([["ceo", { agent: "ceo", role: "ceo" } satisfies AgentProfile], ...(options.profiles ?? []).map((profile) => [profile.agent, profile] as const)]);
     this.#verifyMetricsAfterWake = options.verifyMetricsAfterWake ?? false;
@@ -237,8 +234,8 @@ export class Supervisor {
     try {
       for (const schedule of this.ledger.dueSchedules(this.#now())) this.#enqueueSchedule(schedule);
       await this.#collectMetrics();
-      this.#scheduleMetricAndHeartbeatAlerts();
-      this.#checkProgressPolicies();
+      this.#scheduleMetricAlerts();
+      this.#checkSystemSilence();
       for (const mail of this.ledger.triggeringMail()) this.#enqueueTrigger(mail.to, `mail:${mail.id}`);
       const now = this.clock.now();
       const leaseToken = randomUUID();
@@ -366,7 +363,7 @@ export class Supervisor {
     const exact = this.ledger.wakeByTrigger(agent, triggerRef);
     if (exact) return exact;
     const ownsLiveGoal = this.ledger.goalsForOwner(agent).some((goal) => goal.phase === "active" || goal.phase === "blocked");
-    const ceoInterrupt = agent === "ceo" && (triggerRef.startsWith("mail:") || triggerRef.startsWith("heartbeat:") || triggerRef.startsWith("child-"));
+    const ceoInterrupt = agent === "ceo" && (triggerRef.startsWith("mail:") || triggerRef.startsWith("child-"));
     if (!ownsLiveGoal && !ceoInterrupt) return null;
     const queued = this.ledger.queuedWakeForAgent(agent);
     if (queued) {
@@ -516,7 +513,7 @@ export class Supervisor {
     }
   }
 
-  #scheduleMetricAndHeartbeatAlerts(): void {
+  #scheduleMetricAlerts(): void {
     for (const [goalId, contract] of this.#metricContracts) {
       const goal = this.ledger.goal(goalId);
       if (!goal) continue;
@@ -524,38 +521,18 @@ export class Supervisor {
       const evaluation = evaluateMetric(contract, samples, this.#now());
       if (evaluation.shouldWakeOwner) this.#enqueueTrigger(goal.owner, `metric:${goal.id}:${evaluation.status}:${samples.at(-1)?.observedAt ?? "none"}`);
     }
-    for (const policy of this.#heartbeatPolicies) {
-      const last = this.ledger.lastEvent(policy.agent, "handoff.recorded");
-      const baseline = last?.ts ?? policy.since ?? this.#now();
-      if (this.clock.now().getTime() - Date.parse(baseline) <= policy.maxSilentMs) continue;
-      const trigger = `heartbeat:${policy.agent}:${last?.seq ?? 0}`;
-      if (this.ledger.wakeByTrigger(policy.escalateTo, trigger)) continue;
-      this.ledger.appendEvent({ streamId: controlStream("watchdog"), ts: this.#now(), actor: "supervisor", type: "watchdog.heartbeat_violation", data: { agent: policy.agent, lastHandoffAt: last?.ts ?? null, escalateTo: policy.escalateTo } });
-      this.#enqueueTrigger(policy.escalateTo, trigger);
-    }
   }
 
-  /** Active roots must show material progress; a silent organization is a mechanical violation, not a judgment call. */
-  #checkProgressPolicies(): void {
-    for (const policy of this.#progressPolicies) {
-      const goal = this.ledger.goal(policy.rootGoalId);
-      if (!goal || goal.phase !== "active") continue;
-      const last = this.#lastMaterialProgress(goal.id);
-      const baseline = last?.ts ?? this.ledger.readStream(goalStream(goal.id))[0]?.ts ?? this.#now();
-      const silentMs = this.clock.now().getTime() - Date.parse(baseline);
-      const mailId = `stall:${goal.id}:${last?.seq ?? 0}`;
-      if (silentMs <= policy.maxSilentMs || this.ledger.mailbox().some((mail) => mail.id === mailId && mail.readAt === null)) continue;
-      this.ledger.appendEvent({ streamId: controlStream("watchdog"), ts: this.#now(), actor: "supervisor", type: "watchdog.progress_stall", data: { goalId: goal.id, silentMs, lastMaterialSeq: last?.seq ?? null, escalatedTo: policy.escalateTo } });
-      this.ledger.putMail({ id: mailId, to: policy.escalateTo, from: "supervisor", level: "emergency", readAt: null, body: { type: "progress_stall", goalId: goal.id, silentMs, lastMaterialSeq: last?.seq ?? null, directive: "Active goal stalled. Enumerate work you can do now without the blocked external dependency, delegate it to distinct worker agents, execute, and hand off material progress. A blocker justifies waiting for that dependency only, not for the whole goal." } }, "supervisor");
-    }
-  }
-
-  #lastMaterialProgress(rootGoalId: string): import("goah-ledger-contract").EventRecord | null {
-    for (const event of [...this.ledger.eventsSince(0, ["handoff.recorded", "goal.put"])].reverse()) {
-      if (event.type === "goal.put") return event;
-      if ((event.data as { material?: unknown }).material === true) return event;
-    }
-    return null;
+  /** The one mechanical floor: total ledger silence. Any event from anyone resets the clock; stall policy is the CEO's business, not the supervisor's. */
+  #checkSystemSilence(): void {
+    if (!this.#silence) return;
+    const last = this.ledger.latestEvent();
+    if (!last) return;
+    const silentMs = this.clock.now().getTime() - Date.parse(last.ts);
+    if (silentMs <= this.#silence.maxSilentMs) return;
+    const fact = { silentMs, lastEventSeq: last.seq, lastEventAt: last.ts };
+    this.ledger.appendEvent({ streamId: controlStream("watchdog"), ts: this.#now(), actor: "supervisor", type: "watchdog.system_silence", data: { ...fact, notify: this.#silence.notify } });
+    this.ledger.putMail({ id: `silence:${last.seq}`, to: this.#silence.notify, from: "supervisor", level: "decision", readAt: null, body: { type: "system_silence", ...fact, note: "No ledger events system-wide within the silence window. Confirm this is expected and hand off." } }, "supervisor");
   }
 }
 

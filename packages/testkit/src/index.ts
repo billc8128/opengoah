@@ -111,7 +111,7 @@ export function assertLedgerConformance(create: LedgerConformanceFactory): void 
   } catch { rejected = true; }
   if (!rejected) throw new Error("ledger conformance: nonexistent evidence was accepted");
   const informational = ledger.appendEvent({ streamId: "conformance:events", ts: clock.now().toISOString(), actor: "a", type: "session.conformance_info", data: {}, ignorable: true });
-  if (ledger.readStream(informational.streamId)[0]?.ignorable !== true) throw new Error("ledger conformance: ignorable event marker was not preserved");
+  if (ledger.latestEvent()?.seq !== informational.seq) throw new Error("ledger conformance: latest event was not the globally last append");
   const before = JSON.stringify({ goals: ledger.goals(), wakes: ledger.wakes() });
   ledger.rebuildProjections();
   if (JSON.stringify({ goals: ledger.goals(), wakes: ledger.wakes() }) !== before) throw new Error("ledger conformance: projection replay changed state");

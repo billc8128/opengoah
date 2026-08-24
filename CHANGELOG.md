@@ -3,7 +3,9 @@
 ## Unreleased
 
 - Added event-sourced working memory: every Agent owns a `memory:{agent}` stream of `memory.appended` facts appended through the role-scoped `memory.append` RPC, injected into future Active Contexts as a bounded advisory tail with `[event:seq]` provenance. The stream is never compacted, handoff remains the structured milestone record, and `goah memory AGENT [--tail N]` inspects notes (ADR 0010).
-- Bash commands now run with a process-group timeout: default `GOAH_PI_BASH_TIMEOUT_MS` (120s), per-call `timeoutMs` with a 10-minute hard cap. A hung command is killed and surfaced to the model as a tool error instead of stalling the wake until the runner-level timeout.
+
+- Replaced the per-agent heartbeat and per-goal progress watchdogs with one mechanical floor: a system-silence tripwire. When no ledger event of any kind appears within `silencePolicy.maxSilentMs` (default 12h), the supervisor mails `notify` (default `ceo`) a decision-level confirmation request; any event from anyone resets the clock, so the cadence is at most one confirmation per silence window. Stall response policy is the CEO's business, not the supervisor's. Remove `heartbeatPolicies`/`progressPolicies` from existing configs (loading now strips them); set `"silencePolicy": null` to disable the tripwire.
+- Ledger contract gained `latestEvent()` for an O(1) global-recency query, covered by the conformance suite.
 
 ## 0.5.0
 
