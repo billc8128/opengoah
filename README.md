@@ -227,7 +227,7 @@ Not guaranteed, by design honesty:
 
 ## Design
 
-The current architecture document (Chinese) is [`Goah-架构设计-v2.html`](./Goah-架构设计-v2.html). [`北辰-harness-设计稿.html`](./北辰-harness-设计稿.html) is preserved as the historical v0.10 proposal and links forward to v2. Decisions are recorded as ADRs in [`docs/adr/`](./docs/adr/).
+The current implemented architecture document (Chinese) is [`Goah-架构设计-v2.html`](./Goah-架构设计-v2.html). The proposed next architecture is [`docs/proposals/goal-bound-agent-operating-model.md`](./docs/proposals/goal-bound-agent-operating-model.md); it separates ordinary CEO interaction from strict Goal-bound operation and introduces the event-sourced Work Record filesystem. [`北辰-harness-设计稿.html`](./北辰-harness-设计稿.html) is preserved as the historical v0.10 proposal and links forward to v2. Decisions are recorded as ADRs in [`docs/adr/`](./docs/adr/).
 
 The user-facing organization layer is documented in [`Goah-CEO-Agent-Operating-Layer.html`](./Goah-CEO-Agent-Operating-Layer.html), with the reviewable Markdown source in [`docs/proposals/ceo-agent-operating-layer.md`](./docs/proposals/ceo-agent-operating-layer.md). Milestones A–C and E are implemented: CEO is the interactive normal entry, every Agent receives the Pi coding baseline, Goal observation methods persist across wakes, team state is derived from Ledger facts, and delegation/reassignment is atomic. The deterministic multi-Agent canary is covered by the test suite; a long-running real-model canary remains operational validation.
 
