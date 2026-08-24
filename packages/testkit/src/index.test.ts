@@ -46,6 +46,28 @@ test("vertical slice commits handoff while the runner owns local files", async (
   ledger.close();
 });
 
+test("a Human Turn can create a Root Goal and become Goal-bound through tools", async () => {
+  const repo = repository();
+  const clock = new SimulatedClock();
+  const ledger = createMemoryLedger({ clock });
+  const record = "# Current State\n\nGoal accepted.\n\n# Observations\n\nInitial Human request recorded.\n\n# Work Completed\n\nCreated the operating record.\n\n# Decisions\n\nContinue.\n\n# Blockers\n\nNone.\n\n# Next Steps\n\nInspect implementation.\n";
+  const runner = fauxRunner([
+    { rpc: { method: "goal.create", params: { id: "human-goal", objective: "finish authentication" } } },
+    { rpc: { method: "work_record.update", params: { expectedRevision: 0, content: record, reason: "start durable work", evidence: ["$LATEST_SOURCE_SEQ"] } } },
+    { handoff: { handoff: { observations: ["Human requested durable work"], results: ["Root Goal created"], nextSteps: ["Inspect authentication"] }, mail: [], nextWakeAt: "2026-08-19T00:00:00.000Z" } },
+  ], undefined, repo);
+  const supervisor = new Supervisor(ledger, runner, clock);
+  const accepted = supervisor.interactWithCeo("finish authentication and keep going until it is verified");
+  assert.equal((await supervisor.tick())?.status, "done");
+  assert.equal(ledger.goal("human-goal")?.objective, "finish authentication");
+  assert.equal(ledger.workRecord("human-goal")?.recordRevision, 1);
+  assert.equal(ledger.workRecord("human-goal")?.updatedInTurn, accepted.wake.id);
+  assert.equal(ledger.eventsForWake(accepted.wake.id).some((event) => event.type === "turn.goal_bound"), true);
+  assert.equal(ledger.eventsForWake(accepted.wake.id).some((event) => event.type === "handoff.recorded"), true);
+  assert.equal(ledger.eventsForWake(accepted.wake.id).some((event) => event.type === "interaction.completed"), false);
+  ledger.close();
+});
+
 test("crashed wake keeps emergency mail and local partial work for recovery", async () => {
   const repo = repository();
   const clock = new SimulatedClock();

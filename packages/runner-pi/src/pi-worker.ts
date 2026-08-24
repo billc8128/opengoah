@@ -23,7 +23,7 @@ export function compactMessages(messages: AgentMessage[], maxRecent = 8): AgentM
 export async function runPiWorker(): Promise<void> {
   await runProcessWorker(async (request, emit, rpc): Promise<RunnerResult> => {
     const contextRecord = typeof request.context === "object" && request.context !== null && !Array.isArray(request.context) ? request.context : {};
-    const goalBound = request.turn.goalBinding !== undefined;
+    const goalState = { bound: request.turn.goalBinding !== undefined };
     const profile = contextRecord.runnerProfile && typeof contextRecord.runnerProfile === "object" && !Array.isArray(contextRecord.runnerProfile) ? contextRecord.runnerProfile as Record<string, unknown> : {};
     const runnerConfig = profile.config && typeof profile.config === "object" && !Array.isArray(profile.config) ? profile.config as Record<string, unknown> : {};
     const provider = typeof runnerConfig.provider === "string" ? runnerConfig.provider : process.env.GOAH_PI_PROVIDER ?? "anthropic";
@@ -35,7 +35,7 @@ export async function runPiWorker(): Promise<void> {
     const model = typeof privateAuth.baseUrl === "string" ? { ...configured.model, baseUrl: privateAuth.baseUrl } : configured.model;
     if (provider === "faux") {
       const faux = configured.faux!;
-      if (goalBound) {
+      if (goalState.bound) {
         const handoff = JSON.parse(process.env.GOAH_PI_FAUX_HANDOFF ?? "{}") as Record<string, unknown>;
         faux.setResponses([fauxAssistantMessage(fauxToolCall("handoff", handoff), { stopReason: "toolUse" })]);
       } else {
@@ -61,15 +61,15 @@ export async function runPiWorker(): Promise<void> {
     const capabilities = Array.isArray(contextRecord.capabilities)
       ? new Set(contextRecord.capabilities.filter((value): value is AgentCapability => typeof value === "string"))
       : undefined;
-    const tools = createTools(root, (value) => { output = value; }, rpc, request.wake.startedAt, capabilities, goalBound);
+    const tools = createTools(root, (value) => { output = value; }, rpc, request.wake.startedAt, capabilities, goalState);
     const contextPolicy = resolveContextPolicy(model.contextWindow, process.env);
     emit({ type: "session.started", data: { formatVersion: SESSION_FORMAT_VERSION, provider, model: modelId, runner: "pi", contextWindowTokens: model.contextWindow, maxOutputTokensPerTurn: model.maxTokens } });
     const suppliedPrompt = typeof contextRecord.systemPrompt === "string" ? contextRecord.systemPrompt : undefined;
     const activeContext = typeof contextRecord.text === "string" ? contextRecord.text : JSON.stringify(request.context);
     const sourceSeqs = Array.isArray(contextRecord.sourceSeqs) ? contextRecord.sourceSeqs.filter((value): value is number => Number.isInteger(value)) : [];
-    const systemPrompt = goalBound
+    const systemPrompt = goalState.bound
       ? `${process.env.GOAH_PI_SYSTEM_PROMPT ?? suppliedPrompt ?? "You are a goal-oriented worker."}\nYou must finish by calling handoff exactly once. Treat the supplied context as authoritative.`
-      : `${process.env.GOAH_PI_SYSTEM_PROMPT ?? suppliedPrompt ?? "You are Goah's primary Agent."}\nRespond normally to the Human. Do not call handoff. Treat the supplied context as authoritative.`;
+      : `${process.env.GOAH_PI_SYSTEM_PROMPT ?? suppliedPrompt ?? "You are Goah's primary Agent."}\nRespond normally to the Human. Do not create a Goal for routine single-turn work. When the Human expresses a durable Goal, call create_goal; after create_goal or work_on_goal succeeds, update the Goal Work Record and finish by calling handoff. Treat the supplied context as authoritative.`;
     const agent = new Agent({
       initialState: {
         systemPrompt,
@@ -127,7 +127,7 @@ export async function runPiWorker(): Promise<void> {
       else if (event.type === "agent_end") emit({ type: "session.completed", data: {} });
     });
     await agent.prompt(`Wake started at: ${request.wake.startedAt ?? "unknown"}\n\n${activeContext}\n\nRunner root: ${root}. Manage local files directly when the goal requires them.`);
-    if (!goalBound) return response ? { outcome: "response", response: { content: response } } : { outcome: "abnormal", reason: "Pi worker exited without a response" };
+    if (!goalState.bound) return response ? { outcome: "response", response: { content: response } } : { outcome: "abnormal", reason: "Pi worker exited without a response" };
     if (!output) return { outcome: "abnormal", reason: "Pi worker exited without a valid handoff" };
     return { outcome: "handoff", output };
   });
@@ -153,7 +153,7 @@ function sessionMessage(message: AgentMessage, id: string): SessionMessage {
   return { id, role, content: (value.content ?? value) as JsonValue, ...(value.usage !== undefined ? { usage: value.usage as JsonValue } : {}) };
 }
 
-function createTools(root: string, handoff: (output: WakeOutput) => void, rpc: WorkerRpc, wakeStartedAt: string | null, capabilities?: ReadonlySet<AgentCapability>, goalBound = true): AgentTool<any>[] {
+function createTools(root: string, handoff: (output: WakeOutput) => void, rpc: WorkerRpc, wakeStartedAt: string | null, capabilities: ReadonlySet<AgentCapability> | undefined, goalState: { bound: boolean }): AgentTool<any>[] {
   const handoffTool: AgentTool<any> = {
     name: "handoff",
     label: "Handoff",
@@ -173,7 +173,7 @@ function createTools(root: string, handoff: (output: WakeOutput) => void, rpc: W
       return { content: [{ type: "text", text: "handoff recorded" }], details: value, terminate: true };
     },
   };
-  const rpcTools = createRpcTools(rpc, capabilities);
+  const rpcTools = createRpcTools(rpc, capabilities, () => { goalState.bound = true; });
   const readTool: AgentTool<any> = {
     name: "read", label: "Read", description: "Read a UTF-8 file inside the current working directory.",
     parameters: Type.Object({ path: Type.String() }),
@@ -204,7 +204,7 @@ function createTools(root: string, handoff: (output: WakeOutput) => void, rpc: W
     parameters: Type.Object({ command: Type.String(), timeoutMs: Type.Optional(Type.Number()) }), executionMode: "sequential",
     execute: async (_id, params, signal) => runBashCommand(root, params as { command: string; timeoutMs?: number }, signal),
   };
-  return [readTool, writeTool, editTool, bashTool, ...rpcTools, ...(goalBound ? [handoffTool] : [])];
+  return [readTool, writeTool, editTool, bashTool, ...rpcTools, handoffTool];
 }
 
 const BASH_TIMEOUT_HARD_CAP_MS = 600_000;
@@ -289,10 +289,10 @@ export function compactMessagesToTokenBudget(messages: AgentMessage[], retainTok
   ];
 }
 
-function createRpcTools(rpc: WorkerRpc, allowed?: ReadonlySet<AgentCapability>): AgentTool<any>[] {
+function createRpcTools(rpc: WorkerRpc, allowed?: ReadonlySet<AgentCapability>, onGoalBound?: () => void): AgentTool<any>[] {
   const tool = (name: string, description: string, method: AgentCapability, parameters: ReturnType<typeof Type.Object>): AgentTool<any> => ({
     name, label: name, description, parameters,
-    execute: async (_id, params) => { const result = await rpc(method, params as JsonValue); return { content: [{ type: "text", text: JSON.stringify(result) }], details: result }; },
+    execute: async (_id, params) => { const result = await rpc(method, params as JsonValue); if (method === "goal.create" || method === "goal.work") onGoalBound?.(); return { content: [{ type: "text", text: JSON.stringify(result) }], details: result }; },
   });
   const definitions: Array<[AgentCapability, AgentTool<any>]> = [
     ["ledger.search", tool("ledger_search", "Search durable ledger facts.", "ledger.search", Type.Object({ query: Type.String(), limit: Type.Optional(Type.Number()) }))],
@@ -303,6 +303,9 @@ function createRpcTools(rpc: WorkerRpc, allowed?: ReadonlySet<AgentCapability>):
     ["audit.ack", tool("ack_audit_advice", "Acknowledge audit advice after incorporating it.", "audit.ack", Type.Object({ actionId: Type.String() }))],
     ["audit.write", tool("write_audit_advice", "Write audit advice for an action.", "audit.write", Type.Object({ actionId: Type.String(), body: Type.Any(), evidence: Type.Array(Type.Number()) }))],
     ["team.list", tool("team_list", "Read the ledger-derived team roster and liveness state.", "team.list", Type.Object({}))],
+    ["goal.get", tool("get_goal", "Read the Goal bound to this Turn, or null when the Turn is unbound.", "goal.get", Type.Object({}))],
+    ["goal.create", tool("create_goal", "Create a Root Goal from durable Human intent and bind this Turn. Do not use for greetings, questions, or routine single-turn work.", "goal.create", Type.Object({ objective: Type.String(), id: Type.Optional(Type.String()) }))],
+    ["goal.work", tool("work_on_goal", "Bind this Human Turn to an existing active Goal owned by this Agent.", "goal.work", Type.Object({ goalId: Type.String() }))],
     ["goal.delegate", tool("delegate_goal", "Atomically create a child goal with an observation method, send its decision brief, and queue its owner.", "goal.delegate", Type.Object({ id: Type.String(), parentGoalId: Type.String(), childGoal: Type.Object({ id: Type.String(), objective: Type.String(), observationMethod: Type.String(), owner: Type.String() }), brief: Type.Any(), reason: Type.String(), evidence: Type.Array(Type.Number()) }))],
     ["goal.reassign", tool("reassign_goal", "Atomically transfer a child goal, notify both owners, and queue the new owner.", "goal.reassign", Type.Object({ id: Type.String(), goalId: Type.String(), newOwner: Type.String(), brief: Type.Any(), reason: Type.String(), evidence: Type.Array(Type.Number()) }))],
     ["goal.revise", tool("revise_goal", "Revise a child objective and observation method as one new revision.", "goal.revise", Type.Object({ goalId: Type.String(), objective: Type.String(), observationMethod: Type.String(), reason: Type.String(), evidence: Type.Array(Type.Number()) }))],
@@ -310,6 +313,11 @@ function createRpcTools(rpc: WorkerRpc, allowed?: ReadonlySet<AgentCapability>):
     ["goal.resume", tool("resume_goal", "Resume a child goal and ensure its owner is queued.", "goal.resume", Type.Object({ goalId: Type.String() }))],
     ["goal.complete", tool("complete_goal", "Complete a child goal with evidence produced under its current observation method. Root completion remains human authority.", "goal.complete", Type.Object({ goalId: Type.String(), revision: Type.Number(), reason: Type.String(), evidence: Type.Array(Type.Number()) }))],
     ["human.request", tool("request_human", "Ask the human for a decision, observation-method confirmation, or root completion with evidence.", "human.request", Type.Object({ type: Type.Union([Type.Literal("decision"), Type.Literal("observation_method_confirmation"), Type.Literal("completion_recommendation")]), message: Type.Any(), evidence: Type.Array(Type.Number()) }))],
+    ["work_record.list", tool("work_record_list", "List the current Work Record for every Goal in the organization.", "work_record.list", Type.Object({}))],
+    ["work_record.read", tool("work_record_read", "Read one current Goal Work Record. Omit goalId for the Goal bound to this Turn.", "work_record.read", Type.Object({ goalId: Type.Optional(Type.String()) }))],
+    ["work_record.history", tool("work_record_history", "Read the version timeline for a Goal Work Record.", "work_record.history", Type.Object({ goalId: Type.Optional(Type.String()) }))],
+    ["work_record.search", tool("work_record_search", "Search every Goal Work Record.", "work_record.search", Type.Object({ query: Type.String(), limit: Type.Optional(Type.Number()) }))],
+    ["work_record.update", tool("work_record_update", "Create the next version of the Work Record bound to this Turn with Ledger evidence.", "work_record.update", Type.Object({ expectedRevision: Type.Number(), content: Type.String(), reason: Type.String(), evidence: Type.Array(Type.Number()) }))],
     ["goal.put", tool("put_goal", "Create or update a goal using parent-layer authority.", "goal.put", Type.Object({ goal: Type.Any() }))],
   ];
   return definitions.filter(([capability]) => !allowed || allowed.has(capability)).map(([, value]) => value);

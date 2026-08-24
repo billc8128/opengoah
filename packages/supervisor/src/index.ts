@@ -136,10 +136,14 @@ export class Supervisor {
   }
   get runner(): Runner { return this.#runner; }
   createGoal(goal: GoalSnapshot, actor = "human"): void { this.ledger.putGoal(goal, actor); }
-  startGoal(objective: string, id: string = randomUUID()): { goal: GoalSnapshot; wake: WakeSnapshot } {
+  createRootGoal(objective: string, id: string = randomUUID()): GoalSnapshot {
     if (!objective.trim()) throw new Error("root objective is required");
-    const goal: GoalSnapshot = { id, parentId: null, objective, observationMethod: null, owner: "ceo", phase: "active", revision: 0 };
+    const goal: GoalSnapshot = { id, parentId: null, objective, observationMethod: null, verificationMethod: null, owner: "ceo", phase: "active", revision: 0 };
     this.ledger.putGoal(goal, "human");
+    return this.#goal(id);
+  }
+  startGoal(objective: string, id: string = randomUUID()): { goal: GoalSnapshot; wake: WakeSnapshot } {
+    const goal = this.createRootGoal(objective, id);
     const wake = this.#enqueueTrigger("ceo", `root:${id}:created`);
     if (!wake) throw new Error("CEO wake was not admitted for an active root goal");
     return { goal, wake };
@@ -247,7 +251,7 @@ export class Supervisor {
         context,
         now: () => this.#now(),
         emit: (trace) => this.ledger.appendRunnerEvent({ streamId: wakeStream(running.id), ts: this.#now(), actor: running.agent, type: trace.type, data: trace.data }, leaseToken),
-        rpc: (method, params) => this.#agentRpc(running, leaseToken, method, params),
+        rpc: (method, params) => this.#agentRpc(running, turn, leaseToken, method, params),
       });
       this.#handles.set(running.id, handle);
       if (handle.pid) running = this.ledger.attachWakeProcess(running.id, leaseToken, handle.pid, this.#now());
@@ -549,7 +553,7 @@ export class Supervisor {
   }
   #now(): string { return this.clock.now().toISOString(); }
 
-  async #agentRpc(wake: WakeSnapshot, leaseToken: string, method: AgentCapability, params: JsonValue): Promise<JsonValue> {
+  async #agentRpc(wake: WakeSnapshot, turn: TurnContext, leaseToken: string, method: AgentCapability, params: JsonValue): Promise<JsonValue> {
     const current = this.ledger.wake(wake.id);
     if (!current || current.status !== "running" || current.leaseToken !== leaseToken || !current.leaseUntil || current.leaseUntil < this.#now()) throw new Error("stale runner RPC rejected");
     const profile = this.#profiles.get(wake.agent) ?? { agent: wake.agent, role: "child" as const };
@@ -559,6 +563,31 @@ export class Supervisor {
     const input = asRecord(params);
     if (method === "ledger.search") return this.ledger.searchEvents(String(input.query), Number(input.limit ?? 20)) as unknown as JsonValue;
     if (method === "team.list") return this.teamList() as unknown as JsonValue;
+    if (method === "goal.get") return (turn.goalBinding ? this.ledger.goal(turn.goalBinding.goalId) : null) as unknown as JsonValue;
+    if (method === "goal.create") {
+      if (turn.source.kind !== "human" || turn.goalBinding) throw new Error("a Root Goal can only be created from an unbound Human Turn");
+      if (wake.agent !== "ceo") throw new Error("only CEO may translate Human intent into a Root Goal");
+      const goal = this.createRootGoal(String(input.objective), typeof input.id === "string" && input.id.trim() ? input.id : undefined);
+      turn.goalBinding = { goalId: goal.id, goalRevision: goal.revision };
+      this.ledger.appendRunnerEvent({ streamId: wakeStream(wake.id), ts: this.#now(), actor: wake.agent, type: "turn.goal_bound", data: { goalId: goal.id, goalRevision: goal.revision, authority: "human" } }, leaseToken);
+      return { goal, goalBinding: turn.goalBinding, instruction: "This Turn is now Goal-bound. Update its Work Record and finish with handoff." } as unknown as JsonValue;
+    }
+    if (method === "goal.work") {
+      if (turn.source.kind !== "human" || turn.goalBinding) throw new Error("work_on_goal requires an unbound Human Turn");
+      const goal = this.#goal(String(input.goalId));
+      if (goal.owner !== wake.agent || goal.phase !== "active") throw new Error("work_on_goal requires an active Goal owned by this Agent");
+      turn.goalBinding = { goalId: goal.id, goalRevision: goal.revision };
+      this.ledger.appendRunnerEvent({ streamId: wakeStream(wake.id), ts: this.#now(), actor: wake.agent, type: "turn.goal_bound", data: { goalId: goal.id, goalRevision: goal.revision, authority: "human" } }, leaseToken);
+      return { goal, goalBinding: turn.goalBinding, instruction: "This Turn is now Goal-bound. Update its Work Record and finish with handoff." } as unknown as JsonValue;
+    }
+    if (method === "work_record.list") return this.ledger.workRecords() as unknown as JsonValue;
+    if (method === "work_record.read") return this.ledger.workRecord(String(input.goalId ?? turn.goalBinding?.goalId ?? "")) as unknown as JsonValue;
+    if (method === "work_record.history") return this.ledger.workRecordHistory(String(input.goalId ?? turn.goalBinding?.goalId ?? "")) as unknown as JsonValue;
+    if (method === "work_record.search") return this.ledger.searchWorkRecords(String(input.query), Number(input.limit ?? 20)) as unknown as JsonValue;
+    if (method === "work_record.update") {
+      if (!turn.goalBinding) throw new Error("work_record.update requires a Goal-bound Turn");
+      return this.ledger.updateWorkRecord({ goalId: turn.goalBinding.goalId, goalRevision: turn.goalBinding.goalRevision, expectedRevision: Number(input.expectedRevision), content: String(input.content), reason: String(input.reason), evidence: numberArray(input.evidence), turnId: wake.id, wakeId: wake.id }, wake.agent) as unknown as JsonValue;
+    }
     if (method === "goal.delegate") return this.delegate({
       id: String(input.id),
       parentGoalId: String(input.parentGoalId),
@@ -730,10 +759,10 @@ function asChildGoal(value: JsonValue | undefined): { id: string; objective: str
   return { id: String(input.id), objective: String(input.objective), observationMethod: String(input.observationMethod), owner: String(input.owner) };
 }
 function defaultCapabilities(role: AgentRole): AgentCapability[] {
-  if (role === "ceo") return ["ledger.search", "mail.send", "schedule.set", "action.submit", "audit.ack", "memory.append", "team.list", "goal.delegate", "goal.reassign", "goal.revise", "goal.pause", "goal.resume", "goal.complete", "human.request"];
+  if (role === "ceo") return ["ledger.search", "mail.send", "schedule.set", "action.submit", "audit.ack", "memory.append", "team.list", "goal.get", "goal.create", "goal.work", "goal.delegate", "goal.reassign", "goal.revise", "goal.pause", "goal.resume", "goal.complete", "human.request", "work_record.list", "work_record.read", "work_record.history", "work_record.search", "work_record.update"];
   if (role === "verifier") return ["ledger.search", "mail.send", "memory.append", "audit.write"];
   if (role === "audit") return ["ledger.search", "mail.send", "memory.append", "audit.write"];
-  return ["ledger.search", "mail.send", "schedule.set", "action.submit", "audit.ack", "memory.append"];
+  return ["ledger.search", "mail.send", "schedule.set", "action.submit", "audit.ack", "memory.append", "goal.get", "work_record.list", "work_record.read", "work_record.history", "work_record.search", "work_record.update"];
 }
 
 export * from "./verification.js";
