@@ -10,13 +10,14 @@ import { closeSync, mkdirSync, openSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 interface CancellableState { active: boolean }
-export type TuiInputAction = "quit" | "help" | "status" | "stop" | "model" | "setup" | "goal" | "approval" | "empty" | "queue" | "send";
+export type TuiInputAction = "quit" | "help" | "status" | "records" | "stop" | "model" | "setup" | "goal" | "approval" | "empty" | "queue" | "send";
 export function classifyTuiInput(value: string, busy: boolean): { action: TuiInputAction; text: string } {
   const text = value.trim();
   if (!text) return { action: "empty", text };
   if (text === "/quit" || text === "/exit") return { action: "quit", text };
   if (text === "/help") return { action: "help", text };
   if (text === "/status") return { action: "status", text };
+  if (text === "/records" || text.startsWith("/records ") || text.startsWith("/history ")) return { action: "records", text };
   if (text === "/stop") return { action: "stop", text };
   if (text === "/model" || text.startsWith("/model ")) return { action: "model", text };
   if (text === "/setup") return { action: "setup", text };
@@ -86,8 +87,9 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
     const { action, text } = classifyTuiInput(line, busy.active);
     input.setValue("");
     if (action === "quit") { exiting = true; activeStream?.abort(); tui.stop(); resolveExit(); return; }
-    if (action === "help") { push("Commands: /status · /stop · /model opens picker · /model PROVIDER/MODEL switches directly · /setup · /goal TEXT · /observe TEXT · /approve · /reject · /quit"); return; }
+    if (action === "help") { push("Commands: /status · /records [GOAL] · /history GOAL · /stop · /model · /setup · /goal TEXT · /observe TEXT · /approve · /reject · /quit"); return; }
     if (action === "status") { void printStatus(stateDir, push); return; }
+    if (action === "records") { void printRecords(text, stateDir, push); return; }
     if (action === "stop") { void stopCeoWake(stateDir, push); return; }
     if (action === "model") { if (text === "/model") void launchSetup(); else void switchModelCommand(text, configPath, stateDir, push); return; }
     if (action === "setup") { void launchSetup(); return; }
@@ -184,6 +186,23 @@ async function printStatus(stateDir: string, push: (line: string) => void): Prom
     const team = Array.isArray(value.team) ? value.team as Array<Record<string, unknown>> : [];
     const pending = Array.isArray(value.pendingHuman) ? value.pendingHuman.length : 0;
     push([roots[0] ? `Goal: ${String(roots[0].objective)} [${String(roots[0].phase)}]` : "Goal: none", `Team: ${team.map((member) => `${String(member.agent)}=${String(member.status)}`).join(" · ") || "none"}`, `Needs you: ${pending}`].join("\n"));
+  } catch (error) { push(`! ${error instanceof Error ? error.message : String(error)}`); }
+}
+
+async function printRecords(text: string, stateDir: string, push: (line: string) => void): Promise<void> {
+  try {
+    if (text === "/records") {
+      const records = await requestControl(stateDir, { op: "work.records" });
+      const values = Array.isArray(records) ? records as Array<Record<string, unknown>> : [];
+      push(values.map((record) => `${String(record.goalId)} · r${String(record.recordRevision)} · ${String(record.updatedBy)}`).join("\n") || "No Goal Work Records.");
+      return;
+    }
+    const history = text.startsWith("/history ");
+    const goalId = text.slice(history ? 9 : 9).trim();
+    const value = await requestControl(stateDir, history ? { op: "work.history", goalId } : { op: "work.record", goalId });
+    if (history && Array.isArray(value)) push((value as Array<Record<string, unknown>>).map((record) => `r${String(record.recordRevision)} · ${String(record.updatedBy)} · ${String(record.reason)}`).join("\n"));
+    else if (value && typeof value === "object" && !Array.isArray(value)) push(String((value as Record<string, unknown>).content ?? "Record is empty."));
+    else push("Work Record not found.");
   } catch (error) { push(`! ${error instanceof Error ? error.message : String(error)}`); }
 }
 

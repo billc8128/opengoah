@@ -19,6 +19,10 @@ export type ControlRequest =
   | { op: "ceo.send"; message: string }
   | { op: "ceo.status" }
   | { op: "ceo.inbox" }
+  | { op: "work.records" }
+  | { op: "work.record"; goalId: string }
+  | { op: "work.history"; goalId: string }
+  | { op: "work.diff"; goalId: string; fromRevision: number; toRevision: number }
   | { op: "action.approve"; id: string; reason: string; evidence: number[] }
   | { op: "action.reject"; id: string; reason: string; evidence: number[] }
   | { op: "wake.stop"; agent: string }
@@ -130,6 +134,10 @@ async function dispatch(request: ControlRequest, socket: Socket, supervisor: Sup
   else if (request.op === "ceo.send") value = supervisor.sendToCeo({ message: request.message });
   else if (request.op === "ceo.status") value = ceoStatus(ledger, supervisor);
   else if (request.op === "ceo.inbox") value = ledger.unreadMail("human");
+  else if (request.op === "work.records") value = ledger.workRecords();
+  else if (request.op === "work.record") value = ledger.workRecord(request.goalId);
+  else if (request.op === "work.history") value = ledger.workRecordHistory(request.goalId);
+  else if (request.op === "work.diff") value = ledger.workRecordDiff(request.goalId, request.fromRevision, request.toRevision);
   else if (request.op === "action.approve") value = await supervisor.approveAction(request.id, "human", request.reason, request.evidence);
   else if (request.op === "action.reject") value = await supervisor.rejectAction(request.id, "human", request.reason, request.evidence);
   else if (request.op === "wake.stop") value = await supervisor.stopAgentWake(request.agent);

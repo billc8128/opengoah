@@ -28,6 +28,7 @@ import {
   type WakeSnapshot,
   wakeStream,
   type WorkRecordSnapshot,
+  type WorkRecordDiff,
   type WorkRecordUpdateRequest,
   workRecordStream,
 } from "goah-ledger-contract";
@@ -579,6 +580,13 @@ export class SqliteLedger implements Ledger {
   workRecordHistory(goalId: string): WorkRecordSnapshot[] {
     return this.readStream(workRecordStream(goalId)).filter((event) => event.type === "work_record.created" || event.type === "work_record.updated").map((event) => mapWorkRecordEvent(event));
   }
+  workRecordDiff(goalId: string, fromRevision: number, toRevision: number): WorkRecordDiff {
+    const history = this.workRecordHistory(goalId);
+    const from = history.find((record) => record.recordRevision === fromRevision);
+    const to = history.find((record) => record.recordRevision === toRevision);
+    if (!from || !to) throw new Error("work record diff revision does not exist");
+    return { goalId, fromRevision, toRevision, text: lineDiff(from.content, to.content) };
+  }
   searchWorkRecords(query: string, limit = 50): WorkRecordSnapshot[] {
     return (this.db.prepare(`SELECT e.* FROM events_fts f JOIN events e ON e.seq=f.rowid
       WHERE events_fts MATCH ? AND e.type IN ('work_record.created','work_record.updated') ORDER BY rank LIMIT ?`).all(query, limit) as Row[]).map((row) => mapWorkRecordEvent(mapEvent(row)));
@@ -840,6 +848,15 @@ function mapGoal(r: Row): GoalSnapshot { return { id: String(r.id), parentId: r.
 function mapWorkRecord(r: Row): WorkRecordSnapshot { return { goalId:String(r.goal_id),recordRevision:Number(r.record_revision),goalRevision:Number(r.goal_revision),content:String(r.content),updatedBy:String(r.updated_by),updatedInTurn:String(r.updated_in_turn),updatedInWake:r.updated_in_wake===null?null:String(r.updated_in_wake),updatedAt:String(r.updated_at),reason:String(r.reason),evidence:JSON.parse(String(r.evidence)) as number[],lastEventSeq:Number(r.last_event_seq) }; }
 function mapWorkRecordEvent(event: EventRecord): WorkRecordSnapshot { const data = event.data as { snapshot?: WorkRecordSnapshot }; if (!data.snapshot) throw new Error(`work record event ${event.seq} has no snapshot`); return { ...data.snapshot, lastEventSeq: event.seq }; }
 function initialWorkRecord(): string { return "# Current State\n\nGoal created. Work has not started.\n\n# Observations\n\n# Work Completed\n\n# Decisions\n\n# Blockers\n\n# Next Steps\n"; }
+function lineDiff(from: string, to: string): string {
+  const before = from.split("\n"); const after = to.split("\n"); const lines: string[] = [];
+  for (let index = 0; index < Math.max(before.length, after.length); index += 1) {
+    if (before[index] === after[index]) { if (before[index] !== undefined) lines.push(` ${before[index]}`); continue; }
+    if (before[index] !== undefined) lines.push(`-${before[index]}`);
+    if (after[index] !== undefined) lines.push(`+${after[index]}`);
+  }
+  return lines.join("\n");
+}
 function mapSchedule(r: Row): ScheduleSnapshot { return {id:String(r.id),agent:String(r.agent),nextWakeAt:String(r.next_wake_at),reason:String(r.reason),setBy:String(r.set_by)}; }
 function mapWake(r: Row): WakeSnapshot { return {id:String(r.id),agent:String(r.agent),triggerRef:String(r.trigger_ref),status:String(r.status) as WakeSnapshot["status"],leaseUntil:r.lease_until===null?null:String(r.lease_until),attempt:Number(r.attempt),startedAt:r.started_at===null?null:String(r.started_at),endedAt:r.ended_at===null?null:String(r.ended_at),enqueuedSeq:Number(r.enqueued_seq),leaseToken:r.lease_token===null?null:String(r.lease_token),runnerPid:r.runner_pid===null?null:Number(r.runner_pid)}; }
 function mapMail(r: Row): MailSnapshot { return {id:String(r.id),to:String(r.to_agent),from:String(r.from_agent),level:String(r.level) as MailSnapshot["level"],body:JSON.parse(String(r.body)),readAt:r.read_at===null?null:String(r.read_at)}; }

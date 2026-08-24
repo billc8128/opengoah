@@ -547,8 +547,10 @@ export class Supervisor {
     const active = composeActiveContext({ role, capabilities, systemPrompt: profile.systemPrompt ?? defaultRolePrompt(role), wake, goals, mail, actions, lastHandoff: handoff, teamHandoffs, team: role === "ceo" ? this.teamList() : [], revisionWarnings, recoveryEvents, workingMemory });
     const records = this.ledger.workRecords();
     const currentRecord = turn.goalBinding ? this.ledger.workRecord(turn.goalBinding.goalId) : null;
+    const currentGoal = turn.goalBinding ? this.ledger.goal(turn.goalBinding.goalId) : null;
+    const parentRecord = currentGoal?.parentId ? this.ledger.workRecord(currentGoal.parentId) : null;
     const recordIndex = records.map((record) => `- /goals/${record.goalId}.md · r${record.recordRevision} · ${this.ledger.goal(record.goalId)?.owner ?? "unknown"} · ${this.ledger.goal(record.goalId)?.phase ?? "unknown"}`);
-    const workText = [`# Shared Work Record Index\n\n${recordIndex.join("\n")}`, ...(currentRecord ? [`# Your Work Record\n\n${currentRecord.content}`] : [])].join("\n\n");
+    const workText = [`# Shared Work Record Index\n\n${recordIndex.join("\n")}`, ...(currentRecord ? [`# Your Work Record\n\n${currentRecord.content}`] : []), ...(parentRecord ? [`# Parent Work Record\n\n${parentRecord.content}`] : [])].join("\n\n");
     return { ...active, text: `${active.text}\n\n${workText}`, sourceSeqs: [...new Set([...active.sourceSeqs, ...records.map((record) => record.lastEventSeq)])].sort((a, b) => a - b), workRecord: currentRecord, sharedWorkRecords: records, ...(runnerProfile ? { runnerProfile } : {}) } as unknown as JsonValue;
   }
 
@@ -600,6 +602,7 @@ export class Supervisor {
     if (method === "work_record.list") return this.ledger.workRecords() as unknown as JsonValue;
     if (method === "work_record.read") return this.ledger.workRecord(String(input.goalId ?? turn.goalBinding?.goalId ?? "")) as unknown as JsonValue;
     if (method === "work_record.history") return this.ledger.workRecordHistory(String(input.goalId ?? turn.goalBinding?.goalId ?? "")) as unknown as JsonValue;
+    if (method === "work_record.diff") return this.ledger.workRecordDiff(String(input.goalId ?? turn.goalBinding?.goalId ?? ""), Number(input.fromRevision), Number(input.toRevision)) as unknown as JsonValue;
     if (method === "work_record.search") return this.ledger.searchWorkRecords(String(input.query), Number(input.limit ?? 20)) as unknown as JsonValue;
     if (method === "work_record.update") {
       if (!turn.goalBinding) throw new Error("work_record.update requires a Goal-bound Turn");
@@ -776,10 +779,10 @@ function asChildGoal(value: JsonValue | undefined): { id: string; objective: str
   return { id: String(input.id), objective: String(input.objective), observationMethod: String(input.observationMethod), verificationMethod: String(input.verificationMethod), owner: String(input.owner) };
 }
 function defaultCapabilities(role: AgentRole): AgentCapability[] {
-  if (role === "ceo") return ["ledger.search", "mail.send", "schedule.set", "action.submit", "audit.ack", "memory.append", "team.list", "goal.get", "goal.create", "goal.work", "goal.delegate", "goal.reassign", "goal.revise", "goal.pause", "goal.resume", "goal.complete", "human.request", "work_record.list", "work_record.read", "work_record.history", "work_record.search", "work_record.update"];
+  if (role === "ceo") return ["ledger.search", "mail.send", "schedule.set", "action.submit", "audit.ack", "memory.append", "team.list", "goal.get", "goal.create", "goal.work", "goal.delegate", "goal.reassign", "goal.revise", "goal.pause", "goal.resume", "goal.complete", "human.request", "work_record.list", "work_record.read", "work_record.history", "work_record.diff", "work_record.search", "work_record.update"];
   if (role === "verifier") return ["ledger.search", "mail.send", "memory.append", "audit.write"];
   if (role === "audit") return ["ledger.search", "mail.send", "memory.append", "audit.write"];
-  return ["ledger.search", "mail.send", "schedule.set", "action.submit", "audit.ack", "memory.append", "goal.get", "work_record.list", "work_record.read", "work_record.history", "work_record.search", "work_record.update"];
+  return ["ledger.search", "mail.send", "schedule.set", "action.submit", "audit.ack", "memory.append", "goal.get", "work_record.list", "work_record.read", "work_record.history", "work_record.diff", "work_record.search", "work_record.update"];
 }
 
 export * from "./verification.js";

@@ -7,6 +7,8 @@ test("TUI routes ordinary text, queued follow-ups, and approvals", () => {
   assert.deepEqual(classifyTuiInput("correct the budget", true), { action: "queue", text: "correct the budget" });
   assert.equal(classifyTuiInput("/approve a --reason ok --evidence 1", false).action, "approval");
   assert.equal(classifyTuiInput("/stop", true).action, "stop");
+  assert.equal(classifyTuiInput("/records", false).action, "records");
+  assert.equal(classifyTuiInput("/history root", false).action, "records");
   assert.equal(classifyTuiInput("/model", false).action, "model");
   assert.equal(classifyTuiInput("/help", false).action, "help");
 });

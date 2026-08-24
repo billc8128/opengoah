@@ -314,6 +314,7 @@ test("Work Records are versioned Goal documents backed by replayable events", ()
   assert.equal(updated.recordRevision, 1);
   assert.equal(updated.lastEventSeq > evidence.seq, true);
   assert.deepEqual(ledger.workRecordHistory("root").map((record) => record.recordRevision), [0, 1]);
+  assert.match(ledger.workRecordDiff("root", 0, 1).text, /\+Release candidate verified/);
   assert.equal(ledger.searchWorkRecords("Release").some((record) => record.goalId === "root"), true);
   assert.throws(() => ledger.updateWorkRecord({ goalId: "root", expectedRevision: 0, goalRevision: 0, content: "stale", reason: "stale", evidence: [evidence.seq], turnId: "turn-2" }, "ceo"), /CAS/);
   assert.throws(() => ledger.updateWorkRecord({ goalId: "root", expectedRevision: 1, goalRevision: 0, content: "unauthorized", reason: "unauthorized", evidence: [evidence.seq], turnId: "turn-2" }, "other"), /owner/);
