@@ -244,6 +244,7 @@ export class Supervisor {
     try {
       running = this.ledger.markWakeRunning(wake.id, this.#now(), leaseToken);
       const turn = this.#turnContext(running);
+      const workRecordRevisionAtStart = turn.goalBinding ? this.ledger.workRecord(turn.goalBinding.goalId)?.recordRevision ?? -1 : -1;
       const context = this.#loadContext(running, turn);
       handle = this.runner.prepare({
         wake: running,
@@ -280,6 +281,8 @@ export class Supervisor {
         this.ledger.finishWake(running.id, "done", this.#now());
         return this.#wake(running.id);
       }
+
+      if (turn.goalBinding) this.#validateGoalTurnRecord(running, turn, workRecordRevisionAtStart);
 
       this.#validateCeoHandoff(running, result.output);
 
@@ -487,6 +490,14 @@ export class Supervisor {
     throw new Error(`CEO motion invalid: ${violation.reason}${violation.idleAgents.length ? ` (${violation.idleAgents.join(", ")})` : ""}`);
   }
 
+  #validateGoalTurnRecord(wake: WakeSnapshot, turn: TurnContext, revisionAtStart: number): void {
+    const binding = turn.goalBinding!;
+    const goal = this.#goal(binding.goalId);
+    if (goal.revision !== binding.goalRevision) throw new Error("Goal revision changed during the Turn");
+    const record = this.ledger.workRecord(goal.id);
+    if (!record || record.recordRevision <= revisionAtStart || record.updatedInTurn !== wake.id || record.goalRevision !== goal.revision) throw new Error("Goal-bound Turn must update its Work Record before handoff");
+  }
+
   #turnContext(wake: WakeSnapshot): TurnContext {
     if (interactionMailId(wake)) return { source: { kind: "human" } };
     const goals = this.ledger.goalsForOwner(wake.agent).filter((goal) => goal.phase === "active");
@@ -532,7 +543,12 @@ export class Supervisor {
     const actions = this.ledger.actions().filter((action) => action.agent === wake.agent && (action.status === "unknown" || Boolean(action.auditAdvice && !action.adviceAcked)));
     const revisionWarnings = goals.flatMap((goal) => this.#goalRevisionWarning(goal));
     const workingMemory = selectWorkingMemory(this.ledger.readStream(memoryStream(wake.agent)), this.#memoryTailChars);
-    return { ...composeActiveContext({ role, capabilities, systemPrompt: profile.systemPrompt ?? defaultRolePrompt(role), wake, goals, mail, actions, lastHandoff: handoff, teamHandoffs, team: role === "ceo" ? this.teamList() : [], revisionWarnings, recoveryEvents, workingMemory }), ...(runnerProfile ? { runnerProfile } : {}) } as unknown as JsonValue;
+    const active = composeActiveContext({ role, capabilities, systemPrompt: profile.systemPrompt ?? defaultRolePrompt(role), wake, goals, mail, actions, lastHandoff: handoff, teamHandoffs, team: role === "ceo" ? this.teamList() : [], revisionWarnings, recoveryEvents, workingMemory });
+    const records = this.ledger.workRecords();
+    const currentRecord = turn.goalBinding ? this.ledger.workRecord(turn.goalBinding.goalId) : null;
+    const recordIndex = records.map((record) => `- /goals/${record.goalId}.md · r${record.recordRevision} · ${this.ledger.goal(record.goalId)?.owner ?? "unknown"} · ${this.ledger.goal(record.goalId)?.phase ?? "unknown"}`);
+    const workText = [`# Shared Work Record Index\n\n${recordIndex.join("\n")}`, ...(currentRecord ? [`# Your Work Record\n\n${currentRecord.content}`] : [])].join("\n\n");
+    return { ...active, text: `${active.text}\n\n${workText}`, sourceSeqs: [...new Set([...active.sourceSeqs, ...records.map((record) => record.lastEventSeq)])].sort((a, b) => a - b), workRecord: currentRecord, sharedWorkRecords: records, ...(runnerProfile ? { runnerProfile } : {}) } as unknown as JsonValue;
   }
 
   #requiredConnector(name: string): ConnectorProcessSpec { const value = this.#connectors.get(name); if (!value) throw new Error(`connector not registered: ${name}`); return value; }

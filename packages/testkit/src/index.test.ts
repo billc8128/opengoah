@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { CONTRACT_VERSION, controlStream, wakeStream, type Clock, type EventInput, type GoalSnapshot, type JsonValue, type WakeSnapshot } from "goah-ledger-contract";
+import { CONTRACT_VERSION, controlStream, wakeStream, type Clock, type EventInput, type GoalSnapshot, type JsonValue, type Runner, type WakeSnapshot } from "goah-ledger-contract";
 import { piWorkerPath, ProcessRunner, verificationWorkerPath } from "goah-runner-pi";
 import { calibrateVerificationThreshold, evaluateVerification, ProcessVerifierModel, renderDashboard, runSupervisorDaemon, Supervisor, VerificationPlane, type SupervisorOptions, type VerifierModel } from "goah-supervisor";
 import { assertLedgerConformance, createMemoryLedger, fauxRunnerWorkerPath, MockConnector, SimulatedClock } from "./index.js";
@@ -65,6 +65,23 @@ test("a Human Turn can create a Root Goal and become Goal-bound through tools", 
   assert.equal(ledger.eventsForWake(accepted.wake.id).some((event) => event.type === "turn.goal_bound"), true);
   assert.equal(ledger.eventsForWake(accepted.wake.id).some((event) => event.type === "handoff.recorded"), true);
   assert.equal(ledger.eventsForWake(accepted.wake.id).some((event) => event.type === "interaction.completed"), false);
+  ledger.close();
+});
+
+test("a Goal-bound Turn cannot hand off without updating its Work Record", async () => {
+  const clock = new SimulatedClock();
+  const ledger = createMemoryLedger({ clock });
+  const runner: Runner = {
+    isolation: "process",
+    prepare: () => ({ pid: null, begin: () => undefined, result: Promise.resolve({ outcome: "handoff", output: { handoff: { observations: [], results: [], nextSteps: [] }, mail: [], nextWakeAt: null } }), terminate: async () => undefined }),
+    terminateProcess: async () => undefined,
+  };
+  const supervisor = new Supervisor(ledger, runner, clock);
+  supervisor.createGoal(goal());
+  supervisor.planWake("worker", clock.now().toISOString(), "missing record update");
+  const wake = await supervisor.tick();
+  assert.equal(wake?.status, "abnormal");
+  assert.match(String((ledger.eventsForWake(wake!.id).find((event) => event.type === "wake.abnormal_reason")?.data as { reason?: string }).reason), /update its Work Record/);
   ledger.close();
 });
 
@@ -348,7 +365,7 @@ test("bidirectional runner RPC applies child capabilities and rejects parent-onl
   assert.equal(ledger.action("rpc-action")?.status, "confirmed");
   assert.equal(ledger.mailbox().some((mail) => mail.to === "human"), true);
   assert.equal(ledger.schedules()[0]?.nextWakeAt, "2026-08-20T00:00:00.000Z");
-  assert.equal(ledger.events().filter((event) => event.type.startsWith("rpc.")).length, 4);
+  assert.equal(ledger.events().filter((event) => event.type.startsWith("rpc.")).length, 6);
 
   const denied = new Supervisor(ledger, fauxRunner([{ rpc: { method: "goal.put", params: { goal: { ...goal(), revision: 1 } } } }]), clock, { profiles: [{ agent: "worker", role: "child" }] });
   clock.advance(1);

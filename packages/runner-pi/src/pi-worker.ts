@@ -37,7 +37,13 @@ export async function runPiWorker(): Promise<void> {
       const faux = configured.faux!;
       if (goalState.bound) {
         const handoff = JSON.parse(process.env.GOAH_PI_FAUX_HANDOFF ?? "{}") as Record<string, unknown>;
-        faux.setResponses([fauxAssistantMessage(fauxToolCall("handoff", handoff), { stopReason: "toolUse" })]);
+        const current = contextRecord.workRecord && typeof contextRecord.workRecord === "object" && !Array.isArray(contextRecord.workRecord) ? contextRecord.workRecord as Record<string, unknown> : {};
+        const evidence = Array.isArray(contextRecord.sourceSeqs) ? contextRecord.sourceSeqs.filter((value): value is number => typeof value === "number") : [];
+        const record = `# Current State\n\nFaux Goal work completed.\n\n# Observations\n\n${JSON.stringify(handoff.observations ?? [])}\n\n# Work Completed\n\n${JSON.stringify(handoff.results ?? [])}\n\n# Decisions\n\nRecord the scripted result from ${request.wake.id}.\n\n# Blockers\n\n${String(handoff.blocker ?? "None.")}\n\n# Next Steps\n\n${JSON.stringify(handoff.nextSteps ?? [])}\n`;
+        faux.setResponses([
+          fauxAssistantMessage(fauxToolCall("work_record_update", { expectedRevision: Number(current.recordRevision ?? 0), content: record, reason: "record faux Goal progress", evidence: evidence.length ? [Math.max(...evidence)] : [] }), { stopReason: "toolUse" }),
+          fauxAssistantMessage(fauxToolCall("handoff", handoff), { stopReason: "toolUse" }),
+        ]);
       } else {
         faux.setResponses([fauxAssistantMessage([fauxText(process.env.GOAH_PI_FAUX_RESPONSE ?? "Hello from Goah.")])]);
       }

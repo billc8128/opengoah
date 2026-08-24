@@ -64,6 +64,7 @@ export function composeActiveContext(input: ActiveContextInput): ActiveContextVi
   const sections: Array<[string, string[]]> = [
     ["Objectives", input.goals.map((goal) => `- [${goal.id}] ${goal.objective} (owner: ${goal.owner}, phase: ${goal.phase}, revision: ${goal.revision})`)],
     ["Observation methods", input.goals.map((goal) => `## ${goal.id}\n\n${goal.observationMethod ?? "MISSING — inspect the project and request authoritative confirmation before claiming progress or completion."}`)],
+    ["Verification methods", input.goals.map((goal) => `## ${goal.id}\n\n${goal.verificationMethod ?? "MISSING — define authoritative completion evidence before claiming completion."}`)],
     ["Revision barriers", input.revisionWarnings.map((warning) => `- ${warning}`)],
     ["Wake", [`- Trigger: ${input.wake.triggerRef}`, `- Attempt: ${input.wake.attempt}`]],
     ["Working memory", (input.workingMemory ?? []).map((event) => `- ${String(field(event.data, "note") ?? "")} [event:${event.seq}]`)],
