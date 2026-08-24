@@ -21,11 +21,13 @@ test("TUI renders streamed assistant text and tool completion", () => {
   assert.equal(live, "working");
   assert.equal(completed, "done");
   assert.deepEqual(lines, ["✓ read completed"]);
+  renderFrame({ type: "result", value: { response: { content: "final answer" } } }, (line) => lines.push(line));
+  assert.equal(lines.at(-1), "final answer");
 });
 
 test("TUI hides internal wake ids and credential-shaped environment errors", () => {
   const lines: string[] = [];
   renderFrame({ type: "accepted", wakeId: "private-wake-id", value: {} }, (line) => lines.push(line));
   renderFrame({ type: "event", event: { type: "wake.abnormal_reason", data: { reason: "environment variable is missing: pasted-secret-ZAI_API_KEY (set it)" } } }, (line) => lines.push(line));
-  assert.deepEqual(lines, ["CEO started", "! environment variable is missing: [REDACTED] (set it)"]);
+  assert.deepEqual(lines, ["! environment variable is missing: [REDACTED] (set it)"]);
 });

@@ -151,14 +151,20 @@ function frameToLine(frame: ControlFrame): string | null {
 /** Render one control-protocol frame into a transcript line. */
 export function renderFrame(frame: ControlFrame, push: (line: string) => void, appendLive: (text: string) => void = push, commitLive: (text: string) => void = push): void {
   if (frame.type === "error") { push(`! ${safeError(frame.error)}`); return; }
-  if (frame.type === "accepted") { push("CEO started"); return; }
+  if (frame.type === "accepted") return;
+  if (frame.type === "result") {
+    const value = frame.value && typeof frame.value === "object" && !Array.isArray(frame.value) ? frame.value as Record<string, unknown> : {};
+    const response = value.response && typeof value.response === "object" && !Array.isArray(value.response) ? value.response as Record<string, unknown> : {};
+    if (typeof response.content === "string" && response.content.trim()) push(response.content.trim());
+    return;
+  }
   if (frame.type !== "event") return;
   const event = frame.event;
   if (!event || typeof event !== "object" || Array.isArray(event)) return;
   const record = event as Record<string, unknown>;
   const data = record.data && typeof record.data === "object" && !Array.isArray(record.data) ? record.data as Record<string, unknown> : {};
   if (record.type === "tool.called") {
-    push(`→ ${String(data.name)} ${compact(data.arguments ?? {})}`);
+    push(`→ ${String(data.name)}`);
   } else if (record.type === "tool.completed") {
     push(`${data.isError ? "✗" : "✓"} ${String(data.name ?? "tool")} ${data.isError ? "failed" : "completed"}`);
   } else if (record.type === "message.assistant.delta") {
@@ -169,8 +175,11 @@ export function renderFrame(frame: ControlFrame, push: (line: string) => void, a
     const text = messageText(message.content);
     if (text) commitLive(text);
   } else if (record.type === "handoff.recorded") {
-    const results = Array.isArray(data.results) ? data.results : [];
-    for (const result of results) if (typeof result === "string") push(`✓ ${result}`);
+    if (typeof data.goalId === "string") push(`${data.outcome === "blocked" ? "!" : "✓"} Goal ${String(data.outcome).replaceAll("_", " ")} · record r${String(data.recordRevision)}`);
+    else {
+      const results = Array.isArray(data.results) ? data.results : [];
+      for (const result of results) if (typeof result === "string") push(`✓ ${result}`);
+    }
   } else if (record.type === "ceo.human_requested") {
     push(`? human decision requested: ${safeError(compact(record.data ?? {}))}`);
   } else if (record.type === "wake.abnormal_reason") {

@@ -94,7 +94,7 @@ test("Console chat streams a CEO interaction and decisions resolve gated actions
     assert.equal(finished?.status, "done")
     assert.equal(frames.at(-1)?.type, "result")
     assert.ok(frames.some((frame) => frame.type === "accepted"))
-    assert.ok(frames.some((frame) => frame.type === "event" && frame.event?.type === "interaction.completed"))
+    assert.equal(frames.some((frame) => frame.type === "event" && frame.event?.type === "handoff.recorded"), false)
     assert.equal(runtime.ledger.goals().length, 0)
     const second = await fetch(`${metadata.url}api/chat?token=${metadata.token}`, {
       method: "POST",
