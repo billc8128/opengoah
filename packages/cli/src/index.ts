@@ -109,6 +109,35 @@ export function writeDefaultConfig(path = "goah.config.json", options: InitOptio
   writeFileSync(absolute, `${JSON.stringify(defaultConfig(dirname(absolute), options), null, 2)}\n`);
 }
 
+export function profilePath(): string { return join(process.env.GOAH_STATE_HOME ?? join(homedir(), ".goah"), "profile.json"); }
+
+/** Persisted provider defaults; credentials stay as `env:NAME` references and are never written to disk. */
+export function readDefaultProfile(): InitOptions | null {
+  try {
+    const raw = JSON.parse(readFileSync(profilePath(), "utf8")) as Partial<Record<keyof InitOptions, unknown>>;
+    const profile: InitOptions = {};
+    for (const key of ["provider", "model", "apiKeyEnv", "baseUrl", "contextWindowTokens", "maxOutputTokensPerTurn"] as const) {
+      const value = raw[key];
+      if (key === "provider" && typeof value === "string") profile.provider = value as PiProvider;
+      else if (key === "apiKeyEnv" && typeof value === "string") profile.apiKeyEnv = value;
+      else if (key === "baseUrl" && typeof value === "string") profile.baseUrl = value;
+      else if (key === "model" && typeof value === "string") profile.model = value;
+      else if (key === "contextWindowTokens" && typeof value === "number" && Number.isInteger(value)) profile.contextWindowTokens = value;
+      else if (key === "maxOutputTokensPerTurn" && typeof value === "number" && Number.isInteger(value)) profile.maxOutputTokensPerTurn = value;
+    }
+    return Object.keys(profile).length ? profile : null;
+  } catch { return null; }
+}
+
+export function writeDefaultProfile(options: InitOptions): void {
+  const profile: InitOptions = {};
+  for (const key of ["provider", "model", "apiKeyEnv", "baseUrl", "contextWindowTokens", "maxOutputTokensPerTurn"] as const) {
+    if (options[key] !== undefined) (profile as Record<string, unknown>)[key] = options[key];
+  }
+  mkdirSync(dirname(profilePath()), { recursive: true });
+  writeFileSync(profilePath(), `${JSON.stringify(profile, null, 2)}\n`);
+}
+
 export function diagnoseConfig(config: GoahConfig): { ok: boolean; checks: DoctorCheck[] } {
   const checks: DoctorCheck[] = [];
   const check = (name: string, fn: () => string): void => {

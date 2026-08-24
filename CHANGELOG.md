@@ -1,17 +1,26 @@
 # Changelog
 
-## Unreleased
+## 0.8.0
 
-- Added event-sourced working memory: every Agent owns a `memory:{agent}` stream of `memory.appended` facts appended through the role-scoped `memory.append` RPC, injected into future Active Contexts as a bounded advisory tail with `[event:seq]` provenance. The stream is never compacted, handoff remains the structured milestone record, and `goah memory AGENT [--tail N]` inspects notes (ADR 0010).
+- Bare `goah` now works from any directory: missing workspace config falls back to the global profile (`~/.goah/profile.json`, credentials stored as `env:NAME` references), runs first-use onboarding inline on a fresh machine, and materializes the directory's `goah.config.json` automatically. Non-interactive commands without a config fail with an actionable message.
+- The interactive shell is now a full-screen TUI (`@mariozechner/pi-tui`): streaming CEO wake transcript (tool calls, assistant messages, handoffs, blockers), bounded to the last 500 lines, with `/goal`, `/observe`, `/status`, `/approve`, `/reject`, and `/quit`. Non-TTY invocations (pipes, CI) fall back to one-shot streaming output.
+- Fixed a Node 26 readline/promises race in onboarding where piped multi-line input left the second prompt unsettled; prompts now use an explicit line queue.
+
+## 0.7.0
 
 - Replaced the per-agent heartbeat and per-goal progress watchdogs with one mechanical floor: a system-silence tripwire. When no ledger event of any kind appears within `silencePolicy.maxSilentMs` (default 12h), the supervisor mails `notify` (default `ceo`) a decision-level confirmation request; any event from anyone resets the clock, so the cadence is at most one confirmation per silence window. Stall response policy is the CEO's business, not the supervisor's. Remove `heartbeatPolicies`/`progressPolicies` from existing configs (loading now strips them); set `"silencePolicy": null` to disable the tripwire.
 - Ledger contract gained `latestEvent()` for an O(1) global-recency query, covered by the conformance suite.
 
+## 0.6.0
+
+- Added event-sourced working memory: every Agent owns a `memory:{agent}` stream of `memory.appended` facts appended through the role-scoped `memory.append` RPC, injected into future Active Contexts as a bounded advisory tail with `[event:seq]` provenance. The stream is never compacted, handoff remains the structured milestone record, and `goah memory AGENT [--tail N]` inspects notes (ADR 0010).
+- Bash commands run with a process-group timeout: default `GOAH_PI_BASH_TIMEOUT_MS` (120s), per-call `timeoutMs` capped at 10 minutes.
+- Added interactive console chat, approvals, and shared control streaming.
+
 ## 0.5.0
 
+
 - Added durable textual Goal observation methods with SQLite schema v8 migration, root human confirmation, atomic child delegation, revision invalidation, replay, and evidence-backed completion.
-- Added a root-revision barrier that prevents stale child Goals from submitting new gated actions until CEO revises their objective/observation-method pair.
-- Every Pi Agent now receives the `read`, `write`, `edit`, and `bash` coding baseline plus `handoff`; Goah control tools remain role-scoped.
 - Added filesystem-first CEO onboarding policy and Active Context sections for observation methods and revision barriers.
 - Added a resident Supervisor local control socket and interactive `goah` shell, including live goal revisions and observation confirmation while the daemon owns SQLite.
 

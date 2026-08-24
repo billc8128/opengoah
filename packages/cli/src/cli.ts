@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { createInterface } from "node:readline/promises";
+import { createInterface, type Interface as ReadlineInterface } from "node:readline";
+import { runGoahTui } from "./tui.js";
 import { memoryStream, type JsonValue } from "goah-ledger-contract";
-import { controlAvailable, createRuntime, diagnoseConfig, exportSession, listSessions, loadConfig, readConsoleMetadata, replayWakeSession, requestControl, runControlServer, runWebConsole, showSession, showSessionContext, statusSnapshot, streamControl, streamEvents, SupervisorLock, type ConsoleMetadata, type ControlFrame, type ControlRequest, type PiProvider, writeDefaultConfig } from "./index.js";
-
+import { controlAvailable, createRuntime, diagnoseConfig, exportSession, listSessions, loadConfig, readConsoleMetadata, replayWakeSession, requestControl, runControlServer, runWebConsole, showSession, showSessionContext, statusSnapshot, streamControl, streamEvents, SupervisorLock, writeDefaultConfig, writeDefaultProfile, readDefaultProfile, type ConsoleMetadata, type ControlFrame, type ControlRequest, type GoahConfig, type PiProvider } from "./index.js";
 const args = normalizeArgs(process.argv.slice(2));
 
 try {
@@ -37,7 +37,12 @@ async function main(): Promise<void> {
     return;
   }
 
-  const config = loadConfig(configPath, { resolveSecrets: ["start", "run-once", "approve", "ceo-approve"].includes(command) });
+  const config: GoahConfig = command === "interactive"
+    ? (existsSync(configPath) || (await bootstrapWorkspace(configPath), true), loadConfig(configPath, { resolveSecrets: false }))
+    : (() => {
+      if (!existsSync(configPath)) throw new Error(`no Goah workspace here (missing goah.config.json); run \`goah\` to create one interactively, or \`goah init\` for flag-based setup`);
+      return loadConfig(configPath, { resolveSecrets: ["start", "run-once", "approve", "ceo-approve"].includes(command) });
+    })();
   if (command === "doctor") {
     const result = diagnoseConfig(config);
     console.log(JSON.stringify(result, null, 2));
@@ -53,7 +58,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (command === "interactive") { await runInteractive(configPath, config.stateDir, initialMessage); return; }
+  if (command === "interactive") { await runGoahTui(configPath, config.stateDir, initialMessage); return; }
   if (command !== "start" && await controlAvailable(config.stateDir)) {
     const request = remoteRequest(command);
     if (request) { console.log(JSON.stringify(await requestControl(config.stateDir, request), null, 2)); return; }
@@ -156,41 +161,17 @@ async function run(supervisor: ReturnType<typeof createRuntime>["supervisor"], s
   await runSupervisorDaemon(supervisor, { signal });
 }
 
-async function runInteractive(configPath: string, stateDir: string, initialMessage: string | null): Promise<void> {
-  await ensureDaemon(configPath, stateDir);
-  const consoleMetadata = await waitForConsole(stateDir);
-  console.log(`Console: ${consoleMetadata.url}`);
-  const interact = async (message: string) => {
-    await streamControl(stateDir, { op: "interact", message }, (frame) => renderFrame(frame));
-  };
-  if (initialMessage) { await interact(initialMessage); return; }
-  console.log("Goah CEO — type a goal or message. /goal revises the root, /observe confirms its observation method, /status inspects, /quit exits.");
-  const input = createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    while (true) {
-      const line = (await input.question("> ")).trim();
-      if (!line) continue;
-      if (line === "/quit" || line === "/exit") return;
-      if (line === "/status") { console.log(JSON.stringify(await requestControl(stateDir, { op: "ceo.status" }), null, 2)); continue; }
-      if (line.startsWith("/goal ")) {
-        const status = asRecord(await requestControl(stateDir, { op: "ceo.status" }));
-        const root = firstRecord(status.roots);
-        if (!root) throw new Error("no active root goal");
-        console.log(JSON.stringify(await requestControl(stateDir, { op: "goal.update", id: String(root.id), objective: line.slice(6).trim() }), null, 2));
-        continue;
-      }
-      if (line.startsWith("/observe ")) {
-        const status = asRecord(await requestControl(stateDir, { op: "ceo.status" }));
-        const root = firstRecord(status.roots);
-        if (!root) throw new Error("no active root goal");
-        console.log(JSON.stringify(await requestControl(stateDir, { op: "goal.observe", id: String(root.id), observationMethod: line.slice(9).trim() }), null, 2));
-        continue;
-      }
-      await interact(line);
-    }
-  } finally { input.close(); }
+async function waitForConsole(stateDir: string): Promise<ConsoleMetadata> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const metadata = readConsoleMetadata(stateDir);
+    if (metadata) return metadata;
+    const { promise: tick, resolve: resolveWait } = Promise.withResolvers<void>();
+    setTimeout(resolveWait, 100);
+    await tick;
+  }
+  throw new Error("Goah Console did not start; restart the resident Supervisor");
 }
-
 async function ensureDaemon(configPath: string, stateDir: string): Promise<void> {
   if (await controlAvailable(stateDir)) return;
   const child = spawn(process.execPath, [process.argv[1]!, "start", "--config", resolve(configPath)], { cwd: process.cwd(), detached: true, stdio: "ignore", env: process.env });
@@ -198,19 +179,11 @@ async function ensureDaemon(configPath: string, stateDir: string): Promise<void>
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     if (await controlAvailable(stateDir)) return;
-    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+    const { promise: tick, resolve: resolveWait } = Promise.withResolvers<void>();
+    setTimeout(resolveWait, 100);
+    await tick;
   }
   throw new Error("Goah Supervisor did not start; run `goah doctor` and inspect the configured provider credentials");
-}
-
-async function waitForConsole(stateDir: string): Promise<ConsoleMetadata> {
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
-    const metadata = readConsoleMetadata(stateDir);
-    if (metadata) return metadata;
-    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
-  }
-  throw new Error("Goah Console did not start; restart the resident Supervisor");
 }
 
 function openUrl(url: string): void {
@@ -220,24 +193,6 @@ function openUrl(url: string): void {
   child.unref();
 }
 
-function renderFrame(frame: ControlFrame): void {
-  if (frame.type === "error") throw new Error(frame.error);
-  if (frame.type === "accepted") { console.log(`[ceo wake ${frame.wakeId}]`); return; }
-  if (frame.type !== "event") return;
-  const event = asRecord(frame.event);
-  if (event.type === "tool.called") {
-    const data = asRecord(event.data ?? null);
-    console.log(`→ ${String(data.name)} ${JSON.stringify(data.arguments ?? {})}`);
-  } else if (event.type === "message.assistant.completed") {
-    const data = asRecord(event.data ?? null); const message = asRecord(data.message ?? null);
-    const text = messageText(message.content);
-    if (text) console.log(text);
-  } else if (event.type === "handoff.recorded") {
-    const handoff = asRecord(event.data ?? null);
-    for (const result of Array.isArray(handoff.results) ? handoff.results : []) if (typeof result === "string") console.log(result);
-    if (typeof handoff.blocker === "string") console.log(`Blocked: ${handoff.blocker}`);
-  } else if (event.type === "wake.abnormal_reason") console.log(`! ${JSON.stringify(event.data)}`);
-}
 
 function remoteRequest(command: string): ControlRequest | null {
   if (command === "status") return { op: "status" };
@@ -310,4 +265,70 @@ function messageText(value: JsonValue | undefined): string {
   if (typeof value === "string") return value;
   if (!Array.isArray(value)) return "";
   return value.map((item) => item && typeof item === "object" && !Array.isArray(item) && item.type === "text" && typeof item.text === "string" ? item.text : "").filter(Boolean).join("\n");
+}
+
+/** Interactive entry bootstrap: reuse the global profile or run first-use onboarding, then materialize this directory's workspace config. */
+async function bootstrapWorkspace(configPath: string): Promise<void> {
+  const profile = readDefaultProfile();
+  if (!profile) {
+    console.log("No Goah profile found — first-use setup (stored in ~/.goah/profile.json; credentials stay as environment references).");
+    const ask = lineQueue(createInterface({ input: process.stdin, output: process.stdout, terminal: false }));
+    try {
+      const provider = await askProvider(ask);
+      const model = (await ask(`model id${provider === "anthropic" ? " [claude-sonnet-4-6]" : ""}: `)).trim() || (provider === "anthropic" ? "claude-sonnet-4-6" : "");
+      if (!model) throw new Error("model is required");
+      const apiKeyEnv = provider === "faux" ? null : await askApiKeyEnv(ask, provider);
+      const arkLimits = provider === "ark-coding" ? await askArkLimits(ask) : {};
+      writeDefaultProfile({ provider, model, ...(apiKeyEnv ? { apiKeyEnv } : {}), ...arkLimits });
+    } finally { ask.close(); }
+  }
+  writeDefaultConfig(configPath, readDefaultProfile() ?? { provider: "faux" });
+  console.log(`Created ${resolve(configPath)} — this directory is now a Goah workspace.`);
+}
+
+/**
+ * Prompt queue over readline 'line' events. readline/promises `question()` loses lines that arrive
+ * between awaits under piped input (same-tick chunks race the next listener registration), so
+ * onboarding buffers lines itself.
+ */
+function lineQueue(input: ReadlineInterface): ((prompt: string) => Promise<string>) & { close(): void } {
+  const buffered: string[] = [];
+  const waiters: Array<(line: string) => void> = [];
+  input.on("line", (line: string) => { const waiter = waiters.shift(); if (waiter) waiter(line); else buffered.push(line); });
+  const ask = (prompt: string): Promise<string> => {
+    input.setPrompt(prompt);
+    input.prompt();
+    const { promise, resolve } = Promise.withResolvers<string>();
+    const bufferedLine = buffered.shift();
+    if (bufferedLine !== undefined) resolve(bufferedLine);
+    else waiters.push(resolve);
+    return promise;
+  };
+  return Object.assign(ask, { close: () => input.close() });
+}
+
+async function askProvider(ask: (prompt: string) => Promise<string>): Promise<PiProvider> {
+  while (true) {
+    const answer = (await ask("provider [anthropic/openai/ark-coding/faux] (default anthropic): ")).trim();
+    if (!answer) return "anthropic";
+    if (answer === "anthropic" || answer === "openai" || answer === "ark-coding" || answer === "faux") return answer;
+    console.log("unsupported provider, try again");
+  }
+}
+
+async function askApiKeyEnv(ask: (prompt: string) => Promise<string>, provider: PiProvider): Promise<string> {
+  const destination = provider === "anthropic" ? "ANTHROPIC_API_KEY" : provider === "openai" ? "OPENAI_API_KEY" : "ARK_API_KEY";
+  while (true) {
+    const answer = (await ask(`environment variable holding the API key (default ${destination}): `)).trim();
+    if (!answer) return destination;
+    if (/^[A-Z_][A-Z0-9_]*$/.test(answer)) return answer;
+    console.log("expected an environment variable name like MY_PROVIDER_KEY");
+  }
+}
+
+async function askArkLimits(ask: (prompt: string) => Promise<string>): Promise<{ contextWindowTokens: number; maxOutputTokensPerTurn: number }> {
+  const contextWindowTokens = Number((await ask("context window tokens (e.g. 256000): ")).trim());
+  const maxOutputTokensPerTurn = Number((await ask("max output tokens per turn (e.g. 32000): ")).trim());
+  if (!Number.isInteger(contextWindowTokens) || contextWindowTokens <= 0 || !Number.isInteger(maxOutputTokensPerTurn) || maxOutputTokensPerTurn <= 0) throw new Error("ark-coding requires integer context-window and max-output tokens");
+  return { contextWindowTokens, maxOutputTokensPerTurn };
 }

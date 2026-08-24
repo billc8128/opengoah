@@ -1,6 +1,6 @@
 {
   "name": "@goah/cli",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -40,15 +40,23 @@
     "postpack": "node ../../scripts/cleanup-single-package.mjs"
   },
   "dependencies": {
+    "@earendil-works/pi-agent-core": "0.84.2",
+    "@earendil-works/pi-ai": "0.84.2",
+    "@mariozechner/pi-tui": "^0.73.1",
     "goah-ledger-contract": "0.6.0",
     "goah-ledger-sqlite": "0.6.0",
     "goah-runner-pi": "0.6.0",
     "goah-supervisor": "0.6.0",
-    "goah-testkit": "0.6.0",
-    "@earendil-works/pi-agent-core": "0.84.2",
-    "@earendil-works/pi-ai": "0.84.2"
+    "goah-testkit": "0.6.0"
   },
   "bundledDependencies": [
+    "goah-ledger-contract",
+    "goah-ledger-sqlite",
+    "goah-runner-pi",
+    "goah-supervisor",
+    "goah-testkit"
+  ],
+  "bundleDependencies": [
     "goah-ledger-contract",
     "goah-ledger-sqlite",
     "goah-runner-pi",

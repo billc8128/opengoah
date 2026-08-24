@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.0
+
+- Bare `goah` works from any directory: global profile (`~/.goah/profile.json`) with inline first-use onboarding and automatic workspace config materialization; non-interactive commands fail with an actionable message.
+- Interactive shell is now a full-screen TUI (`@mariozechner/pi-tui`) streaming CEO wakes with `/goal`, `/observe`, `/status`, `/approve`, `/reject`; non-TTY falls back to one-shot streaming.
+
 ## 0.7.0
 
 - Config gains `silencePolicy`; loading strips removed `heartbeatPolicies`/`progressPolicies` keys and `goah init` writes the explicit 12h silence default.
