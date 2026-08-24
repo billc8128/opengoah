@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { RunRequest, WakeSnapshot, WakeOutput } from "goah-ledger-contract";
 import { PiRunnerAdapter, ProcessRunner, type PiDriver } from "./index.js";
-import { compactMessages, compactMessagesToTokenBudget, resolveContextPolicy, snapshotModelConfig, validateNextWakeAt } from "./pi-worker.js";
+import { bashTimeoutMs, compactMessages, compactMessagesToTokenBudget, resolveContextPolicy, runBashCommand, snapshotModelConfig, validateNextWakeAt } from "./pi-worker.js";
 import { createPiModel, providerApiKey } from "./model-provider.js";
 
 const wake: WakeSnapshot = { id: "w", agent: "a", triggerRef: "t", status: "running", leaseUntil: "2026-08-18T00:01:00.000Z", attempt: 1, startedAt: "2026-08-18T00:00:00.000Z", endedAt: null, enqueuedSeq: 1, leaseToken: "lease", runnerPid: null };
@@ -33,6 +33,23 @@ test("runner policy is external and a multi-step driver can hand off", async () 
   handle.begin();
   const result = await handle.result;
   assert.equal(result.outcome, "handoff");
+});
+
+test("bash commands are killed by process-group timeout and become visible tool errors", async () => {
+  assert.equal(bashTimeoutMs(undefined, { GOAH_PI_BASH_TIMEOUT_MS: "500" }), 500);
+  assert.equal(bashTimeoutMs(undefined, {}), 120_000);
+  assert.equal(bashTimeoutMs(60_000_000, {}), 600_000);
+  assert.equal(bashTimeoutMs(-5, {}), 120_000);
+
+  const started = Date.now();
+  const hung = await runBashCommand(process.cwd(), { command: "sleep 30", timeoutMs: 200 });
+  assert.equal(hung.isError, true);
+  assert.match(hung.content[0]?.text ?? "", /timed out/);
+  assert.ok(Date.now() - started < 5_000);
+
+  const fast = await runBashCommand(process.cwd(), { command: "printf ok", timeoutMs: 5_000 });
+  assert.notEqual(fast.isError, true);
+  assert.match(fast.content[0]?.text ?? "", /ok/);
 });
 
 test("stopping without handoff is abnormal", async () => {

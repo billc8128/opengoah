@@ -16,6 +16,7 @@ export interface GoahConfig {
   approvers?: string[];
   auditWriters?: string[];
   heartbeatPolicies?: Array<{ agent: string; maxSilentMs: number; escalateTo: string; since?: string }>;
+  progressPolicies?: Array<{ rootGoalId: string; maxSilentMs: number; escalateTo: string }>;
   retryPolicy?: { maxAttempts: number; baseDelayMs: number };
   verifyMetricsAfterWake?: boolean;
   connectors?: Array<{ manifest: ConnectorManifest; command: string; args: string[]; env?: Record<string, string>; timeoutMs?: number }>;
@@ -62,6 +63,7 @@ export function createRuntime(config: GoahConfig): { ledger: SqliteLedger; super
     ...(config.approvers ? { approvers: config.approvers } : {}),
     ...(config.auditWriters ? { auditWriters: config.auditWriters } : {}),
     ...(config.heartbeatPolicies ? { heartbeatPolicies: config.heartbeatPolicies } : {}),
+    ...(config.progressPolicies ? { progressPolicies: config.progressPolicies } : {}),
     ...(config.retryPolicy ? { retryPolicy: config.retryPolicy } : {}),
     ...(config.verifyMetricsAfterWake !== undefined ? { verifyMetricsAfterWake: config.verifyMetricsAfterWake } : {}),
   });

@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
-import type { JsonValue } from "goah-ledger-contract";
+import { memoryStream, type JsonValue } from "goah-ledger-contract";
 import { controlAvailable, createRuntime, diagnoseConfig, exportSession, listSessions, loadConfig, readConsoleMetadata, replayWakeSession, requestControl, runControlServer, runWebConsole, showSession, showSessionContext, statusSnapshot, streamControl, streamEvents, SupervisorLock, type ConsoleMetadata, type ControlFrame, type ControlRequest, type PiProvider, writeDefaultConfig } from "./index.js";
 
 const args = normalizeArgs(process.argv.slice(2));
@@ -113,6 +113,10 @@ async function main(): Promise<void> {
       console.log(JSON.stringify(showSessionContext(ledger, requiredPositional(2, "wake id")), null, 2));
     } else if (command === "events") {
       console.log(JSON.stringify(streamEvents(ledger, required("--stream"), option("--from") ? numberOption("--from") : 1), null, 2));
+    } else if (command === "memory") {
+      const tail = option("--tail") ? numberOption("--tail") : 50;
+      const notes = ledger.readStream(memoryStream(requiredPositional(1, "agent"))).filter((event) => event.type === "memory.appended").slice(-tail);
+      console.log(JSON.stringify(notes.map((event) => ({ seq: event.seq, ts: event.ts, note: (event.data as { note?: unknown }).note ?? null, wakeId: (event.data as { wakeId?: unknown }).wakeId ?? null })), null, 2));
     } else if (command === "goal-list") console.log(JSON.stringify(ledger.goals(), null, 2));
     else if (command === "goal-show") {
       const goal = ledger.goal(requiredPositional(1, "goal id"));
@@ -269,6 +273,7 @@ goah session list
 goah session show|replay|export WAKE_ID [--output FILE] [--raw]
 goah context show WAKE_ID
 goah events --stream STREAM_ID [--from N]
+goah memory AGENT [--tail N]
 goah start | web [--open] | status | goal-list | action-list | approve | reject | dashboard
 Runner file and Git operations execute locally under the directory containing goah.config.json.`);
 }
@@ -298,7 +303,7 @@ function normalizeArgs(values: string[]): string[] {
   if ((values[0] === "goal" || values[0] === "ceo") && values[1] && !values[1].startsWith("--")) return [`${values[0]}-${values[1]}`, ...values.slice(2)];
   return values;
 }
-function knownCommand(value: string): boolean { return ["help", "init", "doctor", "web", "start", "run-once", "wake", "status", "session", "context", "events", "goal-list", "goal-show", "goal-create", "goal-update", "goal-pause", "goal-resume", "goal-complete", "goal-start", "ceo-send", "ceo-status", "ceo-inbox", "ceo-approve", "action-list", "approve", "reject", "dashboard"].includes(value); }
+function knownCommand(value: string): boolean { return ["help", "init", "doctor", "web", "start", "run-once", "wake", "status", "session", "context", "events", "memory", "goal-list", "goal-show", "goal-create", "goal-update", "goal-pause", "goal-resume", "goal-complete", "goal-start", "ceo-send", "ceo-status", "ceo-inbox", "ceo-approve", "action-list", "approve", "reject", "dashboard"].includes(value); }
 function asRecord(value: JsonValue): Record<string, JsonValue> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("expected an object"); return value; }
 function firstRecord(value: JsonValue | undefined): Record<string, JsonValue> | null { return Array.isArray(value) && value[0] && typeof value[0] === "object" && !Array.isArray(value[0]) ? value[0] : null; }
 function messageText(value: JsonValue | undefined): string {

@@ -43,6 +43,7 @@ Implemented and tested today:
 - Official Pi 0.84.2 worker binding with `read`, `write`, `edit`, and `bash` for every Agent plus model-view-only mid-turn compaction
 - Durable textual Goal observation methods with root human confirmation, atomic child assignment, revision invalidation, replay, and evidence-backed completion
 - Interactive `goah` CEO shell over a resident Supervisor local control socket, including live goal revisions while Supervisor remains the only SQLite writer
+- Event-sourced agent working memory: `memory:{agent}` streams, role-scoped `memory.append` facts, and a bounded advisory Active Context tail that preserves procedural knowledge, hypotheses, and abandoned approaches across wakes without provider session state (ADR 0010)
 - CEO sole-entry flow with automatic root wake, filesystem-first onboarding, ledger-derived team roster, atomic delegation/reassignment, stale-child action barriers, motion validation, concurrent child agents, and a read-only team dashboard
 - Session verifier plus blind-first global audit interfaces, audit-advice delivery, and precision/risk-weighted-recall evaluation
 - Repo-guardian reference application, systemd/launchd templates, and an accelerated 30-day replay/continuity soak

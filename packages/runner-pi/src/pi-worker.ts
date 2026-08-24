@@ -1,7 +1,6 @@
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
-import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { Agent, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall, Type, type Message } from "@earendil-works/pi-ai";
@@ -9,7 +8,6 @@ import { SESSION_FORMAT_VERSION, type AgentCapability, type JsonValue, type Runn
 import { runProcessWorker, type WorkerRpc } from "./index.js";
 import { createPiModel, providerApiKey } from "./model-provider.js";
 
-const execFileAsync = promisify(execFile);
 
 export function compactMessages(messages: AgentMessage[], maxRecent = 8): AgentMessage[] {
   if (messages.length <= maxRecent + 1) return messages;
@@ -80,7 +78,7 @@ export async function runPiWorker(): Promise<void> {
             sourceSeqs,
           },
         });
-        return models.streamSimple(requestModel, context, options);
+        return models.streamSimple(requestModel, context, { ...options, ...(process.env.GOAH_PI_CACHE_RETENTION === "none" ? { cacheRetention: "none" as const } : {}) });
       },
       getApiKey: (id) => providerApiKey(id),
       transformContext: async (messages) => {
@@ -183,15 +181,50 @@ function createTools(root: string, handoff: (output: WakeOutput) => void, rpc: W
     },
   };
   const bashTool: AgentTool<any> = {
-    name: "bash", label: "Bash", description: "Run a shell command inside the local runner root.",
-    parameters: Type.Object({ command: Type.String() }), executionMode: "sequential",
-    execute: async (_id, params, signal) => {
-      const input = params as { command: string };
-      const result = await execFileAsync("/bin/sh", ["-lc", input.command], { cwd: root, env: toolEnvironment(), signal, maxBuffer: 1_000_000 });
-      return { content: [{ type: "text", text: `${result.stdout}${result.stderr}`.slice(-50_000) }], details: { command: input.command } };
-    },
+    name: "bash", label: "Bash",
+    description: "Run a shell command inside the local runner root. The command's process group is killed after the timeout; declare timeoutMs explicitly for builds, installs, or deployment waits that need longer.",
+    parameters: Type.Object({ command: Type.String(), timeoutMs: Type.Optional(Type.Number()) }), executionMode: "sequential",
+    execute: async (_id, params, signal) => runBashCommand(root, params as { command: string; timeoutMs?: number }, signal),
   };
   return [readTool, writeTool, editTool, bashTool, ...rpcTools, handoffTool];
+}
+
+const BASH_TIMEOUT_HARD_CAP_MS = 600_000;
+
+export function bashTimeoutMs(requested: number | undefined, env: NodeJS.ProcessEnv = process.env): number {
+  const fallback = integerSetting(env.GOAH_PI_BASH_TIMEOUT_MS, 120_000);
+  const value = requested ?? fallback;
+  return Number.isFinite(value) && value > 0 ? Math.min(value, BASH_TIMEOUT_HARD_CAP_MS) : fallback;
+}
+
+/** Shell execution with a process-group timeout: a hung command becomes a model-visible tool error instead of a stalled wake. */
+export async function runBashCommand(root: string, input: { command: string; timeoutMs?: number }, signal?: AbortSignal): Promise<{ content: Array<{ type: "text"; text: string }>; details: unknown; isError?: boolean }> {
+  const timeoutMs = bashTimeoutMs(input.timeoutMs);
+  const child = spawn("/bin/sh", ["-lc", input.command], { cwd: root, env: toolEnvironment(), detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "";
+  let stderr = "";
+  let timedOut = false;
+  let outputOverflow = false;
+  child.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString(); if (stdout.length > 1_000_000) outputOverflow = true; });
+  child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); if (stderr.length > 1_000_000) outputOverflow = true; });
+  const killGroup = () => { if (child.pid) { try { process.kill(process.platform === "win32" ? child.pid : -child.pid, "SIGKILL"); } catch {} } };
+  const timer = setTimeout(() => { timedOut = true; killGroup(); }, timeoutMs);
+  const onAbort = () => killGroup();
+  signal?.addEventListener("abort", onAbort, { once: true });
+  const close = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code, signalName) => resolve({ code, signal: signalName }));
+  });
+  try {
+    if (outputOverflow) killGroup();
+    const result = await close;
+    if (timedOut) return { content: [{ type: "text", text: `Command timed out after ${timeoutMs}ms and its process group was killed. Declare a larger timeoutMs for long-running commands.` }], details: { command: input.command, timedOutAfterMs: timeoutMs }, isError: true };
+    if (signal?.aborted) return { content: [{ type: "text", text: "Command aborted with the wake." }], details: { command: input.command }, isError: true };
+    return { content: [{ type: "text", text: `${stdout}${stderr}`.slice(-50_000) }], details: { command: input.command, exitCode: result.code, signal: result.signal, ...(outputOverflow ? { outputOverflow: true } : {}) }, ...(outputOverflow ? { isError: true } : {}) };
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
+  }
 }
 
 export function validateNextWakeAt(value: string | undefined, wakeStartedAt: string | null): string | null {
@@ -245,6 +278,7 @@ function createRpcTools(rpc: WorkerRpc, allowed?: ReadonlySet<AgentCapability>):
   });
   const definitions: Array<[AgentCapability, AgentTool<any>]> = [
     ["ledger.search", tool("ledger_search", "Search durable ledger facts.", "ledger.search", Type.Object({ query: Type.String(), limit: Type.Optional(Type.Number()) }))],
+    ["memory.append", tool("memory_append", "Append a durable working-memory note that is injected into your future wakes. Record procedural knowledge, active hypotheses, and abandoned approaches with the reason; keep notes concise.", "memory.append", Type.Object({ note: Type.String() }))],
     ["mail.send", tool("send_mail", "Send a durable message to another agent or human.", "mail.send", Type.Object({ to: Type.String(), level: Type.Union([Type.Literal("fyi"), Type.Literal("decision"), Type.Literal("emergency")]), body: Type.Any() }))],
     ["schedule.set", tool("schedule_wake", "Schedule this agent's next wake.", "schedule.set", Type.Object({ at: Type.String(), reason: Type.String() }))],
     ["action.submit", tool("submit_action", "Submit a gated external action with evidence.", "action.submit", Type.Object({ id: Type.String(), kind: Type.String(), connector: Type.String(), payload: Type.Any(), reason: Type.String(), evidence: Type.Array(Type.Number()) }))],

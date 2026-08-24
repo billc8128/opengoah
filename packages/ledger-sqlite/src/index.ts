@@ -219,6 +219,7 @@ export class SqliteLedger implements Ledger {
       return existing;
     }
     if (!request.id.trim() || !request.reason.trim()) throw new Error("delegation id and reason are required");
+    if (request.childGoal.owner === actor) throw new Error("delegate to a distinct worker agent; use goal.put for self-owned subgoals");
     if (!request.childGoal.id.trim() || !request.childGoal.objective.trim() || !request.childGoal.observationMethod.trim() || !request.childGoal.owner.trim()) throw new Error("delegation child goal is incomplete");
     this.#assertEvidenceExists(request.evidence);
     const parent = this.#getGoal(request.parentGoalId);

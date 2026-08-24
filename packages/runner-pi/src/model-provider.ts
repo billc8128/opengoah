@@ -26,7 +26,24 @@ export function createPiModel(provider: string, modelId: string, env: NodeJS.Pro
   let model: Model<Api> | undefined;
   if (provider === "anthropic") {
     models.setProvider(anthropicProvider());
-    model = models.getModel(provider, modelId);
+    const baseUrl = env.GOAH_PI_BASE_URL;
+    const known = knownModel(() => models.getModel(provider, modelId));
+    if (known) {
+      model = known;
+      if (baseUrl) model = { ...model, baseUrl } as Model<Api>;
+    } else {
+      if (!baseUrl) throw new Error(`Pi model not found: ${provider}/${modelId}`);
+      const capabilities = env.GOAH_PI_MODEL_CAPABILITIES
+        ? parseModelCapabilities(env.GOAH_PI_MODEL_CAPABILITIES)
+        : { contextWindowTokens: 200_000, maxOutputTokensPerTurn: 32_768 };
+      model = {
+        id: modelId, name: modelId, api: "anthropic-messages", provider, baseUrl,
+        reasoning: false, input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: capabilities.contextWindowTokens,
+        maxTokens: capabilities.maxOutputTokensPerTurn,
+      };
+    }
   } else if (provider === "openai") {
     models.setProvider(openaiProvider());
     model = models.getModel(provider, modelId);
@@ -64,6 +81,10 @@ export function createPiModel(provider: string, modelId: string, env: NodeJS.Pro
   }
   if (!model) throw new Error(`Pi model not found: ${provider}/${modelId}`);
   return { models, model };
+}
+
+function knownModel(resolve: () => Model<Api> | undefined): Model<Api> | undefined {
+  try { return resolve(); } catch { return undefined; }
 }
 
 export function parseModelCapabilities(value: string | undefined): ModelCapabilities {

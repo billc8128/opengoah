@@ -21,6 +21,8 @@ export interface ActiveContextInput {
   team: TeamMemberView[];
   revisionWarnings: string[];
   recoveryEvents: EventRecord[];
+  /** Durable agent-owned working-memory facts; injected as a bounded advisory tail. */
+  workingMemory?: readonly EventRecord[];
 }
 
 /** Keep recovery actionable and bounded; raw Session history remains queryable in the ledger. */
@@ -34,6 +36,21 @@ export function selectRecoveryEvents(events: EventRecord[]): EventRecord[] {
   });
 }
 
+/** Keep the newest notes within a character budget; the full stream is never compacted. */
+export function selectWorkingMemory(events: readonly EventRecord[], charBudget: number): EventRecord[] {
+  const notes = events.filter((event) => event.type === "memory.appended");
+  const tail: EventRecord[] = [];
+  let used = 0;
+  for (let index = notes.length - 1; index >= 0; index -= 1) {
+    const event = notes[index]!;
+    const length = String(field(event.data, "note") ?? "").length;
+    if (tail.length > 0 && used + length > charBudget) break;
+    tail.push(event);
+    used += length;
+  }
+  return tail.reverse();
+}
+
 /** Deterministically render structured projections into the model's short working set. */
 export function composeActiveContext(input: ActiveContextInput): ActiveContextView {
   const handoff = input.lastHandoff?.data as { observations?: unknown; results?: unknown; nextSteps?: unknown; blocker?: unknown } | undefined;
@@ -42,12 +59,14 @@ export function composeActiveContext(input: ActiveContextInput): ActiveContextVi
   for (const event of input.teamHandoffs) sourceSeqs.add(event.seq);
   for (const event of input.recoveryEvents) sourceSeqs.add(event.seq);
   for (const action of input.actions) for (const seq of action.evidence) sourceSeqs.add(seq);
+  for (const event of input.workingMemory ?? []) sourceSeqs.add(event.seq);
 
   const sections: Array<[string, string[]]> = [
     ["Objectives", input.goals.map((goal) => `- [${goal.id}] ${goal.objective} (owner: ${goal.owner}, phase: ${goal.phase}, revision: ${goal.revision})`)],
     ["Observation methods", input.goals.map((goal) => `## ${goal.id}\n\n${goal.observationMethod ?? "MISSING — inspect the project and request authoritative confirmation before claiming progress or completion."}`)],
     ["Revision barriers", input.revisionWarnings.map((warning) => `- ${warning}`)],
     ["Wake", [`- Trigger: ${input.wake.triggerRef}`, `- Attempt: ${input.wake.attempt}`]],
+    ["Working memory", (input.workingMemory ?? []).map((event) => `- ${String(field(event.data, "note") ?? "")} [event:${event.seq}]`)],
     ["Current state", lines(handoff?.observations)],
     ["Verified", lines(handoff?.results).map((line) => `${line}${input.lastHandoff ? ` [event:${input.lastHandoff.seq}]` : ""}`)],
     ["Open", [

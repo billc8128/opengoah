@@ -34,3 +34,4 @@ export interface Clock { now(): Date }
 export function wakeStream(wakeId: string): string { return `wake:${wakeId}`; }
 export function controlStream(actor = "supervisor"): string { return `control:${actor}`; }
 export function goalStream(goalId: string): string { return `goal:${goalId}`; }
+export function memoryStream(agent: string): string { return `memory:${agent}`; }

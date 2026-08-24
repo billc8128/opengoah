@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Added event-sourced working memory: every Agent owns a `memory:{agent}` stream of `memory.appended` facts appended through the role-scoped `memory.append` RPC, injected into future Active Contexts as a bounded advisory tail with `[event:seq]` provenance. The stream is never compacted, handoff remains the structured milestone record, and `goah memory AGENT [--tail N]` inspects notes (ADR 0010).
+- Bash commands now run with a process-group timeout: default `GOAH_PI_BASH_TIMEOUT_MS` (120s), per-call `timeoutMs` with a 10-minute hard cap. A hung command is killed and surfaced to the model as a tool error instead of stalling the wake until the runner-level timeout.
+
 ## 0.5.0
 
 - Added durable textual Goal observation methods with SQLite schema v8 migration, root human confirmation, atomic child delegation, revision invalidation, replay, and evidence-backed completion.

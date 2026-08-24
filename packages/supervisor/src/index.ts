@@ -23,6 +23,7 @@ import {
   type JsonValue,
   type Ledger,
   type MailSnapshot,
+  memoryStream,
   type MetricEvaluation,
   type MetricContract,
   type MetricProcessSpec,
@@ -37,17 +38,19 @@ import {
   type WakeSnapshot,
   wakeStream,
 } from "goah-ledger-contract";
-import { composeActiveContext, selectRecoveryEvents } from "./context-view.js";
+import { composeActiveContext, selectRecoveryEvents, selectWorkingMemory } from "./context-view.js";
 import { defaultRolePrompt } from "./roles.js";
 
 export { composeActiveContext, selectRecoveryEvents, type ActiveContextInput, type ActiveContextView } from "./context-view.js";
 
 export interface SupervisorOptions {
   leaseMs?: number;
+  memoryTailChars?: number;
   allowExternalActions?: boolean;
   approvers?: string[];
   auditWriters?: string[];
   heartbeatPolicies?: Array<{ agent: string; maxSilentMs: number; escalateTo: string; since?: string }>;
+  progressPolicies?: Array<{ rootGoalId: string; maxSilentMs: number; escalateTo: string }>;
   retryPolicy?: { maxAttempts: number; baseDelayMs: number };
   profiles?: AgentProfile[];
   verifyMetricsAfterWake?: boolean;
@@ -57,6 +60,7 @@ interface MetricCollectorRegistration { goalId: string; contract: MetricContract
 
 export class Supervisor {
   readonly #leaseMs: number;
+  readonly #memoryTailChars: number;
   readonly #allowExternalActions: boolean;
   readonly #approvers: Set<string>;
   readonly #auditWriters: Set<string>;
@@ -65,16 +69,19 @@ export class Supervisor {
   readonly #metricCollectors = new Map<string, MetricCollectorRegistration>();
   readonly #metricContracts = new Map<string, MetricContract>();
   readonly #heartbeatPolicies: NonNullable<SupervisorOptions["heartbeatPolicies"]>;
+  readonly #progressPolicies: NonNullable<SupervisorOptions["progressPolicies"]>;
   readonly #retryPolicy: NonNullable<SupervisorOptions["retryPolicy"]>;
   readonly #profiles: Map<string, AgentProfile>;
   readonly #verifyMetricsAfterWake: boolean;
 
   constructor(readonly ledger: Ledger, readonly runner: Runner, readonly clock: Clock, options: SupervisorOptions = {}) {
     this.#leaseMs = options.leaseMs ?? 30_000;
+    this.#memoryTailChars = options.memoryTailChars ?? 12_000;
     this.#allowExternalActions = options.allowExternalActions ?? false;
     this.#approvers = new Set(options.approvers ?? ["human", "ceo"]);
     this.#auditWriters = new Set(options.auditWriters ?? ["verifier", "audit"]);
     this.#heartbeatPolicies = options.heartbeatPolicies ?? [];
+    this.#progressPolicies = options.progressPolicies ?? [];
     this.#retryPolicy = options.retryPolicy ?? { maxAttempts: 0, baseDelayMs: 1_000 };
     this.#profiles = new Map([["ceo", { agent: "ceo", role: "ceo" } satisfies AgentProfile], ...(options.profiles ?? []).map((profile) => [profile.agent, profile] as const)]);
     this.#verifyMetricsAfterWake = options.verifyMetricsAfterWake ?? false;
@@ -231,6 +238,7 @@ export class Supervisor {
       for (const schedule of this.ledger.dueSchedules(this.#now())) this.#enqueueSchedule(schedule);
       await this.#collectMetrics();
       this.#scheduleMetricAndHeartbeatAlerts();
+      this.#checkProgressPolicies();
       for (const mail of this.ledger.triggeringMail()) this.#enqueueTrigger(mail.to, `mail:${mail.id}`);
       const now = this.clock.now();
       const leaseToken = randomUUID();
@@ -419,7 +427,8 @@ export class Supervisor {
       : [];
     const actions = this.ledger.actions().filter((action) => action.agent === wake.agent && (action.status === "unknown" || Boolean(action.auditAdvice && !action.adviceAcked)));
     const revisionWarnings = goals.flatMap((goal) => this.#goalRevisionWarning(goal));
-    return composeActiveContext({ role, capabilities, systemPrompt: profile.systemPrompt ?? defaultRolePrompt(role), wake, goals, mail, actions, lastHandoff: handoff, teamHandoffs, team: role === "ceo" ? this.teamList() : [], revisionWarnings, recoveryEvents }) as unknown as JsonValue;
+    const workingMemory = selectWorkingMemory(this.ledger.readStream(memoryStream(wake.agent)), this.#memoryTailChars);
+    return composeActiveContext({ role, capabilities, systemPrompt: profile.systemPrompt ?? defaultRolePrompt(role), wake, goals, mail, actions, lastHandoff: handoff, teamHandoffs, team: role === "ceo" ? this.teamList() : [], revisionWarnings, recoveryEvents, workingMemory }) as unknown as JsonValue;
   }
 
   #requiredConnector(name: string): ConnectorProcessSpec { const value = this.#connectors.get(name); if (!value) throw new Error(`connector not registered: ${name}`); return value; }
@@ -481,6 +490,12 @@ export class Supervisor {
       const mail = { id: randomUUID(), to: String(input.to), from: wake.agent, level: String(input.level) as "fyi" | "decision" | "emergency", body: (input.body ?? null) as JsonValue, readAt: null };
       this.ledger.putMail(mail, wake.agent, wake.id); return mail as unknown as JsonValue;
     }
+    if (method === "memory.append") {
+      const note = String(input.note ?? "").trim();
+      if (!note) throw new Error("memory note cannot be empty");
+      const record = this.ledger.appendEvent({ streamId: memoryStream(wake.agent), ts: this.#now(), actor: wake.agent, type: "memory.appended", data: { note, wakeId: wake.id } });
+      return { seq: record.seq, streamSeq: record.streamSeq } as unknown as JsonValue;
+    }
     if (method === "schedule.set") return (this.planWake(wake.agent, String(input.at), String(input.reason), wake.agent) ?? { scheduled: true }) as unknown as JsonValue;
     if (method === "audit.ack") return this.ackAuditAdvice(String(input.actionId), wake.agent) as unknown as JsonValue;
     if (method === "audit.write") return this.putAuditAdvice(String(input.actionId), { by: wake.agent, body: (input.body ?? null) as JsonValue, evidence: numberArray(input.evidence) }, wake.id) as unknown as JsonValue;
@@ -518,6 +533,29 @@ export class Supervisor {
       this.ledger.appendEvent({ streamId: controlStream("watchdog"), ts: this.#now(), actor: "supervisor", type: "watchdog.heartbeat_violation", data: { agent: policy.agent, lastHandoffAt: last?.ts ?? null, escalateTo: policy.escalateTo } });
       this.#enqueueTrigger(policy.escalateTo, trigger);
     }
+  }
+
+  /** Active roots must show material progress; a silent organization is a mechanical violation, not a judgment call. */
+  #checkProgressPolicies(): void {
+    for (const policy of this.#progressPolicies) {
+      const goal = this.ledger.goal(policy.rootGoalId);
+      if (!goal || goal.phase !== "active") continue;
+      const last = this.#lastMaterialProgress(goal.id);
+      const baseline = last?.ts ?? this.ledger.readStream(goalStream(goal.id))[0]?.ts ?? this.#now();
+      const silentMs = this.clock.now().getTime() - Date.parse(baseline);
+      const mailId = `stall:${goal.id}:${last?.seq ?? 0}`;
+      if (silentMs <= policy.maxSilentMs || this.ledger.mailbox().some((mail) => mail.id === mailId && mail.readAt === null)) continue;
+      this.ledger.appendEvent({ streamId: controlStream("watchdog"), ts: this.#now(), actor: "supervisor", type: "watchdog.progress_stall", data: { goalId: goal.id, silentMs, lastMaterialSeq: last?.seq ?? null, escalatedTo: policy.escalateTo } });
+      this.ledger.putMail({ id: mailId, to: policy.escalateTo, from: "supervisor", level: "emergency", readAt: null, body: { type: "progress_stall", goalId: goal.id, silentMs, lastMaterialSeq: last?.seq ?? null, directive: "Active goal stalled. Enumerate work you can do now without the blocked external dependency, delegate it to distinct worker agents, execute, and hand off material progress. A blocker justifies waiting for that dependency only, not for the whole goal." } }, "supervisor");
+    }
+  }
+
+  #lastMaterialProgress(rootGoalId: string): import("goah-ledger-contract").EventRecord | null {
+    for (const event of [...this.ledger.eventsSince(0, ["handoff.recorded", "goal.put"])].reverse()) {
+      if (event.type === "goal.put") return event;
+      if ((event.data as { material?: unknown }).material === true) return event;
+    }
+    return null;
   }
 }
 
@@ -611,10 +649,10 @@ function asChildGoal(value: JsonValue | undefined): { id: string; objective: str
   return { id: String(input.id), objective: String(input.objective), observationMethod: String(input.observationMethod), owner: String(input.owner) };
 }
 function defaultCapabilities(role: AgentRole): AgentCapability[] {
-  if (role === "ceo") return ["ledger.search", "mail.send", "schedule.set", "action.submit", "audit.ack", "team.list", "goal.delegate", "goal.reassign", "goal.revise", "goal.pause", "goal.resume", "goal.complete", "human.request"];
-  if (role === "verifier") return ["ledger.search", "mail.send", "audit.write"];
-  if (role === "audit") return ["ledger.search", "mail.send", "audit.write"];
-  return ["ledger.search", "mail.send", "schedule.set", "action.submit", "audit.ack"];
+  if (role === "ceo") return ["ledger.search", "mail.send", "schedule.set", "action.submit", "audit.ack", "memory.append", "team.list", "goal.delegate", "goal.reassign", "goal.revise", "goal.pause", "goal.resume", "goal.complete", "human.request"];
+  if (role === "verifier") return ["ledger.search", "mail.send", "memory.append", "audit.write"];
+  if (role === "audit") return ["ledger.search", "mail.send", "memory.append", "audit.write"];
+  return ["ledger.search", "mail.send", "schedule.set", "action.submit", "audit.ack", "memory.append"];
 }
 
 export * from "./verification.js";

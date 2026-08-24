@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { EventRecord } from "goah-ledger-contract";
-import { composeActiveContext, selectRecoveryEvents } from "./context-view.js";
+import { composeActiveContext, selectRecoveryEvents, selectWorkingMemory } from "./context-view.js";
 
 function event(streamSeq: number, type: string, data: EventRecord["data"] = {}): EventRecord {
   return { seq: streamSeq, streamId: "wake:failed", streamSeq, ts: "2030-01-01T00:00:00.000Z", actor: "worker", type, data };
@@ -28,4 +28,26 @@ test("recovery context selects semantic failure facts instead of raw session tra
   assert.ok(view.text.length < 1_000);
   assert.doesNotMatch(view.text, /message\.assistant\.delta|request\.prepared/);
   assert.match(view.text, /unknown|SIGKILL/);
+});
+
+test("working memory keeps the newest notes inside the budget without compacting the stream", () => {
+  const notes = [
+    event(1, "memory.appended", { note: "a".repeat(40) }),
+    event(2, "memory.appended", { note: "b".repeat(40) }),
+    event(3, "memory.appended", { note: "c".repeat(40) }),
+    event(4, "session.completed"),
+  ];
+  assert.deepEqual(selectWorkingMemory(notes, 100).map((item) => item.streamSeq), [2, 3]);
+  assert.deepEqual(selectWorkingMemory(notes, 10).map((item) => item.streamSeq), [3]);
+  assert.deepEqual(selectWorkingMemory([], 100), []);
+});
+
+test("active context renders working memory with evidence sequences", () => {
+  const note = event(7, "memory.appended", { note: "integration tests fake-fail when the clock is mocked; approach A rejected: metric freshness" });
+  const view = composeActiveContext({
+    role: "child", capabilities: ["memory.append"], systemPrompt: "worker", wake: { id: "w2", agent: "worker", triggerRef: "schedule:worker", status: "running", leaseUntil: "2030-01-01T00:01:00.000Z", attempt: 1, startedAt: "2030-01-01T00:00:00.000Z", endedAt: null, enqueuedSeq: 1, leaseToken: "lease", runnerPid: 1 },
+    goals: [], mail: [], actions: [], lastHandoff: null, teamHandoffs: [], team: [], revisionWarnings: [], recoveryEvents: [], workingMemory: [note],
+  });
+  assert.match(view.text, /# Working memory\n\n- integration tests fake-fail[^\n]*\[event:7\]/);
+  assert.equal(view.sourceSeqs.includes(7), true);
 });
