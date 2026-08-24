@@ -1,12 +1,12 @@
 # Goah Goal-bound Agent Operating Model
 
-Status: proposed
-Version: 0.1
+Status: implemented on `main`; operational validation pending
+Version: 1.0
 Date: 2026-08-25
 
-This document defines the target architecture for making Goah feel like a normal interactive Agent without weakening its long-running, goal-oriented operating model. It is a design target, not a claim about the current implementation.
+This document defines the implemented architecture for making Goah feel like a normal interactive Agent without weakening its long-running, goal-oriented operating model.
 
-After implementation, this proposal supersedes the interaction and continuity model in [Goah CEO Agent Operating Layer](./ceo-agent-operating-layer.md). Existing accepted ADRs remain historical records; a follow-up ADR must name the exact decisions superseded by this model.
+This model supersedes the interaction and continuity model in [Goah CEO Agent Operating Layer](./ceo-agent-operating-layer.md). [ADR 0011](../adr/0011-goal-bound-turns-and-work-record-filesystem.md) records the exact decisions changed while earlier ADRs remain historical records.
 
 ## 1. Decision summary
 
@@ -844,15 +844,4 @@ Hide by default:
 
 ## 21. Documentation transition
 
-While this proposal is unimplemented:
-
-- [Goah architecture v2](../../Goah-%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1-v2.html) remains the implemented architecture reference;
-- this document is the target architecture;
-- existing ADRs remain accepted historical decisions.
-
-After implementation:
-
-- add an ADR naming the exact superseded clauses in ADR 0001, 0005, 0009, and 0010;
-- promote a Markdown `docs/architecture.md` as the current source;
-- render a v3 architecture document from that source;
-- mark CEO Agent Operating Layer v0.4 and architecture v2 as historical.
+This Markdown document is the current Goal operating-model source. [ADR 0011](../adr/0011-goal-bound-turns-and-work-record-filesystem.md) names the superseded clauses in ADR 0001, 0005, 0009, and 0010. [Goah architecture v2](../../Goah-%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1-v2.html) and CEO Agent Operating Layer v0.4 are retained as historical implemented designs. A rendered v3 document is presentation work, not an architectural dependency.

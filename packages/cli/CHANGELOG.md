@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Ordinary chat no longer starts a Goal, `/goal` creates or revises explicitly, `/records` and `/history` expose shared timelines, and default output hides internal narration and raw tool arguments.
+
 ## 0.10.2
 
 - Added visible fuzzy search to long Runner setup selectors instead of relying on the non-functional “type to filter” hint.

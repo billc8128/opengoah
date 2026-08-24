@@ -14,7 +14,7 @@ Coding agents are good at bounded tasks: you give one a prompt, it works, it sto
 
 goah is the harness around the agent that owns exactly that layer:
 
-- **The ledger is the agent.** Agent processes are short-lived: hydrate → work → handoff → exit. Everything durable lives in an append-only event ledger; every table is a projection that can be rebuilt from events. Crash recovery is replay, not heuristics.
+- **The ledger is the agent.** Agent processes are short-lived: hydrate → work → response or Goal Handoff → exit. Everything durable lives in an append-only event ledger; every table is a projection that can be rebuilt from events. Crash recovery is replay, not heuristics.
 - **The session is replayable.** User messages, assistant deltas and completed messages, tool calls/results, compaction replacements, and the exact prepared model request are normalized into typed event streams. The active conversation surface is derived from those facts.
 - **Every action is accountable.** An external action carries its `reason` and `evidence` (references to ledger events), passes a gate before dispatch, and has crash-safe delivery semantics — a crash mid-dispatch resolves to `unknown`, which is reconciled by querying, never blindly retried.
 - **Execution stays local and inspectable.** The runner owns local files, bash, and Git under the directory containing `goah.config.json`. GOAH records process failure and recovery context; coding skills decide how to branch, commit, merge, or preserve partial Git work.
@@ -37,14 +37,15 @@ Implemented and tested today:
 - Connector capability manifests and isolated connector subprocesses: undeclared capabilities fail closed, ambient secrets are not inherited, automatic retry requires declared native idempotency
 - Runner-owned local execution: non-software goals need no Git, while coding agents can use ordinary Git and worktree commands through their skills
 - Real runner subprocess boundary with sliding lease renewal, process-group termination, optional runner-specific timeout, and stale-event rejection
-- Mail acknowledged atomically with a valid handoff; abnormal wakes leave messages unread for redelivery
+- Ordinary Human Turns return normal responses; Goal-bound Turns require a current Work Record revision and compact Goal Handoff
+- Mail acknowledged atomically with a valid response or Goal Handoff; abnormal wakes leave messages unread for redelivery
 - Injected clocks, schema v1→v8 migrations, indexed bounded queries, and a public ledger conformance suite
 - Optional mechanical metric evaluation (missing/stale/sustain/guardrails), a total-silence tripwire, trigger coalescing, FTS5 fact search, and generic evidence-backed actions; Goal itself has no required metric or target
 - Official Pi 0.84.2 worker binding with `read`, `write`, `edit`, and `bash` for every Agent plus model-view-only mid-turn compaction
 - Durable textual Goal observation methods with root human confirmation, atomic child assignment, revision invalidation, replay, and evidence-backed completion
 - Interactive `goah` CEO shell over a resident Supervisor local control socket, including live goal revisions while Supervisor remains the only SQLite writer
-- Event-sourced agent working memory: `memory:{agent}` streams, role-scoped `memory.append` facts, and a bounded advisory Active Context tail that preserves procedural knowledge, hypotheses, and abandoned approaches across wakes without provider session state (ADR 0010)
-- CEO sole-entry flow with automatic root wake, filesystem-first onboarding, ledger-derived team roster, atomic delegation/reassignment, stale-child action barriers, motion validation, concurrent child agents, and a read-only team dashboard
+- Event-sourced Work Record filesystem: one versioned semantic document per Goal, organization-wide reads, ownership-checked CAS updates, history, diff, search, and deterministic migration from legacy Handoff/memory
+- CEO sole-entry interaction with explicit Human-authorized Goal binding, filesystem-first Goal onboarding, ledger-derived team roster, atomic delegation/reassignment, stale-child action barriers, motion validation, concurrent Goal-owning Agents, and a read-only team dashboard
 - Session verifier plus blind-first global audit interfaces, audit-advice delivery, and precision/risk-weighted-recall evaluation
 - Repo-guardian reference application, systemd/launchd templates, and an accelerated 30-day replay/continuity soak
 - Bidirectional fenced RPC with role capabilities, executable CEO/verifier/audit prompts, versioned configuration, and singleton CLI controls
@@ -100,7 +101,7 @@ goah update
 
 The global CLI is the default product path: after installation, `goah` works from any directory and initializes that directory as its local workspace. For TypeScript library integration instead, install `@goah/cli` in the project and use its documented subpath exports.
 
-The normal product flow is one human objective through CEO. Lower-level Goal controls remain available for inspection, extensions, and human root authority:
+The normal product flow is an ordinary CEO interaction. Greetings, questions, and bounded work do not create a Goal. Durable Human intent may be translated by CEO into `create_goal`, or created explicitly with `/goal`; from that point the Turn follows strict Goal, Work Record, observation, verification, and Handoff policy. Lower-level Goal controls remain available for inspection, extensions, and Human root authority:
 
 ```bash
 goah goal-create --id first-goal --owner worker --objective "Complete the first verified handoff" --observation-method "Inspect a fresh evidence-backed handoff" --wake-now
@@ -144,7 +145,8 @@ Ark is not a built-in special case. If needed later, configure it as a Pi custom
 ```
             ┌──────────────────────────── supervisor (only resident process) ───────────────────────────┐
             │                                                                                           │
-  schedule ─┼─▶ enqueue wake ─▶ lease ─▶ run local agent ─▶ handoff ─▶ done                           │
+  input ────┼─▶ enqueue wake ─▶ lease ─▶ run local agent ─┬─▶ response ───────────▶ done              │
+            │                                             └─▶ Work Record + Handoff ─▶ done          │
             │       │                                          │   │         │                          │
             │       │ dedupe by (agent, trigger_ref)           │   │         │ crash / no handoff       │
             │       ▼                                          │   │         ▼                          │
@@ -162,11 +164,11 @@ One wake, step by step:
 
 1. A due `schedule` entry becomes a queued `wake` (deduplicated by `(agent, trigger_ref)`).
 2. The supervisor leases it — one active wake per agent, lease expiry is crash detection.
-3. It deterministically composes a short Markdown Active Context from owned goals, unread mail, unacknowledged audit advice, the last handoff, open actions, and any recovery slice.
+3. It assigns immutable Turn source and optional Goal binding. Ordinary interactions receive a bounded conversation view; Goal Turns receive the Goal tree, observation and verification methods, the shared Work Record index, current/parent records, unread mail, actions, and recovery facts.
 4. The supervisor starts a runner subprocess only after the wake's lease token and PID are recorded. The child gets Active Context and a local root, never a database connection or connector credentials. Its normalized messages, tool calls, results, and exact requests stream back into the wake ledger.
 5. While the process is alive, the supervisor renews its fenced lease. If renewal stops, recovery kills the recorded process before another wake can own the agent. Runner-specific plugins may add token, timeout, cost, or handoff policy.
-6. A valid handoff atomically records the handoff, acknowledges consumed mail, delivers outgoing mail, and schedules the next wake. Local files and Git remain the runner's responsibility.
-7. Any other exit is `abnormal`: after process death is confirmed, open tool calls receive synthetic `unknown` outcomes and the session closes as interrupted. A recovery wake receives the source event slice; unread mail remains available.
+6. An ordinary response acknowledges only its Human interaction Mail. A Goal Turn must first update its Work Record under the current Goal revision; its compact Handoff then atomically acknowledges consumed Mail, delivers outgoing Mail, and schedules the next Wake. Local project files and Git remain the Runner's responsibility.
+7. Any invalid or missing result is `abnormal`: after process death is confirmed, open tool calls receive synthetic `unknown` outcomes and the Session closes as interrupted. A recovery Wake receives the source event slice; unread Mail and committed Work Record history remain available.
 
 External actions follow their own state machine, independent of wake success:
 
@@ -227,7 +229,7 @@ Not guaranteed, by design honesty:
 
 ## Design
 
-The current implemented architecture document (Chinese) is [`Goah-架构设计-v2.html`](./Goah-架构设计-v2.html). The proposed next architecture is [`docs/proposals/goal-bound-agent-operating-model.md`](./docs/proposals/goal-bound-agent-operating-model.md); it separates ordinary CEO interaction from strict Goal-bound operation and introduces the event-sourced Work Record filesystem. [`北辰-harness-设计稿.html`](./北辰-harness-设计稿.html) is preserved as the historical v0.10 proposal and links forward to v2. Decisions are recorded as ADRs in [`docs/adr/`](./docs/adr/).
+The current architecture source is [`docs/architecture.md`](./docs/architecture.md), with the complete Goal model in [`docs/proposals/goal-bound-agent-operating-model.md`](./docs/proposals/goal-bound-agent-operating-model.md); [ADR 0011](./docs/adr/0011-goal-bound-turns-and-work-record-filesystem.md) records the transition. [`Goah-架构设计-v2.html`](./Goah-架构设计-v2.html), [`Goah-CEO-Agent-Operating-Layer.html`](./Goah-CEO-Agent-Operating-Layer.html), and [`北辰-harness-设计稿.html`](./北辰-harness-设计稿.html) are preserved as historical designs. Decisions are recorded as ADRs in [`docs/adr/`](./docs/adr/).
 
 The user-facing organization layer is documented in [`Goah-CEO-Agent-Operating-Layer.html`](./Goah-CEO-Agent-Operating-Layer.html), with the reviewable Markdown source in [`docs/proposals/ceo-agent-operating-layer.md`](./docs/proposals/ceo-agent-operating-layer.md). Milestones A–C and E are implemented: CEO is the interactive normal entry, every Agent receives the Pi coding baseline, Goal observation methods persist across wakes, team state is derived from Ledger facts, and delegation/reassignment is atomic. The deterministic multi-Agent canary is covered by the test suite; a long-running real-model canary remains operational validation.
 

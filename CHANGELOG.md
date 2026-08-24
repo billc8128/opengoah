@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Ordinary CEO interaction no longer creates a Root Goal or requires Handoff; durable Human intent can bind the open Turn through Goal tools.
+- Added versioned shared Work Records, separate Goal observation/verification methods, strict Goal-owned delegation, compact revision Handoffs, legacy memory migration, and quiet default CLI output.
+
 ## 0.10.2
 
 - Provider and model setup lists now use a visible fuzzy-search field across names, IDs, and descriptions, with live result counts, query-aware empty states, and two-stage Escape behavior (clear, then cancel).

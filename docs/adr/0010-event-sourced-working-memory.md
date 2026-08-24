@@ -3,6 +3,8 @@
 Status: accepted
 Date: 2026-08-22
 
+Superseded in part by ADR 0011: Goal semantic continuity now lives in Work Record; legacy memory remains readable.
+
 ## Context
 
 Each Wake runs an independent Session, and the structured Handoff is the only first-class carrier of cross-wake operational knowledge. That boundary is deliberate (bounded, auditable, projection-derived), but it is lossy in a specific way: procedural knowledge ("this repository's tests fake-fail under a mocked clock"), working hypotheses, and abandoned approaches with their rejection reasons do not fit `observations/results/nextSteps` naturally and are usually dropped. Consequences are repeated cold-start exploration and a real oscillation risk — Wake N abandons approach A, Wake N+2 tries it again because only the summary survived.

@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-19
+- Superseded in part by ADR 0011: ordinary Turns may return a normal response without Handoff.
 
 ## Decision
 

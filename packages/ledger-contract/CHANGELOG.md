@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Added Turn source/Goal binding, ordinary Runner responses, Goal verification methods, Work Record contracts, compact Goal Handoffs, and shared-record capabilities.
+
 ## 0.6.0
 
 - Ledger contract gained `latestEvent()` for an O(1) global-recency query.

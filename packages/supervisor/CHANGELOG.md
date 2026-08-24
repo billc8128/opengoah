@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Separated ordinary Human Turns from Goal-bound execution, added dynamic Human-authorized Goal binding, strict Work Record fences, verifiable Child Goals, transparent shared record context, and compact Goal Handoffs.
+
 ## 0.6.0
 
 - Replaced the per-agent heartbeat and per-goal progress watchdogs with one system-silence tripwire (`silence` option, default 12h/ceo, `null` disables); any ledger event resets the clock and the tripwire mails a decision-level confirmation request at most once per silence window.
@@ -26,4 +30,3 @@
 ## 0.1.0
 
 - Scheduler, daemon, metrics, watchdog, action gate, verification plane, multi-agent contexts, and dashboard.
-

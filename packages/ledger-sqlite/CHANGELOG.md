@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Added schema v9 with event-sourced Work Records, history/diff/search, verification methods, Human interaction commits, legacy Handoff/memory seeding, and Human Wake priority.
+
 ## 0.6.0
 
 - Added the O(1) `latestEvent()` query.

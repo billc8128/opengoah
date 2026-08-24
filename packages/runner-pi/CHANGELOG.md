@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Pi now returns normal responses for unbound Turns and exposes Goal/Work Record tools; Goal Turns update their record before compact Handoff.
+
 ## 0.5.0
 
 - Every Agent now receives Pi `read`, `write`, `edit`, and `bash`; organization RPC tools remain role-scoped.

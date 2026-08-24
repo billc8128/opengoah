@@ -3,6 +3,8 @@
 Status: accepted
 Date: 2026-08-20
 
+Superseded in part by ADR 0011: ordinary CEO interaction is unbound, and Goal now separates observation from verification.
+
 ## Context
 
 An objective alone does not preserve how separately reconstructed Agent Sessions should inspect reality. Quantitative goals can drift in data source or calculation; qualitative goals can drift in acceptance criteria. The lower-level CLI also could not mutate state while the resident Supervisor held the singleton lock, and the Pi worker exposed an inconsistent local tool surface across roles.
