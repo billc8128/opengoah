@@ -4,7 +4,30 @@ import type { MetricSample } from "./metrics.js";
 export type WakeStatus = "queued" | "leased" | "running" | "done" | "abnormal" | "merge_blocked";
 export type ActionStatus = "requested" | "approved" | "dispatching" | "confirmed" | "failed" | "unknown";
 export type GoalPhase = "active" | "paused" | "blocked" | "complete";
-export interface GoalSnapshot { id: string; parentId: string | null; objective: string; observationMethod: string | null; owner: string; phase: GoalPhase; revision: number }
+export interface GoalSnapshot { id: string; parentId: string | null; objective: string; observationMethod: string | null; verificationMethod?: string | null; owner: string; phase: GoalPhase; revision: number }
+export interface WorkRecordSnapshot {
+  goalId: string;
+  recordRevision: number;
+  goalRevision: number;
+  content: string;
+  updatedBy: string;
+  updatedInTurn: string;
+  updatedInWake: string | null;
+  updatedAt: string;
+  reason: string;
+  evidence: number[];
+  lastEventSeq: number;
+}
+export interface WorkRecordUpdateRequest {
+  goalId: string;
+  expectedRevision: number;
+  goalRevision: number;
+  content: string;
+  reason: string;
+  evidence: number[];
+  turnId: string;
+  wakeId?: string;
+}
 export interface ScheduleSnapshot { id: string; agent: string; nextWakeAt: string; reason: string; setBy: string }
 export interface WakeSnapshot { id: string; agent: string; triggerRef: string; status: WakeStatus; leaseUntil: string | null; attempt: number; startedAt: string | null; endedAt: string | null; enqueuedSeq: number; leaseToken: string | null; runnerPid: number | null }
 export type MailLevel = "fyi" | "decision" | "emergency";
@@ -12,7 +35,7 @@ export interface MailSnapshot { id: string; to: string; from: string; level: Mai
 export interface DelegationRequest {
   id: string;
   parentGoalId: string;
-  childGoal: { id: string; objective: string; observationMethod: string; owner: string };
+  childGoal: { id: string; objective: string; observationMethod: string; verificationMethod?: string; owner: string };
   brief: JsonValue;
   reason: string;
   evidence: number[];
@@ -83,6 +106,7 @@ export interface HandoffCommit { agent: string; wakeId: string; ts: string; outp
 /** Standard execution modules composed on top of the generic event store. */
 export interface Ledger extends EventStore {
   putGoal(goal: GoalSnapshot, actor: string, wakeId?: string): EventRecord;
+  updateWorkRecord(request: WorkRecordUpdateRequest, actor: string): WorkRecordSnapshot;
   commitDelegation(request: DelegationRequest, actor: string, wakeId?: string): DelegationResult;
   commitReassignment(request: ReassignmentRequest, actor: string, wakeId?: string): ReassignmentResult;
   completeGoal(request: GoalCompletionRequest, actor: string, wakeId?: string): GoalSnapshot;
@@ -117,10 +141,14 @@ export interface Ledger extends EventStore {
   action(id: string): ActionSnapshot | null;
   goalsForOwner(owner: string): GoalSnapshot[];
   goal(id: string): GoalSnapshot | null;
+  workRecord(goalId: string): WorkRecordSnapshot | null;
+  workRecordHistory(goalId: string): WorkRecordSnapshot[];
+  searchWorkRecords(query: string, limit?: number): WorkRecordSnapshot[];
   triggeringMail(): MailSnapshot[];
   searchEvents(query: string, limit?: number): EventRecord[];
   metricSamples(goalId: string): MetricSample[];
   goals(): GoalSnapshot[];
+  workRecords(): WorkRecordSnapshot[];
   schedules(): ScheduleSnapshot[];
   wakes(): WakeSnapshot[];
   actions(): ActionSnapshot[];
@@ -140,6 +168,7 @@ export function assertActionRequest(value: ActionSnapshot): void { if (!value.re
 export function assertGoalSnapshot(value: GoalSnapshot): void {
   if (!value.objective.trim() || !value.owner.trim()) throw new Error("goal objective and owner are required");
   if (value.observationMethod !== null && !value.observationMethod.trim()) throw new Error("goal observation method cannot be blank");
+  if (value.verificationMethod !== undefined && value.verificationMethod !== null && !value.verificationMethod.trim()) throw new Error("goal verification method cannot be blank");
   if (value.parentId !== null && value.observationMethod === null) throw new Error("child goal observation method is required");
   if (!["active", "paused", "blocked", "complete"].includes(value.phase)) throw new Error(`invalid goal phase: ${value.phase}`);
 }

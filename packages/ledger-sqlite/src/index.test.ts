@@ -40,7 +40,7 @@ test("schema v6 adds the ignorable event envelope and goal phase constraints", (
   const migrated = new SqliteLedger(path, { clock: new FixedClock() });
   const columns = (migrated.db.prepare("PRAGMA table_info(events)").all() as Array<{ name: string }>).map((row) => row.name);
   assert.equal(columns.includes("ignorable"), true);
-  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 8);
+  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 9);
   migrated.close();
 });
 
@@ -58,7 +58,7 @@ test("schema v7 adds nullable Goal observation methods without rewriting history
   const migrated = new SqliteLedger(path, { clock: new FixedClock() });
   const columns = (migrated.db.prepare("PRAGMA table_info(goals)").all() as Array<{ name: string }>).map((row) => row.name);
   assert.equal(columns.includes("observation_method"), true);
-  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 8);
+  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 9);
   migrated.close();
 });
 
@@ -181,7 +181,7 @@ test("schema v1 is migrated without rewriting event history", () => {
   assert.equal(ledger.wake("w")?.enqueuedSeq, 1);
   assert.match(ledger.wake("w")?.leaseToken ?? "", /^legacy:/);
   assert.equal(ledger.action("a")?.connector, "legacy");
-  assert.equal((ledger.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 8);
+  assert.equal((ledger.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 9);
   assert.equal(ledger.events().length, 2);
   ledger.rebuildProjections();
   assert.equal(ledger.wake("w")?.enqueuedSeq, 1);
@@ -199,7 +199,7 @@ test("schema v2 migration builds the FTS index from existing events", () => {
   raw.close();
   const migrated = new SqliteLedger(path, { clock: new FixedClock() });
   assert.equal(migrated.searchEvents("migrationsearchterm").length, 1);
-  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 8);
+  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 9);
   migrated.close();
 });
 
@@ -214,7 +214,7 @@ test("schema v3 migration indexes coalesced wake triggers", () => {
   raw.close();
   const migrated = new SqliteLedger(path, { clock: new FixedClock() });
   assert.equal(migrated.wakeByTrigger("a", "metric:g:missing:none")?.id, "w");
-  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 8);
+  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 9);
   migrated.close();
 });
 
@@ -232,7 +232,7 @@ test("schema v4 migration removes the legacy goal budget column", () => {
   assert.equal("budget" in migrated.goal("legacy")!, false);
   const columns = (migrated.db.prepare("PRAGMA table_info(goals)").all() as Array<{ name: string }>).map((row) => row.name);
   assert.equal(columns.includes("budget"), false);
-  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 8);
+  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 9);
   migrated.close();
 });
 
@@ -286,6 +286,29 @@ test("Goal observation methods are durable, revisioned, and required for childre
   ledger.close();
 });
 
+test("Work Records are versioned Goal documents backed by replayable events", () => {
+  const ledger = new SqliteLedger(":memory:", { clock: new FixedClock() });
+  ledger.putGoal({ id: "root", parentId: null, objective: "ship", observationMethod: "Inspect the release.", verificationMethod: "Run the release smoke test.", owner: "ceo", phase: "active", revision: 0 }, "human");
+  const initial = ledger.workRecord("root");
+  assert.equal(initial?.recordRevision, 0);
+  assert.equal(initial?.goalRevision, 0);
+  assert.match(initial?.content ?? "", /Goal created/);
+
+  const evidence = ledger.appendEvent(event("ceo", "release.observed", { ok: true }));
+  const updated = ledger.updateWorkRecord({ goalId: "root", expectedRevision: 0, goalRevision: 0, content: "# Current State\n\nRelease candidate verified.\n\n# Observations\n\nSmoke test passed.\n\n# Work Completed\n\nPrepared release.\n\n# Decisions\n\nShip.\n\n# Blockers\n\nNone.\n\n# Next Steps\n\nPublish.\n", reason: "record verified release state", evidence: [evidence.seq], turnId: "turn-1", wakeId: "wake-1" }, "ceo");
+  assert.equal(updated.recordRevision, 1);
+  assert.equal(updated.lastEventSeq > evidence.seq, true);
+  assert.deepEqual(ledger.workRecordHistory("root").map((record) => record.recordRevision), [0, 1]);
+  assert.equal(ledger.searchWorkRecords("Release").some((record) => record.goalId === "root"), true);
+  assert.throws(() => ledger.updateWorkRecord({ goalId: "root", expectedRevision: 0, goalRevision: 0, content: "stale", reason: "stale", evidence: [evidence.seq], turnId: "turn-2" }, "ceo"), /CAS/);
+  assert.throws(() => ledger.updateWorkRecord({ goalId: "root", expectedRevision: 1, goalRevision: 0, content: "unauthorized", reason: "unauthorized", evidence: [evidence.seq], turnId: "turn-2" }, "other"), /owner/);
+
+  const before = ledger.workRecord("root");
+  ledger.rebuildProjections();
+  assert.deepEqual(ledger.workRecord("root"), before);
+  ledger.close();
+});
+
 test("Goal completion requires current-revision observation evidence", () => {
   const ledger = new SqliteLedger(":memory:", { clock: new FixedClock() });
   const oldEvidence = ledger.appendEvent(event("human", "observation.old", { ok: true }));
@@ -313,7 +336,7 @@ test("completion decision and Goal projection roll back together", () => {
 });
 
 test("delegation atomically commits its fact, child goal, decision mail, and wake", () => {
-  for (const failAt of [1, 2, 3, 4]) {
+  for (const failAt of [1, 2, 3, 4, 5]) {
     let armed = false;
     let calls = 0;
     const ledger = new SqliteLedger(":memory:", { clock: new FixedClock(), faultInjector: () => { if (armed && ++calls === failAt) throw new Error(`kill delegation ${failAt}`); } });
