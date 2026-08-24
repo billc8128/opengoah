@@ -5,6 +5,7 @@ export interface GoalView {
   parentId: string | null
   objective: string
   observationMethod: string | null
+  verificationMethod: string | null
   owner: string
   phase: "active" | "paused" | "blocked" | "complete"
   revision: number

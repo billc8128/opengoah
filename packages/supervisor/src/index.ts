@@ -166,14 +166,15 @@ export class Supervisor {
   delegate(request: DelegationRequest, actor = "ceo", wakeId?: string): DelegationResult { return this.ledger.commitDelegation(request, actor, wakeId); }
   reassignGoal(request: ReassignmentRequest, actor = "ceo", wakeId?: string): ReassignmentResult { return this.ledger.commitReassignment(request, actor, wakeId); }
   teamList(now = this.#now()): TeamMemberView[] { return deriveTeam(this.ledger, now); }
-  updateGoal(id: string, patch: Partial<Pick<GoalSnapshot, "objective" | "observationMethod" | "owner">>, actor = "human"): GoalSnapshot {
-    if (patch.objective === undefined && patch.observationMethod === undefined && patch.owner === undefined) throw new Error("goal update requires objective, observation method, or owner");
+  updateGoal(id: string, patch: Partial<Pick<GoalSnapshot, "objective" | "observationMethod" | "verificationMethod" | "owner">>, actor = "human"): GoalSnapshot {
+    if (patch.objective === undefined && patch.observationMethod === undefined && patch.verificationMethod === undefined && patch.owner === undefined) throw new Error("goal update requires objective, observation method, verification method, or owner");
     const current = this.#goal(id);
-    if (patch.objective !== undefined && patch.objective !== current.objective && current.parentId !== null && patch.observationMethod === undefined) throw new Error("child objective revision requires a replacement observation method");
+    if (patch.objective !== undefined && patch.objective !== current.objective && current.parentId !== null && (patch.observationMethod === undefined || patch.verificationMethod === undefined)) throw new Error("child objective revision requires replacement observation and verification methods");
     const next = {
       ...current,
       ...patch,
       ...(patch.objective !== undefined && patch.objective !== current.objective && current.parentId === null && patch.observationMethod === undefined ? { observationMethod: null } : {}),
+      ...(patch.objective !== undefined && patch.objective !== current.objective && current.parentId === null && patch.verificationMethod === undefined ? { verificationMethod: null } : {}),
       revision: current.revision + 1,
     };
     this.ledger.putGoal(next, actor);
@@ -183,15 +184,15 @@ export class Supervisor {
   confirmObservationMethod(id: string, observationMethod: string): GoalSnapshot {
     const current = this.#goal(id);
     if (current.parentId !== null) throw new Error("human confirmation applies only to a root goal");
-    return this.updateGoal(id, { observationMethod }, "human");
+    return this.updateGoal(id, { observationMethod, verificationMethod: observationMethod }, "human");
   }
-  reviseChildGoal(id: string, objective: string, observationMethod: string, actor: string, reason: string, evidence: number[], wakeId?: string): GoalSnapshot {
+  reviseChildGoal(id: string, objective: string, observationMethod: string, verificationMethod: string, actor: string, reason: string, evidence: number[], wakeId?: string): GoalSnapshot {
     const current = this.#goal(id);
     if (current.parentId === null) throw new Error("CEO cannot revise a root goal");
     if (!reason.trim()) throw new Error("goal revision reason is required");
     for (const seq of evidence) if (!this.ledger.eventsSince(seq - 1).some((event) => event.seq === seq)) throw new Error(`evidence event does not exist: ${seq}`);
-    this.ledger.appendEvent({ streamId: wakeId ? wakeStream(wakeId) : goalStream(id), ts: this.#now(), actor, type: "goal.revision_requested", data: { goalId: id, fromRevision: current.revision, objective, observationMethod, reason, evidence } });
-    return this.updateGoal(id, { objective, observationMethod }, actor);
+    this.ledger.appendEvent({ streamId: wakeId ? wakeStream(wakeId) : goalStream(id), ts: this.#now(), actor, type: "goal.revision_requested", data: { goalId: id, fromRevision: current.revision, objective, observationMethod, verificationMethod, reason, evidence } });
+    return this.updateGoal(id, { objective, observationMethod, verificationMethod }, actor);
   }
   completeGoal(request: GoalCompletionRequest, actor = "human", wakeId?: string): GoalSnapshot {
     const goal = this.ledger.completeGoal(request, actor, wakeId);
@@ -620,7 +621,7 @@ export class Supervisor {
       reason: String(input.reason),
       evidence: numberArray(input.evidence),
     }, wake.agent, wake.id) as unknown as JsonValue;
-    if (method === "goal.revise") return this.reviseChildGoal(String(input.goalId), String(input.objective), String(input.observationMethod), wake.agent, String(input.reason), numberArray(input.evidence), wake.id) as unknown as JsonValue;
+    if (method === "goal.revise") return this.reviseChildGoal(String(input.goalId), String(input.objective), String(input.observationMethod), String(input.verificationMethod), wake.agent, String(input.reason), numberArray(input.evidence), wake.id) as unknown as JsonValue;
     if (method === "goal.pause" || method === "goal.resume") return this.transitionGoal(String(input.goalId), method === "goal.pause" ? "paused" : "active", wake.agent) as unknown as JsonValue;
     if (method === "goal.complete") return this.completeGoal({ goalId: String(input.goalId), revision: Number(input.revision), reason: String(input.reason), evidence: numberArray(input.evidence) }, wake.agent, wake.id) as unknown as JsonValue;
     if (method === "human.request") {
@@ -770,9 +771,9 @@ function escapeHtml(value: string): string { return value.replaceAll("&", "&amp;
 function interactionMailId(wake: WakeSnapshot): string | null { return wake.triggerRef.startsWith("interaction:") ? wake.triggerRef.slice("interaction:".length) : null; }
 function asRecord(value: JsonValue): Record<string, JsonValue> { if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("RPC params must be an object"); return value; }
 function numberArray(value: JsonValue | undefined): number[] { if (!Array.isArray(value) || value.some((item) => typeof item !== "number")) throw new Error("RPC evidence must be a number array"); return value as number[]; }
-function asChildGoal(value: JsonValue | undefined): { id: string; objective: string; observationMethod: string; owner: string } {
+function asChildGoal(value: JsonValue | undefined): { id: string; objective: string; observationMethod: string; verificationMethod: string; owner: string } {
   const input = asRecord(value ?? null);
-  return { id: String(input.id), objective: String(input.objective), observationMethod: String(input.observationMethod), owner: String(input.owner) };
+  return { id: String(input.id), objective: String(input.objective), observationMethod: String(input.observationMethod), verificationMethod: String(input.verificationMethod), owner: String(input.owner) };
 }
 function defaultCapabilities(role: AgentRole): AgentCapability[] {
   if (role === "ceo") return ["ledger.search", "mail.send", "schedule.set", "action.submit", "audit.ack", "memory.append", "team.list", "goal.get", "goal.create", "goal.work", "goal.delegate", "goal.reassign", "goal.revise", "goal.pause", "goal.resume", "goal.complete", "human.request", "work_record.list", "work_record.read", "work_record.history", "work_record.search", "work_record.update"];

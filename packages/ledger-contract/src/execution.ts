@@ -4,7 +4,7 @@ import type { MetricSample } from "./metrics.js";
 export type WakeStatus = "queued" | "leased" | "running" | "done" | "abnormal" | "merge_blocked";
 export type ActionStatus = "requested" | "approved" | "dispatching" | "confirmed" | "failed" | "unknown";
 export type GoalPhase = "active" | "paused" | "blocked" | "complete";
-export interface GoalSnapshot { id: string; parentId: string | null; objective: string; observationMethod: string | null; verificationMethod?: string | null; owner: string; phase: GoalPhase; revision: number }
+export interface GoalSnapshot { id: string; parentId: string | null; objective: string; observationMethod: string | null; verificationMethod: string | null; owner: string; phase: GoalPhase; revision: number }
 export interface WorkRecordSnapshot {
   goalId: string;
   recordRevision: number;
@@ -35,7 +35,7 @@ export interface MailSnapshot { id: string; to: string; from: string; level: Mai
 export interface DelegationRequest {
   id: string;
   parentGoalId: string;
-  childGoal: { id: string; objective: string; observationMethod: string; verificationMethod?: string; owner: string };
+  childGoal: { id: string; objective: string; observationMethod: string; verificationMethod: string; owner: string };
   brief: JsonValue;
   reason: string;
   evidence: number[];
@@ -175,8 +175,9 @@ export function assertActionRequest(value: ActionSnapshot): void { if (!value.re
 export function assertGoalSnapshot(value: GoalSnapshot): void {
   if (!value.objective.trim() || !value.owner.trim()) throw new Error("goal objective and owner are required");
   if (value.observationMethod !== null && !value.observationMethod.trim()) throw new Error("goal observation method cannot be blank");
-  if (value.verificationMethod !== undefined && value.verificationMethod !== null && !value.verificationMethod.trim()) throw new Error("goal verification method cannot be blank");
+  if (value.verificationMethod !== null && !value.verificationMethod.trim()) throw new Error("goal verification method cannot be blank");
   if (value.parentId !== null && value.observationMethod === null) throw new Error("child goal observation method is required");
+  if (value.parentId !== null && value.verificationMethod === null) throw new Error("child goal verification method is required");
   if (!["active", "paused", "blocked", "complete"].includes(value.phase)) throw new Error(`invalid goal phase: ${value.phase}`);
 }
 export function capabilityFor(manifest: ConnectorManifest, kind: string): ConnectorCapability | null { return manifest.capabilities.find((capability) => capability.kind === kind) ?? null; }

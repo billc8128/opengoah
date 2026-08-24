@@ -127,7 +127,7 @@ test("CLI exposes the complete goal lifecycle with revisioned transitions", () =
   invoke(directory, "init", "--provider", "faux", "--agent", "worker");
   invoke(directory, "goal-create", "--id", "lifecycle", "--owner", "worker", "--objective", "Initial objective", "--observation-method", "Accept a fresh evidence-backed handoff.");
   assert.equal(JSON.parse(invoke(directory, "goal-show", "lifecycle")).goal.revision, 0);
-  const updated = JSON.parse(invoke(directory, "goal-update", "lifecycle", "--objective", "Updated objective", "--observation-method", "Accept a fresh handoff for the updated objective."));
+  const updated = JSON.parse(invoke(directory, "goal-update", "lifecycle", "--objective", "Updated objective", "--observation-method", "Inspect a fresh handoff for the updated objective.", "--verification-method", "Accept the fresh evidence-backed handoff."));
   assert.equal(updated.goal.objective, "Updated objective");
   assert.equal(updated.goal.revision, 1);
   assert.equal(JSON.parse(invoke(directory, "goal-pause", "lifecycle")).goal.phase, "paused");
@@ -139,7 +139,7 @@ test("CLI exposes the complete goal lifecycle with revisioned transitions", () =
   assert.equal(completed.goal.phase, "complete");
   assert.equal(completed.goal.revision, 4);
   assert.match(invokeFailure(directory, "goal-resume", "lifecycle"), /completed goal/);
-  assert.match(invokeFailure(directory, "goal-update", "lifecycle"), /requires objective, observation method, or owner/);
+  assert.match(invokeFailure(directory, "goal-update", "lifecycle"), /requires objective, observation method, verification method, or owner/);
 });
 
 test("CLI runs a local operations goal without Git", () => {

@@ -223,7 +223,7 @@ export class SqliteLedger implements Ledger {
       if (current.phase === "complete") throw new Error("completed goal cannot be modified");
       if (normalized.parentId !== current.parentId) throw new Error("goal reparenting is not supported");
       if (normalized.phase === "complete") throw new Error("goal completion requires reason and evidence");
-      if (normalized.objective !== current.objective && current.observationMethod !== null && normalized.observationMethod === current.observationMethod) throw new Error("objective revision must replace or invalidate the observation method");
+      if (normalized.objective !== current.objective && ((current.observationMethod !== null && normalized.observationMethod === current.observationMethod) || (current.verificationMethod !== null && normalized.verificationMethod === current.verificationMethod))) throw new Error("objective revision must replace or invalidate observation and verification methods");
       assertGoalTransition(current.phase, normalized.phase);
       this.#assertGoalAuthority(current.parentId, actor);
     } else {
@@ -265,12 +265,12 @@ export class SqliteLedger implements Ledger {
   commitDelegation(request: DelegationRequest, actor: string, wakeId?: string): DelegationResult {
     const existing = this.#delegationResult(request.id);
     if (existing) {
-      if (existing.goal.id !== request.childGoal.id || existing.goal.parentId !== request.parentGoalId || existing.goal.objective !== request.childGoal.objective || existing.goal.observationMethod !== request.childGoal.observationMethod || existing.goal.verificationMethod !== (request.childGoal.verificationMethod ?? request.childGoal.observationMethod) || existing.goal.owner !== request.childGoal.owner) throw new Error("delegation id was reused with a different child goal");
+      if (existing.goal.id !== request.childGoal.id || existing.goal.parentId !== request.parentGoalId || existing.goal.objective !== request.childGoal.objective || existing.goal.observationMethod !== request.childGoal.observationMethod || existing.goal.verificationMethod !== request.childGoal.verificationMethod || existing.goal.owner !== request.childGoal.owner) throw new Error("delegation id was reused with a different child goal");
       return existing;
     }
     if (!request.id.trim() || !request.reason.trim()) throw new Error("delegation id and reason are required");
     if (request.childGoal.owner === actor) throw new Error("delegate to a distinct worker agent; use goal.put for self-owned subgoals");
-    if (!request.childGoal.id.trim() || !request.childGoal.objective.trim() || !request.childGoal.observationMethod.trim() || !request.childGoal.owner.trim()) throw new Error("delegation child goal is incomplete");
+    if (!request.childGoal.id.trim() || !request.childGoal.objective.trim() || !request.childGoal.observationMethod.trim() || !request.childGoal.verificationMethod.trim() || !request.childGoal.owner.trim()) throw new Error("delegation child goal is incomplete");
     this.#assertEvidenceExists(request.evidence);
     const parent = this.#getGoal(request.parentGoalId);
     if (!parent) throw new Error("delegation parent goal does not exist");
@@ -835,7 +835,7 @@ export class SqliteLedger implements Ledger {
 }
 
 function mapEvent(r: Row): EventRecord { return { seq: Number(r.seq), streamId: String(r.stream_id), streamSeq: Number(r.stream_seq), ts: String(r.ts), actor: String(r.actor), type: String(r.type), data: JSON.parse(String(r.data)) as JsonValue, ...(Number(r.ignorable) === 1 ? { ignorable: true as const } : {}) }; }
-function normalizeGoal(goal: GoalSnapshot): GoalSnapshot { return { ...goal, observationMethod: goal.observationMethod ?? null, verificationMethod: goal.verificationMethod ?? goal.observationMethod ?? null }; }
+function normalizeGoal(goal: GoalSnapshot): GoalSnapshot { return { ...goal, observationMethod: goal.observationMethod ?? null, verificationMethod: goal.verificationMethod === undefined ? goal.observationMethod ?? null : goal.verificationMethod }; }
 function mapGoal(r: Row): GoalSnapshot { return { id: String(r.id), parentId: r.parent_id === null ? null : String(r.parent_id), objective: String(r.objective), observationMethod: r.observation_method === null || r.observation_method === undefined ? null : String(r.observation_method), verificationMethod: r.verification_method === null || r.verification_method === undefined ? null : String(r.verification_method), owner: String(r.owner), phase: String(r.phase) as GoalSnapshot["phase"], revision: Number(r.revision) }; }
 function mapWorkRecord(r: Row): WorkRecordSnapshot { return { goalId:String(r.goal_id),recordRevision:Number(r.record_revision),goalRevision:Number(r.goal_revision),content:String(r.content),updatedBy:String(r.updated_by),updatedInTurn:String(r.updated_in_turn),updatedInWake:r.updated_in_wake===null?null:String(r.updated_in_wake),updatedAt:String(r.updated_at),reason:String(r.reason),evidence:JSON.parse(String(r.evidence)) as number[],lastEventSeq:Number(r.last_event_seq) }; }
 function mapWorkRecordEvent(event: EventRecord): WorkRecordSnapshot { const data = event.data as { snapshot?: WorkRecordSnapshot }; if (!data.snapshot) throw new Error(`work record event ${event.seq} has no snapshot`); return { ...data.snapshot, lastEventSeq: event.seq }; }

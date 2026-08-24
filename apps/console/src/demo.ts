@@ -26,10 +26,10 @@ export const demoSnapshot: ConsoleSnapshot = {
   seq: 12857,
   now: "2026-08-20T14:18:22.000+08:00",
   goals: [
-    { id: "company", parentId: null, objective: "Launch a profitable store", observationMethod: "Revenue ≥ $10k MRR for 3 consecutive days with CAC:LTV ≥ 1:3. Verify against paid orders, refunds, acquisition spend, and retained revenue.", owner: "ceo", phase: "active", revision: 3 },
-    { id: "growth", parentId: "company", objective: "Acquire 500 paying users", observationMethod: "Count paid users in Stripe and require 30-day ROAS ≥ 2.0.", owner: "growth", phase: "active", revision: 2 },
-    { id: "orders", parentId: "company", objective: "Fulfill orders reliably", observationMethod: "Require order fulfillment p95 ≤ 48 hours and support SLA ≥ 95%.", owner: "operations", phase: "active", revision: 1 },
-    { id: "storefront", parentId: "company", objective: "Launch storefront", observationMethod: "Run storefront checks and require a successful production smoke test.", owner: "web", phase: "active", revision: 1 },
+    { id: "company", parentId: null, objective: "Launch a profitable store", observationMethod: "Read paid orders, refunds, acquisition spend, and retained revenue.", verificationMethod: "Revenue ≥ $10k MRR for 3 consecutive days with CAC:LTV ≥ 1:3.", owner: "ceo", phase: "active", revision: 3 },
+    { id: "growth", parentId: "company", objective: "Acquire 500 paying users", observationMethod: "Count paid users in Stripe and require 30-day ROAS ≥ 2.0.", verificationMethod: "Count paid users in Stripe and require 30-day ROAS ≥ 2.0.", owner: "growth", phase: "active", revision: 2 },
+    { id: "orders", parentId: "company", objective: "Fulfill orders reliably", observationMethod: "Require order fulfillment p95 ≤ 48 hours and support SLA ≥ 95%.", verificationMethod: "Require order fulfillment p95 ≤ 48 hours and support SLA ≥ 95%.", owner: "operations", phase: "active", revision: 1 },
+    { id: "storefront", parentId: "company", objective: "Launch storefront", observationMethod: "Run storefront checks and require a successful production smoke test.", verificationMethod: "Run storefront checks and require a successful production smoke test.", owner: "web", phase: "active", revision: 1 },
   ],
   team: [
     { agent: "ceo", goalIds: ["company"], status: "running", lastHandoffSeq: 12841, lastWakeStatus: "done", nextWakeAt: null },

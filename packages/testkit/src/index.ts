@@ -93,13 +93,13 @@ export function assertLedgerConformance(create: LedgerConformanceFactory): void 
   const clock = new SimulatedClock("2030-01-01T00:00:00.000Z");
   const ledger = create(clock);
   const observationMethod = "Use the conformance evidence event as the completion observation.";
-  ledger.putGoal({ id: "root", parentId: null, objective: "test", observationMethod, owner: "a", phase: "active", revision: 0 }, "human");
-  ledger.putGoal({ id: "root", parentId: null, objective: "test", observationMethod, owner: "a", phase: "paused", revision: 1 }, "human");
-  ledger.putGoal({ id: "root", parentId: null, objective: "test", observationMethod, owner: "a", phase: "active", revision: 2 }, "human");
+  ledger.putGoal({ id: "root", parentId: null, objective: "test", observationMethod, verificationMethod: observationMethod, owner: "a", phase: "active", revision: 0 }, "human");
+  ledger.putGoal({ id: "root", parentId: null, objective: "test", observationMethod, verificationMethod: observationMethod, owner: "a", phase: "paused", revision: 1 }, "human");
+  ledger.putGoal({ id: "root", parentId: null, objective: "test", observationMethod, verificationMethod: observationMethod, owner: "a", phase: "active", revision: 2 }, "human");
   const completionEvidence = ledger.appendEvent({ streamId: "conformance:goal", ts: clock.now().toISOString(), actor: "a", type: "observation.completed", data: { ok: true } });
   ledger.completeGoal({ goalId: "root", revision: 2, reason: "conformance observation passed", evidence: [completionEvidence.seq] }, "human");
   let reopened = false;
-  try { ledger.putGoal({ id: "root", parentId: null, objective: "test", observationMethod, owner: "a", phase: "active", revision: 4 }, "human"); } catch { reopened = true; }
+  try { ledger.putGoal({ id: "root", parentId: null, objective: "test", observationMethod, verificationMethod: observationMethod, owner: "a", phase: "active", revision: 4 }, "human"); } catch { reopened = true; }
   if (!reopened) throw new Error("ledger conformance: completed goal was reopened");
   const first = ledger.enqueueWake({ id: "z", agent: "a", triggerRef: "first", status: "queued", leaseUntil: null, attempt: 0, startedAt: null, endedAt: null, enqueuedSeq: 0, leaseToken: null, runnerPid: null }, "supervisor");
   ledger.enqueueWake({ id: "a", agent: "b", triggerRef: "second", status: "queued", leaseUntil: null, attempt: 0, startedAt: null, endedAt: null, enqueuedSeq: 0, leaseToken: null, runnerPid: null }, "supervisor");

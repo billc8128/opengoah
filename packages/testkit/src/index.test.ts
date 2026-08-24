@@ -11,7 +11,7 @@ import { assertLedgerConformance, createMemoryLedger, fauxRunnerWorkerPath, Mock
 
 const metric = { source: "test", window: "1h", direction: "at_least" as const, target: 1, freshnessMs: 60_000, onMissing: "abnormal" as const, onStale: "wake_owner" as const };
 function queuedWake(id: string, agent = "worker", triggerRef = `trigger:${id}`): WakeSnapshot { return { id, agent, triggerRef, status: "queued", leaseUntil: null, attempt: 0, startedAt: null, endedAt: null, enqueuedSeq: 0, leaseToken: null, runnerPid: null }; }
-function goal(): GoalSnapshot { return { id: "root", parentId: null, objective: "produce a checked artifact", observationMethod: null, owner: "worker", phase: "active", revision: 0 }; }
+function goal(): GoalSnapshot { return { id: "root", parentId: null, objective: "produce a checked artifact", observationMethod: null, verificationMethod: null, owner: "worker", phase: "active", revision: 0 }; }
 function event(actor: string, type: string, data: JsonValue = {}, wakeId?: string): EventInput { return { streamId: wakeId ? wakeStream(wakeId) : controlStream(actor), ts: "2026-08-18T00:00:00.000Z", actor, type, data }; }
 function repository(): string {
   const path = mkdtempSync(join(tmpdir(), "goah-runner-root-"));
@@ -261,9 +261,9 @@ test("two agents run concurrently while CEO context and dashboard see the organi
   const ledger = createMemoryLedger({ clock });
   const runner = fauxRunner([{ delayMs: 50 }, { handoff: { handoff: { observations: [], results: ["done"], nextSteps: [] }, mail: [], nextWakeAt: null } }]);
   const supervisor = new Supervisor(ledger, runner, clock, { profiles: [{ agent: "ceo", role: "ceo" }, { agent: "a", role: "child" }, { agent: "b", role: "child" }] });
-  ledger.putGoal({ id: "root", parentId: null, objective: "organization", observationMethod: null, owner: "ceo", phase: "active", revision: 0 }, "human");
-  ledger.putGoal({ id: "a-goal", parentId: "root", objective: "a", observationMethod: "Verify the objective through an evidence-backed handoff.", owner: "a", phase: "active", revision: 0 }, "ceo");
-  ledger.putGoal({ id: "b-goal", parentId: "root", objective: "b", observationMethod: "Verify the objective through an evidence-backed handoff.", owner: "b", phase: "active", revision: 0 }, "ceo");
+  ledger.putGoal({ id: "root", parentId: null, objective: "organization", observationMethod: null, verificationMethod: null, owner: "ceo", phase: "active", revision: 0 }, "human");
+  ledger.putGoal({ id: "a-goal", parentId: "root", objective: "a", observationMethod: "Verify the objective through an evidence-backed handoff.", verificationMethod: "Verify the objective through an evidence-backed handoff.", owner: "a", phase: "active", revision: 0 }, "ceo");
+  ledger.putGoal({ id: "b-goal", parentId: "root", objective: "b", observationMethod: "Verify the objective through an evidence-backed handoff.", verificationMethod: "Verify the objective through an evidence-backed handoff.", owner: "b", phase: "active", revision: 0 }, "ceo");
   supervisor.planWake("a", clock.now().toISOString(), "a");
   supervisor.planWake("b", clock.now().toISOString(), "b");
   const completed = await supervisor.runAvailable(2);
@@ -409,13 +409,13 @@ test("memory.append facts persist across wakes and inject a bounded working-memo
 test("CEO role delegates atomically and receives its dedicated operating policy", async () => {
   const clock = new SimulatedClock();
   const ledger = createMemoryLedger({ clock });
-  const root = { id: "ceo-root", parentId: null, objective: "build organization", observationMethod: null, owner: "ceo", phase: "active", revision: 0 } as const;
+  const root = { id: "ceo-root", parentId: null, objective: "build organization", observationMethod: null, verificationMethod: null, owner: "ceo", phase: "active", revision: 0 } as const;
   ledger.putGoal(root, "human");
   const evidence = ledger.appendEvent({ ...event("ceo", "organization.observed", { independent: true }), ts: clock.now().toISOString() });
-  assert.throws(() => ledger.commitDelegation({ id: "self-delegation", parentGoalId: "ceo-root", childGoal: { id: "self-child", objective: "vague", observationMethod: "none", owner: "ceo" }, brief: {}, reason: "self", evidence: [evidence.seq] }, "ceo"), /distinct worker agent/);
+  assert.throws(() => ledger.commitDelegation({ id: "self-delegation", parentGoalId: "ceo-root", childGoal: { id: "self-child", objective: "vague", observationMethod: "none", verificationMethod: "none", owner: "ceo" }, brief: {}, reason: "self", evidence: [evidence.seq] }, "ceo"), /distinct worker agent/);
   const contextFile = join(mkdtempSync(join(tmpdir(), "goah-ceo-")), "context.json");
   const supervisor = new Supervisor(ledger, fauxRunner([
-    { rpc: { method: "goal.delegate", params: { id: "delegation-1", parentGoalId: "ceo-root", childGoal: { id: "child", objective: "own metric", observationMethod: "Verify the objective through an evidence-backed handoff.", owner: "worker" }, brief: { deliverable: "metric" }, reason: "independent result", evidence: [evidence.seq] } } },
+    { rpc: { method: "goal.delegate", params: { id: "delegation-1", parentGoalId: "ceo-root", childGoal: { id: "child", objective: "own metric", observationMethod: "Verify the objective through an evidence-backed handoff.", verificationMethod: "Verify the objective through an evidence-backed handoff.", owner: "worker" }, brief: { deliverable: "metric" }, reason: "independent result", evidence: [evidence.seq] } } },
     { handoff: { handoff: { observations: [], results: ["delegated"], nextSteps: [] }, mail: [], nextWakeAt: null } },
   ], contextFile), clock, { profiles: [{ agent: "ceo", role: "ceo" }] });
   supervisor.planWake("ceo", clock.now().toISOString(), "replan");
@@ -453,11 +453,11 @@ test("root revision blocks stale child gated actions until CEO revises the child
   supervisor.startGoal("grow revenue", "revenue");
   supervisor.confirmObservationMethod("revenue", "Run the net revenue report every six hours.");
   const delegationEvidence = ledger.appendEvent({ ...event("ceo", "source.observed", { ok: true }), ts: clock.now().toISOString() });
-  supervisor.delegate({ id: "d", parentGoalId: "revenue", childGoal: { id: "baseline", objective: "establish baseline", observationMethod: "Run the baseline report.", owner: "analyst" }, brief: {}, reason: "bounded evidence work", evidence: [delegationEvidence.seq] });
+  supervisor.delegate({ id: "d", parentGoalId: "revenue", childGoal: { id: "baseline", objective: "establish baseline", observationMethod: "Run the baseline report.", verificationMethod: "Run the baseline report.", owner: "analyst" }, brief: {}, reason: "bounded evidence work", evidence: [delegationEvidence.seq] });
   supervisor.updateGoal("revenue", { objective: "grow retained net revenue" }, "human");
   const actionEvidence = ledger.appendEvent({ ...event("analyst", "analysis.observed", { ready: true }), ts: clock.now().toISOString() });
   await assert.rejects(() => supervisor.submitAction({ id: "stale", agent: "analyst", kind: "external.write", payload: {}, reason: "publish", evidence: [actionEvidence.seq], auditAdvice: null, adviceAcked: false }, "missing"), /predates root revision/);
-  supervisor.reviseChildGoal("baseline", "establish retained revenue baseline", "Run the retained revenue baseline report.", "ceo", "root objective changed", [actionEvidence.seq]);
+  supervisor.reviseChildGoal("baseline", "establish retained revenue baseline", "Run the retained revenue baseline report.", "Require the retained revenue baseline report to pass.", "ceo", "root objective changed", [actionEvidence.seq]);
   const requested = await supervisor.submitAction({ id: "current", agent: "analyst", kind: "external.write", payload: {}, reason: "publish", evidence: [actionEvidence.seq], auditAdvice: null, adviceAcked: false }, "missing");
   assert.equal(requested.status, "requested");
   ledger.close();
@@ -510,8 +510,8 @@ test("one root goal forms a two-agent organization and returns completion contro
   const byTrigger = {
     "root:company:created": [
       { rpc: { method: "team.list", params: {} } },
-      { rpc: { method: "goal.delegate", params: { id: "d-research", parentGoalId: "company", childGoal: { id: "market", objective: "validate demand", observationMethod: "Verify the objective through an evidence-backed handoff.", owner: "research" }, brief: { deliverable: "evidence" }, reason: "independent evidence boundary", evidence: [1] } } },
-      { rpc: { method: "goal.delegate", params: { id: "d-operations", parentGoalId: "company", childGoal: { id: "operations", objective: "design fulfillment", observationMethod: "Verify the objective through an evidence-backed handoff.", owner: "operator" }, brief: { deliverable: "plan" }, reason: "independent operating boundary", evidence: [1] } } },
+      { rpc: { method: "goal.delegate", params: { id: "d-research", parentGoalId: "company", childGoal: { id: "market", objective: "validate demand", observationMethod: "Verify the objective through an evidence-backed handoff.", verificationMethod: "Verify the objective through an evidence-backed handoff.", owner: "research" }, brief: { deliverable: "evidence" }, reason: "independent evidence boundary", evidence: [1] } } },
+      { rpc: { method: "goal.delegate", params: { id: "d-operations", parentGoalId: "company", childGoal: { id: "operations", objective: "design fulfillment", observationMethod: "Verify the objective through an evidence-backed handoff.", verificationMethod: "Verify the objective through an evidence-backed handoff.", owner: "operator" }, brief: { deliverable: "plan" }, reason: "independent operating boundary", evidence: [1] } } },
       { handoff: { handoff: { observations: ["team formed"], results: ["delegated"], nextSteps: ["review material handoffs"] }, mail: [], nextWakeAt: "2026-08-19T00:00:00.000Z" } },
     ],
     "child-handoff:": [
@@ -564,7 +564,7 @@ test("post-wake metric verification closes a failing repo-health loop", async ()
   const ledger = createMemoryLedger({ clock });
   const runner = fauxRunner([{ write: { path: "healthy.txt", content: "ok\n" } }, { handoff: { handoff: { observations: ["failed first"], results: ["repaired"], nextSteps: [] }, mail: [], nextWakeAt: null } }], undefined, repo);
   const supervisor = new Supervisor(ledger, runner, clock, { verifyMetricsAfterWake: true });
-  supervisor.createGoal({ id: "health", parentId: null, objective: "keep healthy", observationMethod: null, owner: "worker", phase: "active", revision: 0 });
+  supervisor.createGoal({ id: "health", parentId: null, objective: "keep healthy", observationMethod: null, verificationMethod: null, owner: "worker", phase: "active", revision: 0 });
   supervisor.registerMetricCollector("health", { source: "repo.health", window: "latest", direction: "at_least", target: 1, freshnessMs: 10_000, onMissing: "wake_owner", onStale: "wake_owner" }, {
     command: process.execPath,
     args: ["-e", "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const r=JSON.parse(s);const fs=require('fs');process.stdout.write(JSON.stringify({goalId:r.goalId,source:'repo.health',observedAt:new Date().toISOString(),value:fs.existsSync(process.env.GOAH_HEALTH_FILE)?1:0}))})"],
