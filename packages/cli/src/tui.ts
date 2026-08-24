@@ -192,7 +192,7 @@ async function switchModelCommand(text: string, configPath: string, stateDir: st
 /** /setup — re-enter the wizard, then reload the daemon so changes apply to the next wake. */
 async function runSetupReload(configPath: string, stateDir: string, push: (line: string) => void): Promise<void> {
   push("Leaving the TUI for setup — it returns after the wizard finishes.");
-  const result = await runSetupWizard(null);
+  const result = await runSetupWizard();
   if (!result.options.provider) { push("setup cancelled; nothing changed"); return; }
   applyWizardResult(result, configPath);
   push(await reloadDaemon(stateDir, configPath) ? "config reloaded — applies to the next wake" : `saved to ${resolve(configPath)}; daemon will pick it up on next start`);

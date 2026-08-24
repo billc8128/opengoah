@@ -23,7 +23,7 @@ async function main(): Promise<void> {
   const initialMessage = interactive && rawCommand && rawCommand !== "--continue" ? rawCommand : null;
   const configPath = option("--config") ?? "goah.config.json";
   if (command === "setup") {
-    const result = await runSetupWizard(readDefaultProfile());
+    const result = await runSetupWizard();
     applyWizardResult(result, existsSync(configPath) ? null : null);
     console.log(`Profile saved to ~/.goah/profile.json${existsSync(configPath) ? "" : " (run \`goah\` in any directory to create a workspace)"}`);
     return;
@@ -278,7 +278,7 @@ async function bootstrapWorkspace(configPath: string): Promise<void> {
   const profile = readDefaultProfile();
   if (!profile) {
     console.log("No Goah profile found — running first-use setup (stored in ~/.goah/profile.json; credentials stay as environment references).");
-    const result = await runSetupWizard(null);
+    const result = await runSetupWizard();
     applyWizardResult(result, null);
   }
   writeDefaultConfig(configPath, readDefaultProfile() ?? { provider: "faux" });

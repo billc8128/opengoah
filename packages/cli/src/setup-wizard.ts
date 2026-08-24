@@ -1,12 +1,12 @@
 /**
- * `goah setup` — interactive TUI wizard (pi-style first-time-setup, omp-style scenes).
+ * `goah setup` — interactive TUI wizard.
  *
- * Scenes: provider → model → key env (provider-dependent) → confirm. Writes the
- * global profile (~/.goah/profile.json) and, for a workspace bootstrap, the
- * local goah.config.json. Falls back to line-queue prompts when stdin/stdout
- * are not a TTY, so onboarding also works over pipes and in CI.
+ * Scenes render with pi-tui components on one screen: a persistent header and
+ * a swap slot that alternates between SelectList (arrow-key selection,
+ * omp/pi-style) and Input (free text). Non-TTY invocations fall back to the
+ * piped line-queue prompt so onboarding also works over pipes and in CI.
  */
-import { TUI, Text, Input, ProcessTerminal, type Component } from "@mariozechner/pi-tui";
+import { TUI, Text, Input, SelectList, ProcessTerminal, type Component, type SelectItem, type SelectListTheme } from "@mariozechner/pi-tui";
 import { writeDefaultProfile, writeDefaultConfig, type InitOptions, type PiProvider } from "./index.js";
 import { stdioQueue } from "./prompt-queue.js";
 
@@ -23,70 +23,98 @@ const KNOWN_MODELS: Partial<Record<PiProvider, string[]>> = {
   anthropic: ["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"],
 };
 
-/** Interactive or piped setup wizard. Returns the options that were persisted. */
-export async function runSetupWizard(existing: InitOptions | null): Promise<WizardResult> {
+const CUSTOM = "__custom__";
+
+const listTheme: SelectListTheme = {
+  selectedPrefix: (text) => `\x1b[36m❯\x1b[0m ${text}`,
+  selectedText: (text) => `\x1b[1m${text}\x1b[22m`,
+  description: (text) => `\x1b[2m${text}\x1b[22m`,
+  scrollInfo: (text) => `\x1b[2m${text}\x1b[22m`,
+  noMatch: (text) => `\x1b[2m${text}\x1b[22m`,
+};
+
+/** Interactive or piped setup wizard. Returns the options that were chosen. */
+export async function runSetupWizard(): Promise<WizardResult> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) return runPipedWizard();
-  const terminal = new ProcessTerminal();
-  const tui = new TUI(terminal);
-  const view = new Text("");
-  const input = new Input();
+
+  const tui = new TUI(new ProcessTerminal());
+  const header = new Text("");
+  let slot: Component | null = null;
   const { promise: done, resolve: resolveDone } = Promise.withResolvers<WizardResult>();
-  tui.addChild(view);
-  tui.addChild(input);
-  tui.setFocus(input);
-  let answerLine: ((value: string) => void) | null = null;
-  input.onSubmit = (line) => { input.setValue(""); const deliver = answerLine; answerLine = null; deliver?.(line.trim()); };
-  const ask = (prompt: string): Promise<string> => {
-    const { promise, resolve: answer } = Promise.withResolvers<string>();
-    answerLine = answer;
-    view.setText(prompt);
+
+  const setHeader = (title: string, subtitle: string): void => {
+    header.setText(["", `\x1b[1m Goah setup — ${title}\x1b[22m`, `\x1b[2m ${subtitle}\x1b[22m`, ""].join("\n"));
+  };
+  const setSlot = (component: Component): void => {
+    if (slot) tui.removeChild(slot);
+    slot = component;
+    tui.addChild(component);
+    tui.setFocus(component);
     tui.requestRender();
+  };
+  /** Arrow-key selection; resolves the chosen value, or null when cancelled. */
+  const pick = (title: string, subtitle: string, items: SelectItem[]): Promise<string | null> => {
+    setHeader(title, subtitle);
+    const list = new SelectList(items, 8, listTheme);
+    const { promise, resolve } = Promise.withResolvers<string | null>();
+    list.onSelect = (item) => resolve(item.value);
+    list.onCancel = () => resolve(null);
+    setSlot(list);
     return promise;
   };
-  const choose = (prompt: string, options: string[], descriptions: string[]): Promise<number> => {
-    const numbered = [prompt, "", ...options.map((option, index) => `${index + 1}. ${option}  —  ${descriptions[index] ?? ""}`), "", `enter a number 1-${options.length}: `].join("\n");
-    return (async () => {
-      while (true) {
-        const answer = await ask(numbered);
-        const parsed = Number(answer);
-        if (Number.isInteger(parsed) && parsed >= 1 && parsed <= options.length) return parsed - 1;
-      }
-    })();
+  /** Free-text entry on one Input line. */
+  const askText = (title: string, subtitle: string, prompt: string): Promise<string> => {
+    setHeader(title, subtitle);
+    const input = new Input();
+    const { promise, resolve } = Promise.withResolvers<string>();
+    let answerLine: ((value: string) => void) | null = resolve;
+    input.onSubmit = (line) => { input.setValue(""); const deliver = answerLine; answerLine = null; deliver?.(line.trim()); };
+    setSlot(input);
+    process.stdout.write(`${prompt} `);
+    return promise;
   };
+
+  tui.addChild(header);
   void (async () => {
+    let options: InitOptions = {};
     try {
-      const providerIndex = await choose("Choose a provider", PROVIDERS.map((entry) => entry.label), PROVIDERS.map((entry) => entry.description));
-      const provider = PROVIDERS[providerIndex]!.value;
+      const providerValue = await pick("Provider", "↑/↓ to move, Enter to select, Esc to cancel", PROVIDERS.map((entry) => ({ value: entry.value, label: entry.label, description: entry.description })));
+      if (!providerValue) { resolveDone({ options }); return; }
+      const provider = providerValue as PiProvider;
+      options = { provider };
+
       const known = KNOWN_MODELS[provider] ?? [];
       let model = "";
       if (known.length > 0) {
-        const modelIndex = await choose(`Choose a ${provider} model (or type its id at the next prompt)`, [...known, "other…"], []);
-        model = modelIndex < known.length ? known[modelIndex]! : await ask("model id: ");
+        const modelValue = await pick("Model", `Provider: ${provider}`, [...known.map((id) => ({ value: id, label: id })), { value: CUSTOM, label: "custom…", description: "type the model id yourself" }]);
+        if (!modelValue) { resolveDone({ options }); return; }
+        model = modelValue === CUSTOM ? await askText("Model", `Provider: ${provider}`, "model id:") : modelValue;
       } else {
-        model = await ask("model id: ");
+        model = await askText("Model", `Provider: ${provider}`, "model id:");
       }
-      if (!model) throw new Error("model is required");
-      const options: InitOptions = { provider, model };
+      if (!model) { resolveDone({ options }); return; }
+      options = { ...options, model };
+
       if (provider !== "faux") {
         const destination = provider === "anthropic" ? "ANTHROPIC_API_KEY" : provider === "openai" ? "OPENAI_API_KEY" : "ARK_API_KEY";
-        const apiKeyEnv = await ask(`environment variable holding the API key (default ${destination}): `);
-        options.apiKeyEnv = apiKeyEnv && /^[A-Z_][A-Z0-9_]*$/.test(apiKeyEnv) ? apiKeyEnv : destination;
+        const apiKeyEnv = await askText("API key", "Goah stores the variable NAME only — never the secret", `env var holding the key (Enter = ${destination}):`);
+        options = { ...options, apiKeyEnv: apiKeyEnv && /^[A-Z_][A-Z0-9_]*$/.test(apiKeyEnv) ? apiKeyEnv : destination };
       }
+
       if (provider === "ark-coding") {
-        const contextWindowTokens = Number(await ask("context window tokens (e.g. 256000): "));
-        const maxOutputTokensPerTurn = Number(await ask("max output tokens per turn (e.g. 32000): "));
+        const contextWindowTokens = Number(await askText("Context window", "Ark's model-list API does not publish limits; enter the published value", "context window tokens (e.g. 256000):"));
+        const maxOutputTokensPerTurn = Number(await askText("Max output", "per-turn output cap", "max output tokens per turn (e.g. 32000):"));
         if (!Number.isInteger(contextWindowTokens) || contextWindowTokens <= 0 || !Number.isInteger(maxOutputTokensPerTurn) || maxOutputTokensPerTurn <= 0) throw new Error("ark-coding requires integer context-window and max-output tokens");
-        options.contextWindowTokens = contextWindowTokens;
-        options.maxOutputTokensPerTurn = maxOutputTokensPerTurn;
+        options = { ...options, contextWindowTokens, maxOutputTokensPerTurn };
       }
-      view.setText([`Profile summary`, "", `  provider: ${provider}`, `  model: ${model}`, ...(options.apiKeyEnv ? [`  key env: ${options.apiKeyEnv}`] : []), ...(options.contextWindowTokens ? [`  context: ${options.contextWindowTokens}`, `  output: ${options.maxOutputTokensPerTurn}`] : []), "", "Saving…"].join("\n"));
-      tui.requestRender();
-      resolveDone({ options });
+
+      const summary = ["", `  provider  ${options.provider}`, `  model     ${options.model}`, ...(options.apiKeyEnv ? [`  key env   ${options.apiKeyEnv}`] : []), ...(options.contextWindowTokens ? [`  context   ${options.contextWindowTokens}`, `  output    ${options.maxOutputTokensPerTurn}`] : [])].join("\n");
+      const confirmation = await pick("Confirm", `${summary}`, [{ value: "save", label: "Save profile" }, { value: "cancel", label: "Cancel" }]);
+      if (confirmation !== "save") options = {};
     } catch (error) {
-      view.setText(`! ${error instanceof Error ? error.message : String(error)}`);
-      tui.requestRender();
-      resolveDone({ options: {} });
+      setHeader("Error", error instanceof Error ? error.message : String(error));
     }
+    resolveDone({ options });
   })();
   tui.start();
   const result = await done;
@@ -94,7 +122,7 @@ export async function runSetupWizard(existing: InitOptions | null): Promise<Wiza
   return result;
 }
 
-/** Non-TTY fallback: sequential numbered prompts through the shared line queue in cli.ts semantics. */
+/** Non-TTY fallback: sequential numbered prompts through the shared line queue. */
 async function runPipedWizard(): Promise<WizardResult> {
   const ask = stdioQueue();
   try {

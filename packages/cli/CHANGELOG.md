@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.1
+
+- Setup wizard uses arrow-key SelectList navigation with per-scene headers; piped fallback unchanged.
+
 ## 0.9.0
 
 - Spawn-time credential resolution (`env:NAME` + `.env` chain), `config.reload` hot runner swap, `goah setup` TUI wizard, `/model` and `/setup` TUI commands, and a fixed-slot welcome panel from a read-only ledger snapshot.

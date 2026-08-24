@@ -1,8 +1,12 @@
 # Changelog
 
+## 0.9.1
+
+- `goah setup` scenes now use arrow-key SelectList navigation (↑/↓ + Enter, Esc cancels) with a persistent header per scene, matching the pi/omp selection pattern; number-typing remains only in the non-TTY fallback.
+
+
 ## 0.9.0
 
-- Credentials resolve at spawn time: config files hold only `env:NAME` references, `loadConfig` never resolves secrets, and every runner/verifier spawn resolves fresh (daemon process env > `<workspace>/.env` > `~/.goah/.env`). Editing `.env` or rotating a shell export applies to the next wake without restarting the Supervisor; resolved secrets no longer live in the daemon's memory for its lifetime.
 - The control protocol gains `config.reload`: the daemon hot-swaps its runner (refused while a wake is leased/running), so TUI-driven config changes take effect immediately. `action.reject` also gained its missing protocol branch.
 - `goah setup` runs a TUI wizard (provider → model → key env → summary; piped fallback for non-TTY) writing `~/.goah/profile.json`; first-run `goah` enters it automatically.
 - TUI gains `/model ID` (write config + hot reload) and `/setup` (re-enter the wizard, reload daemon), matching the pi/omp/hermes baseline of in-session provider/model commands that take effect without restart.
