@@ -24,7 +24,7 @@ goah does not replace your agent runner (pi, or any runner that implements the `
 
 ## Status
 
-**Experimental.** Contracts are `0.5.0` / `experimental`. SQLite schema changes use explicit, version-checked migrations; public TypeScript contracts may still change before 1.0.
+**Experimental.** Contracts are `0.6.0` / `experimental`. SQLite schema changes use explicit, version-checked migrations; public TypeScript contracts may still change before 1.0.
 
 Implemented and tested today:
 

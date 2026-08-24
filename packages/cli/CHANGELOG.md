@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.11.0
 
 - Ordinary chat no longer starts a Goal, `/goal` creates or revises explicitly, `/records` and `/history` expose shared timelines, and default output hides internal narration and raw tool arguments.
 

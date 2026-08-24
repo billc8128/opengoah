@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.11.0
 
 - Ordinary CEO interaction no longer creates a Root Goal or requires Handoff; durable Human intent can bind the open Turn through Goal tools.
 - Added versioned shared Work Records, separate Goal observation/verification methods, strict Goal-owned delegation, compact revision Handoffs, legacy memory migration, and quiet default CLI output.
