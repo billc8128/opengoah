@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.0
+
+- Conformance suite now checks `latestEvent()`; soak tests disable the silence tripwire.
+
 ## 0.5.0
 
 - Added schema v8, observation lifecycle, revision barrier, universal Pi tool, and resident-control test coverage.

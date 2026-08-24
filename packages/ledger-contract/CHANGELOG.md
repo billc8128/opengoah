@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.0
+
+- Ledger contract gained `latestEvent()` for an O(1) global-recency query.
+
 ## 0.5.0
 
 - Added textual Goal observation methods, evidence-backed completion, and child Goal revision capabilities.

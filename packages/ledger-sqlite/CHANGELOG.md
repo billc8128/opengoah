@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.0
+
+- Added the O(1) `latestEvent()` query.
+
 ## 0.5.0
 
 - Added SQLite schema v8 observation methods, migration/replay support, atomic method delegation, and current-revision completion evidence.

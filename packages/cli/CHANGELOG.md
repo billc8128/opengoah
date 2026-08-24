@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.0
+
+- Config gains `silencePolicy`; loading strips removed `heartbeatPolicies`/`progressPolicies` keys and `goah init` writes the explicit 12h silence default.
+
 ## 0.5.0
 
 - Added the interactive `goah` CEO shell and resident Supervisor local control socket for live goal revisions and observation confirmation.

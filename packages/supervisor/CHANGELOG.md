@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.0
+
+- Replaced the per-agent heartbeat and per-goal progress watchdogs with one system-silence tripwire (`silence` option, default 12h/ceo, `null` disables); any ledger event resets the clock and the tripwire mails a decision-level confirmation request at most once per silence window.
+
 ## 0.5.0
 
 - Added filesystem-first CEO onboarding, observation/revision Active Context, completion evidence, and stale-child gated-action barriers.
@@ -22,3 +26,4 @@
 ## 0.1.0
 
 - Scheduler, daemon, metrics, watchdog, action gate, verification plane, multi-agent contexts, and dashboard.
+
