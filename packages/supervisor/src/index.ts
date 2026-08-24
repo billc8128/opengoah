@@ -140,6 +140,7 @@ export class Supervisor {
   createGoal(goal: GoalSnapshot, actor = "human"): void { this.ledger.putGoal(goal, actor); }
   createRootGoal(objective: string, id: string = randomUUID()): GoalSnapshot {
     if (!objective.trim()) throw new Error("root objective is required");
+    if (this.ledger.goals().some((goal) => goal.parentId === null && goal.owner === "ceo" && goal.phase !== "complete")) throw new Error("CEO already has an unfinished Root Goal; use work_on_goal");
     const goal: GoalSnapshot = { id, parentId: null, objective, observationMethod: null, verificationMethod: null, owner: "ceo", phase: "active", revision: 0 };
     this.ledger.putGoal(goal, "human");
     return this.#goal(id);
@@ -247,6 +248,7 @@ export class Supervisor {
     try {
       running = this.ledger.markWakeRunning(wake.id, this.#now(), leaseToken);
       const turn = this.#turnContext(running);
+      this.ledger.appendRunnerEvent({ streamId: wakeStream(running.id), ts: this.#now(), actor: running.agent, type: "run.admitted", data: turn as unknown as JsonValue }, leaseToken);
       const workRecordRevisionAtStart = turn.goalBinding ? this.ledger.workRecord(turn.goalBinding.goalId)?.recordRevision ?? -1 : -1;
       const context = this.#loadContext(running, turn);
       handle = this.runner.prepare({
@@ -521,7 +523,7 @@ export class Supervisor {
     const goals = this.ledger.goalsForOwner(wake.agent).filter((goal) => goal.phase === "active");
     const goal = goals.find((candidate) => candidate.parentId === null) ?? goals[0];
     const humanMail = wake.triggerRef.startsWith("mail:") && this.ledger.mailbox().some((mail) => mail.id === wake.triggerRef.slice(5) && mail.from === "human");
-    return { source: humanMail ? { kind: "human" } : { kind: "goal_driver", round: wake.attempt }, ...(goal ? { goalBinding: { goalId: goal.id, goalRevision: goal.revision } } : {}) };
+    return { source: humanMail ? { kind: "human" } : { kind: "goal_driver", round: goal ? (this.ledger.workRecord(goal.id)?.recordRevision ?? 0) + 1 : 1 }, ...(goal ? { goalBinding: { goalId: goal.id, goalRevision: goal.revision } } : {}) };
   }
 
   #loadContext(wake: WakeSnapshot, turn: TurnContext): JsonValue {
@@ -541,7 +543,7 @@ export class Supervisor {
         return `Human: ${typeof priorBody.message === "string" ? priorBody.message : ""}\nAssistant: ${data.response?.content ?? ""}`;
       });
       return {
-        text: [`# Human message\n\n${message}`, ...(recent.length ? [`# Recent conversation\n\n${recent.join("\n\n")}`] : [])].join("\n\n"),
+        text: [...(recent.length ? [`# Recent conversation\n\n${recent.join("\n\n")}`] : []), `# Human message\n\n${message}`].join("\n\n"),
         sourceSeqs: mailEvent ? [mailEvent.seq] : [],
         capabilities,
         systemPrompt: profile.systemPrompt ?? "You are Goah's primary Agent. Respond naturally to the Human, use tools when useful, and keep the final answer concise. Do not create or operate a Goal unless the Human expresses durable Goal intent.",
@@ -595,6 +597,7 @@ export class Supervisor {
     const profile = this.#profiles.get(wake.agent) ?? { agent: wake.agent, role: "child" as const };
     const allowed = new Set(profile.capabilities ?? defaultCapabilities(profile.role));
     if (!allowed.has(method)) throw new Error(`${profile.role} agent is not allowed to call ${method}`);
+    if (!turn.goalBinding && goalBoundCapability(method)) throw new Error(`${method} requires a Goal-bound Turn`);
     this.ledger.appendRunnerEvent({ streamId: wakeStream(wake.id), ts: this.#now(), actor: wake.agent, type: `rpc.${method}`, data: params }, leaseToken);
     const input = asRecord(params);
     if (method === "ledger.search") return this.ledger.searchEvents(String(input.query), Number(input.limit ?? 20)) as unknown as JsonValue;
@@ -642,8 +645,25 @@ export class Supervisor {
       evidence: numberArray(input.evidence),
     }, wake.agent, wake.id) as unknown as JsonValue;
     if (method === "goal.revise") return this.reviseChildGoal(String(input.goalId), String(input.objective), String(input.observationMethod), String(input.verificationMethod), wake.agent, String(input.reason), numberArray(input.evidence), wake.id) as unknown as JsonValue;
-    if (method === "goal.pause" || method === "goal.resume") return this.transitionGoal(String(input.goalId), method === "goal.pause" ? "paused" : "active", wake.agent) as unknown as JsonValue;
-    if (method === "goal.complete") return this.completeGoal({ goalId: String(input.goalId), revision: Number(input.revision), reason: String(input.reason), evidence: numberArray(input.evidence) }, wake.agent, wake.id) as unknown as JsonValue;
+    if (method === "goal.pause" || method === "goal.resume") {
+      const goalId = String(input.goalId);
+      const currentGoal = this.#goal(goalId);
+      const directHumanRoot = !turn.goalBinding && turn.source.kind === "human" && currentGoal.parentId === null;
+      if (!turn.goalBinding && !directHumanRoot) throw new Error(`${method} requires a Goal-bound Turn`);
+      const goal = this.transitionGoal(goalId, method === "goal.pause" ? "paused" : "active", directHumanRoot ? "human" : wake.agent);
+      if (method === "goal.resume" && directHumanRoot) {
+        turn.goalBinding = { goalId: goal.id, goalRevision: goal.revision };
+        this.ledger.appendRunnerEvent({ streamId: wakeStream(wake.id), ts: this.#now(), actor: wake.agent, type: "turn.goal_bound", data: { goalId: goal.id, goalRevision: goal.revision, authority: "human" } }, leaseToken);
+        return { goal, goalBinding: turn.goalBinding, instruction: "This Turn is now Goal-bound. Update its Work Record and finish with handoff." } as unknown as JsonValue;
+      }
+      return goal as unknown as JsonValue;
+    }
+    if (method === "goal.complete") {
+      const currentGoal = this.#goal(String(input.goalId));
+      const directHumanRoot = !turn.goalBinding && turn.source.kind === "human" && currentGoal.parentId === null;
+      if (!turn.goalBinding && !directHumanRoot) throw new Error("goal.complete requires a Goal-bound Turn");
+      return this.completeGoal({ goalId: currentGoal.id, revision: Number(input.revision), reason: String(input.reason), evidence: numberArray(input.evidence) }, directHumanRoot ? "human" : wake.agent, wake.id) as unknown as JsonValue;
+    }
     if (method === "human.request") {
       const evidence = numberArray(input.evidence);
       for (const seq of evidence) if (!this.ledger.eventsSince(seq - 1).some((event) => event.seq === seq)) throw new Error(`evidence event does not exist: ${seq}`);
@@ -791,6 +811,7 @@ function escapeHtml(value: string): string { return value.replaceAll("&", "&amp;
 function interactionMailId(wake: WakeSnapshot): string | null { return wake.triggerRef.startsWith("interaction:") ? wake.triggerRef.slice("interaction:".length) : null; }
 function handoffBlocked(handoff: Handoff): boolean { return "goalId" in handoff ? handoff.outcome === "blocked" : Boolean(handoff.blocker); }
 function handoffTriggersCeo(handoff: Handoff): boolean { return "goalId" in handoff ? handoff.outcome === "blocked" || handoff.outcome === "completion_proposed" : Boolean(handoff.material || handoff.blocker); }
+function goalBoundCapability(method: AgentCapability): boolean { return ["goal.delegate", "goal.reassign", "goal.revise", "goal.put", "work_record.update", "mail.send", "schedule.set", "human.request"].includes(method); }
 function asRecord(value: JsonValue): Record<string, JsonValue> { if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("RPC params must be an object"); return value; }
 function numberArray(value: JsonValue | undefined): number[] { if (!Array.isArray(value) || value.some((item) => typeof item !== "number")) throw new Error("RPC evidence must be a number array"); return value as number[]; }
 function asChildGoal(value: JsonValue | undefined): { id: string; objective: string; observationMethod: string; verificationMethod: string; owner: string } {

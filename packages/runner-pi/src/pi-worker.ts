@@ -76,7 +76,7 @@ export async function runPiWorker(): Promise<void> {
     const sourceSeqs = Array.isArray(contextRecord.sourceSeqs) ? contextRecord.sourceSeqs.filter((value): value is number => Number.isInteger(value)) : [];
     const systemPrompt = goalState.bound
       ? `${process.env.GOAH_PI_SYSTEM_PROMPT ?? suppliedPrompt ?? "You are a goal-oriented worker."}\nYou must finish by calling handoff exactly once. Treat the supplied context as authoritative.`
-      : `${process.env.GOAH_PI_SYSTEM_PROMPT ?? suppliedPrompt ?? "You are Goah's primary Agent."}\nRespond normally to the Human. Do not create a Goal for routine single-turn work. When the Human expresses a durable Goal, call create_goal; after create_goal or work_on_goal succeeds, update the Goal Work Record and finish by calling handoff. Treat the supplied context as authoritative.`;
+      : `${process.env.GOAH_PI_SYSTEM_PROMPT ?? suppliedPrompt ?? "You are Goah's primary Agent."}\nRespond normally to the Human. Do not create a Goal for routine single-turn work. When the Human expresses a durable Goal, call create_goal; after create_goal, work_on_goal, or a Root resume succeeds with a Goal binding, update the Goal Work Record and finish by calling handoff. Treat the supplied context as authoritative.`;
     const agent = new Agent({
       initialState: {
         systemPrompt,
@@ -186,7 +186,7 @@ function createTools(root: string, handoff: (output: WakeOutput) => void, rpc: W
     },
   };
   const rpcTools = createRpcTools(rpc, capabilities, (method, result) => {
-    if ((method === "goal.create" || method === "goal.work") && result && typeof result === "object" && !Array.isArray(result) && result.goalBinding && typeof result.goalBinding === "object" && !Array.isArray(result.goalBinding)) {
+    if ((method === "goal.create" || method === "goal.work" || method === "goal.resume") && result && typeof result === "object" && !Array.isArray(result) && result.goalBinding && typeof result.goalBinding === "object" && !Array.isArray(result.goalBinding)) {
       const binding = result.goalBinding as Record<string, JsonValue>;
       if (typeof binding.goalId === "string" && typeof binding.goalRevision === "number") { goalState.bound = true; goalState.binding = { goalId: binding.goalId, goalRevision: binding.goalRevision }; }
     }
@@ -328,7 +328,7 @@ function createRpcTools(rpc: WorkerRpc, allowed?: ReadonlySet<AgentCapability>, 
     ["goal.reassign", tool("reassign_goal", "Atomically transfer a child goal, notify both owners, and queue the new owner.", "goal.reassign", Type.Object({ id: Type.String(), goalId: Type.String(), newOwner: Type.String(), brief: Type.Any(), reason: Type.String(), evidence: Type.Array(Type.Number()) }))],
     ["goal.revise", tool("revise_goal", "Revise a Child Goal objective, observation method, and verification method as one new revision.", "goal.revise", Type.Object({ goalId: Type.String(), objective: Type.String(), observationMethod: Type.String(), verificationMethod: Type.String(), reason: Type.String(), evidence: Type.Array(Type.Number()) }))],
     ["goal.pause", tool("pause_goal", "Pause a child goal and suppress queued motion.", "goal.pause", Type.Object({ goalId: Type.String() }))],
-    ["goal.resume", tool("resume_goal", "Resume a child goal and ensure its owner is queued.", "goal.resume", Type.Object({ goalId: Type.String() }))],
+    ["goal.resume", tool("resume_goal", "Resume a Goal. A direct Human Root resume binds the current Turn; Child Goal resume requires an already bound parent Turn.", "goal.resume", Type.Object({ goalId: Type.String() }))],
     ["goal.complete", tool("complete_goal", "Complete a child goal with evidence produced under its current observation method. Root completion remains human authority.", "goal.complete", Type.Object({ goalId: Type.String(), revision: Type.Number(), reason: Type.String(), evidence: Type.Array(Type.Number()) }))],
     ["human.request", tool("request_human", "Ask the human for a decision, observation-method confirmation, or root completion with evidence.", "human.request", Type.Object({ type: Type.Union([Type.Literal("decision"), Type.Literal("observation_method_confirmation"), Type.Literal("completion_recommendation")]), message: Type.Any(), evidence: Type.Array(Type.Number()) }))],
     ["work_record.list", tool("work_record_list", "List the current Work Record for every Goal in the organization.", "work_record.list", Type.Object({}))],

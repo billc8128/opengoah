@@ -85,6 +85,34 @@ test("a Goal-bound Turn cannot hand off without updating its Work Record", async
   ledger.close();
 });
 
+test("an unbound Human Turn cannot mutate Goal organization", async () => {
+  const clock = new SimulatedClock();
+  const ledger = createMemoryLedger({ clock });
+  const supervisor = new Supervisor(ledger, fauxRunner([{ rpc: { method: "goal.delegate", params: { id: "forbidden", parentGoalId: "root", childGoal: { id: "child", objective: "should not exist", observationMethod: "inspect", verificationMethod: "verify", owner: "worker" }, brief: {}, reason: "not bound", evidence: [] } } }]), clock);
+  supervisor.createRootGoal("existing root", "root");
+  assert.throws(() => supervisor.createRootGoal("second root", "second"), /unfinished Root Goal/);
+  const accepted = supervisor.interactWithCeo("hello");
+  assert.equal((await supervisor.tick())?.status, "abnormal");
+  assert.equal(ledger.goal("child"), null);
+  assert.match(String((ledger.eventsForWake(accepted.wake.id).find((event) => event.type === "wake.abnormal_reason")?.data as { reason?: string }).reason), /requires a Goal-bound Turn/);
+  ledger.close();
+});
+
+test("automatic Goal rounds advance from the Work Record timeline", async () => {
+  const clock = new SimulatedClock();
+  const ledger = createMemoryLedger({ clock });
+  const supervisor = new Supervisor(ledger, fauxRunner([{ handoff: { handoff: { observations: [], results: [], nextSteps: [] }, mail: [], nextWakeAt: null } }]), clock);
+  supervisor.createGoal(goal());
+  for (let round = 1; round <= 2; round += 1) {
+    supervisor.planWake("worker", clock.now().toISOString(), `round-${round}`);
+    assert.equal((await supervisor.tick())?.status, "done");
+    clock.advance(1);
+  }
+  const rounds = ledger.eventsSince(0, ["run.admitted"]).map((event) => (event.data as { source: { kind: string; round?: number } }).source.round);
+  assert.deepEqual(rounds, [1, 2]);
+  ledger.close();
+});
+
 test("crashed wake keeps emergency mail and local partial work for recovery", async () => {
   const repo = repository();
   const clock = new SimulatedClock();
