@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { createConnection, createServer, type Socket } from "node:net";
 import { join } from "node:path";
-import type { JsonValue, Ledger } from "goah-ledger-contract";
 import type { Supervisor } from "goah-supervisor";
+import type { ProcessRunner } from "goah-runner-pi";
+import type { SqliteLedger } from "goah-ledger-sqlite";
+import type { JsonValue, Ledger } from "goah-ledger-contract";
 
 export type ControlRequest =
   | { op: "ping" }
@@ -18,7 +20,8 @@ export type ControlRequest =
   | { op: "ceo.status" }
   | { op: "ceo.inbox" }
   | { op: "action.approve"; id: string; reason: string; evidence: number[] }
-  | { op: "action.reject"; id: string; reason: string; evidence: number[] };
+  | { op: "action.reject"; id: string; reason: string; evidence: number[] }
+  | { op: "config.reload"; configPath: string };
 
 export type ControlFrame =
   | { type: "result"; value: JsonValue }
@@ -31,12 +34,12 @@ export function controlEndpoint(stateDir: string): string {
   return `\\\\.\\pipe\\goah-${createHash("sha256").update(stateDir).digest("hex").slice(0, 16)}`;
 }
 
-export async function runControlServer(supervisor: Supervisor, ledger: Ledger, stateDir: string, signal: AbortSignal): Promise<void> {
+export async function runControlServer(supervisor: Supervisor, ledger: Ledger, stateDir: string, signal: AbortSignal, options: { reloadRuntime?: (configPath: string) => Promise<RuntimeSwap | undefined> } = {}): Promise<void> {
   mkdirSync(stateDir, { recursive: true });
   const endpoint = controlEndpoint(stateDir);
   if (process.platform !== "win32" && existsSync(endpoint)) rmSync(endpoint);
   const sockets = new Set<Socket>();
-  const server = createServer((socket) => { sockets.add(socket); socket.on("error", () => undefined); socket.once("close", () => sockets.delete(socket)); void serve(socket, supervisor, ledger); });
+  const server = createServer((socket) => { sockets.add(socket); socket.on("error", () => undefined); socket.once("close", () => sockets.delete(socket)); void serve(socket, supervisor, ledger, options.reloadRuntime); });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(endpoint, resolve);
@@ -83,7 +86,7 @@ export async function controlAvailable(stateDir: string): Promise<boolean> {
   try { return (await requestControl(stateDir, { op: "ping" })) === "pong"; } catch { return false; }
 }
 
-async function serve(socket: Socket, supervisor: Supervisor, ledger: Ledger): Promise<void> {
+async function serve(socket: Socket, supervisor: Supervisor, ledger: Ledger, reloadRuntime?: (configPath: string) => Promise<RuntimeSwap | undefined>): Promise<void> {
   let buffer = "";
   socket.on("data", (chunk: Buffer) => {
     buffer += chunk.toString();
@@ -94,17 +97,21 @@ async function serve(socket: Socket, supervisor: Supervisor, ledger: Ledger): Pr
     let request: ControlRequest;
     try { request = JSON.parse(line) as ControlRequest; }
     catch (error) { write(socket, { type: "error", error: error instanceof Error ? error.message : String(error) }); socket.end(); return; }
-    void dispatch(request, socket, supervisor, ledger).catch((error) => {
+    void dispatch(request, socket, supervisor, ledger, reloadRuntime).catch((error) => {
       write(socket, { type: "error", error: error instanceof Error ? error.message : String(error) });
       socket.end();
     });
   });
 }
 
-async function dispatch(request: ControlRequest, socket: Socket, supervisor: Supervisor, ledger: Ledger): Promise<void> {
+async function dispatch(request: ControlRequest, socket: Socket, supervisor: Supervisor, ledger: Ledger, reloadRuntime?: (configPath: string) => Promise<RuntimeSwap | undefined>): Promise<void> {
   if (request.op === "interact") { await interact(request.message, socket, supervisor, ledger); return; }
   let value: unknown;
-  if (request.op === "ping") value = "pong";
+  if (request.op === "config.reload") {
+    const swap = reloadRuntime ? await reloadRuntime(request.configPath) : undefined;
+    if (swap) { supervisor.swapRunner(swap.runner); ledger.close(); ledger = swap.ledger; }
+    value = { reloaded: Boolean(swap) };
+  } else if (request.op === "ping") value = "pong";
   else if (request.op === "status") value = snapshot(ledger, supervisor);
   else if (request.op === "goal.start") value = supervisor.startGoal(request.objective, request.id);
   else if (request.op === "goal.update") value = supervisor.updateGoal(request.id, { ...(request.objective !== undefined ? { objective: request.objective } : {}), ...(request.observationMethod !== undefined ? { observationMethod: request.observationMethod } : {}), ...(request.owner !== undefined ? { owner: request.owner } : {}) }, "human");
@@ -115,7 +122,8 @@ async function dispatch(request: ControlRequest, socket: Socket, supervisor: Sup
   else if (request.op === "ceo.status") value = ceoStatus(ledger, supervisor);
   else if (request.op === "ceo.inbox") value = ledger.unreadMail("human");
   else if (request.op === "action.approve") value = await supervisor.approveAction(request.id, "human", request.reason, request.evidence);
-  else value = supervisor.rejectAction(request.id, "human", request.reason, request.evidence);
+  else if (request.op === "action.reject") value = await supervisor.rejectAction(request.id, "human", request.reason, request.evidence);
+  else value = { unknown: String(request) };
   write(socket, { type: "result", value: value as JsonValue });
   socket.end();
 }
@@ -156,3 +164,5 @@ function ceoStatus(ledger: Ledger, supervisor: Supervisor): JsonValue {
 }
 function requiredGoal(ledger: Ledger, id: string) { const goal = ledger.goal(id); if (!goal) throw new Error("goal not found"); return goal; }
 function write(socket: Socket, frame: ControlFrame): void { socket.write(`${JSON.stringify(frame)}\n`); }
+
+export interface RuntimeSwap { runner: ProcessRunner; ledger: SqliteLedger }

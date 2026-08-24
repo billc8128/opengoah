@@ -2,17 +2,22 @@
 import { TUI, Text, Input, ProcessTerminal, type Component } from "@mariozechner/pi-tui";
 import { controlAvailable, requestControl, streamControl, type ControlFrame } from "./control.js";
 import { readConsoleMetadata } from "./index.js";
+import { switchModel, reloadDaemon, readRunnerEnv } from "./live-config.js";
+import { welcomeSnapshot, renderWelcome } from "./welcome.js";
+import { runSetupWizard, applyWizardResult } from "./setup-wizard.js";
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
+
 interface CancellableState { active: boolean }
 
 export async function runGoahTui(configPath: string, stateDir: string, initialMessage: string | null): Promise<void> {
   if (!process.stdout.isTTY || !process.stdin.isTTY) return runNonInteractive(configPath, stateDir, initialMessage);
+  const runnerEnv = readRunnerEnv(configPath);
+  const snapshot = welcomeSnapshot(stateDir, runnerEnv);
+  const transcript: string[] = renderWelcome(snapshot, snapshot.handoffs.length > 0);
   await ensureDaemon(configPath, stateDir);
-  const { promise: exited, resolve: resolveExit } = Promise.withResolvers<void>();
   const terminal = new ProcessTerminal();
   const tui = new TUI(terminal);
-  const transcript: string[] = ["Goah CEO — type a goal or message. /status inspects, /quit exits."];
   const transcriptView = new Text(transcript.join("\n"));
   const input = new Input();
   const busy: CancellableState = { active: false };
@@ -44,13 +49,15 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
     input.setValue("");
     if (text === "/quit" || text === "/exit") { tui.stop(); resolveExit(); return; }
     if (text === "/status") { void printStatus(stateDir, push); return; }
+    if (text.startsWith("/model ")) { void switchModelCommand(text, configPath, stateDir, push); return; }
+    if (text === "/setup") { void runSetupReload(configPath, stateDir, push); return; }
     if (text.startsWith("/goal ") || text.startsWith("/observe ")) { void slashGoal(text, stateDir, push); return; }
-    if (text.startsWith("/approve ") || text.startsWith("/reject ")) { void slashApprove(text, stateDir, push); return; }
   };
 
   tui.addChild(transcriptView);
   tui.addChild(input);
   tui.setFocus(input);
+  const { promise: exited, resolve: resolveExit } = Promise.withResolvers<void>();
   tui.start();
   if (initialMessage) void send(initialMessage);
   await exited;
@@ -172,4 +179,21 @@ function messageText(value: unknown): string {
     .map((item) => item && typeof item === "object" && !Array.isArray(item) && (item as Record<string, unknown>).type === "text" && typeof (item as Record<string, unknown>).text === "string" ? (item as Record<string, unknown>).text as string : "")
     .filter(Boolean)
     .join("\n");
+}
+
+/** /model ID — write config and hot-reload the daemon runner. */
+async function switchModelCommand(text: string, configPath: string, stateDir: string, push: (line: string) => void): Promise<void> {
+  const model = text.slice(7).trim();
+  if (!model) { push("! usage: /model MODEL_ID"); return; }
+  try { push(await switchModel(configPath, stateDir, model)); }
+  catch (error) { push(`! ${error instanceof Error ? error.message : String(error)}`); }
+}
+
+/** /setup — re-enter the wizard, then reload the daemon so changes apply to the next wake. */
+async function runSetupReload(configPath: string, stateDir: string, push: (line: string) => void): Promise<void> {
+  push("Leaving the TUI for setup — it returns after the wizard finishes.");
+  const result = await runSetupWizard(null);
+  if (!result.options.provider) { push("setup cancelled; nothing changed"); return; }
+  applyWizardResult(result, configPath);
+  push(await reloadDaemon(stateDir, configPath) ? "config reloaded — applies to the next wake" : `saved to ${resolve(configPath)}; daemon will pick it up on next start`);
 }

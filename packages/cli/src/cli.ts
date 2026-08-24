@@ -4,8 +4,9 @@ import { existsSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import { runGoahTui } from "./tui.js";
+import { runSetupWizard, applyWizardResult } from "./setup-wizard.js";
 import { memoryStream, type JsonValue } from "goah-ledger-contract";
-import { controlAvailable, createRuntime, diagnoseConfig, exportSession, listSessions, loadConfig, readConsoleMetadata, replayWakeSession, requestControl, runControlServer, runWebConsole, showSession, showSessionContext, statusSnapshot, streamControl, streamEvents, SupervisorLock, writeDefaultConfig, writeDefaultProfile, readDefaultProfile, type ConsoleMetadata, type ControlFrame, type ControlRequest, type GoahConfig, type PiProvider } from "./index.js";
+import { controlAvailable, createRuntime, diagnoseConfig, exportSession, listSessions, loadConfig, readConsoleMetadata, replayWakeSession, requestControl, runControlServer, runWebConsole, showSession, showSessionContext, statusSnapshot, streamControl, streamEvents, SupervisorLock, writeDefaultConfig, readDefaultProfile, type ConsoleMetadata, type ControlFrame, type ControlRequest, type GoahConfig, type PiProvider } from "./index.js";
 const args = normalizeArgs(process.argv.slice(2));
 
 try {
@@ -21,7 +22,12 @@ async function main(): Promise<void> {
   const command = interactive ? "interactive" : rawCommand!;
   const initialMessage = interactive && rawCommand && rawCommand !== "--continue" ? rawCommand : null;
   const configPath = option("--config") ?? "goah.config.json";
-  if (command === "help") { printHelp(); return; }
+  if (command === "setup") {
+    const result = await runSetupWizard(readDefaultProfile());
+    applyWizardResult(result, existsSync(configPath) ? null : null);
+    console.log(`Profile saved to ~/.goah/profile.json${existsSync(configPath) ? "" : " (run \`goah\` in any directory to create a workspace)"}`);
+    return;
+  }
   if (command === "init") {
     const provider = providerOption(option("--provider") ?? "anthropic");
     writeDefaultConfig(configPath, {
@@ -38,10 +44,10 @@ async function main(): Promise<void> {
   }
 
   const config: GoahConfig = command === "interactive"
-    ? (existsSync(configPath) || (await bootstrapWorkspace(configPath), true), loadConfig(configPath, { resolveSecrets: false }))
+    ? (existsSync(configPath) || (await bootstrapWorkspace(configPath), true), loadConfig(configPath))
     : (() => {
       if (!existsSync(configPath)) throw new Error(`no Goah workspace here (missing goah.config.json); run \`goah\` to create one interactively, or \`goah init\` for flag-based setup`);
-      return loadConfig(configPath, { resolveSecrets: ["start", "run-once", "approve", "ceo-approve"].includes(command) });
+      return loadConfig(configPath);
     })();
   if (command === "doctor") {
     const result = diagnoseConfig(config);
@@ -258,7 +264,7 @@ function normalizeArgs(values: string[]): string[] {
   if ((values[0] === "goal" || values[0] === "ceo") && values[1] && !values[1].startsWith("--")) return [`${values[0]}-${values[1]}`, ...values.slice(2)];
   return values;
 }
-function knownCommand(value: string): boolean { return ["help", "init", "doctor", "web", "start", "run-once", "wake", "status", "session", "context", "events", "memory", "goal-list", "goal-show", "goal-create", "goal-update", "goal-pause", "goal-resume", "goal-complete", "goal-start", "ceo-send", "ceo-status", "ceo-inbox", "ceo-approve", "action-list", "approve", "reject", "dashboard"].includes(value); }
+function knownCommand(value: string): boolean { return ["setup", "help", "init", "doctor", "web", "start", "run-once", "wake", "status", "session", "context", "events", "memory", "goal-list", "goal-show", "goal-create", "goal-update", "goal-pause", "goal-resume", "goal-complete", "goal-start", "ceo-send", "ceo-status", "ceo-inbox", "ceo-approve", "action-list", "approve", "reject", "dashboard"].includes(value); }
 function asRecord(value: JsonValue): Record<string, JsonValue> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("expected an object"); return value; }
 function firstRecord(value: JsonValue | undefined): Record<string, JsonValue> | null { return Array.isArray(value) && value[0] && typeof value[0] === "object" && !Array.isArray(value[0]) ? value[0] : null; }
 function messageText(value: JsonValue | undefined): string {
@@ -267,68 +273,15 @@ function messageText(value: JsonValue | undefined): string {
   return value.map((item) => item && typeof item === "object" && !Array.isArray(item) && item.type === "text" && typeof item.text === "string" ? item.text : "").filter(Boolean).join("\n");
 }
 
-/** Interactive entry bootstrap: reuse the global profile or run first-use onboarding, then materialize this directory's workspace config. */
+/** Interactive entry bootstrap: first-use setup wizard (or stored profile), then materialize this directory's workspace config. */
 async function bootstrapWorkspace(configPath: string): Promise<void> {
   const profile = readDefaultProfile();
   if (!profile) {
-    console.log("No Goah profile found — first-use setup (stored in ~/.goah/profile.json; credentials stay as environment references).");
-    const ask = lineQueue(createInterface({ input: process.stdin, output: process.stdout, terminal: false }));
-    try {
-      const provider = await askProvider(ask);
-      const model = (await ask(`model id${provider === "anthropic" ? " [claude-sonnet-4-6]" : ""}: `)).trim() || (provider === "anthropic" ? "claude-sonnet-4-6" : "");
-      if (!model) throw new Error("model is required");
-      const apiKeyEnv = provider === "faux" ? null : await askApiKeyEnv(ask, provider);
-      const arkLimits = provider === "ark-coding" ? await askArkLimits(ask) : {};
-      writeDefaultProfile({ provider, model, ...(apiKeyEnv ? { apiKeyEnv } : {}), ...arkLimits });
-    } finally { ask.close(); }
+    console.log("No Goah profile found — running first-use setup (stored in ~/.goah/profile.json; credentials stay as environment references).");
+    const result = await runSetupWizard(null);
+    applyWizardResult(result, null);
   }
   writeDefaultConfig(configPath, readDefaultProfile() ?? { provider: "faux" });
   console.log(`Created ${resolve(configPath)} — this directory is now a Goah workspace.`);
 }
 
-/**
- * Prompt queue over readline 'line' events. readline/promises `question()` loses lines that arrive
- * between awaits under piped input (same-tick chunks race the next listener registration), so
- * onboarding buffers lines itself.
- */
-function lineQueue(input: ReadlineInterface): ((prompt: string) => Promise<string>) & { close(): void } {
-  const buffered: string[] = [];
-  const waiters: Array<(line: string) => void> = [];
-  input.on("line", (line: string) => { const waiter = waiters.shift(); if (waiter) waiter(line); else buffered.push(line); });
-  const ask = (prompt: string): Promise<string> => {
-    input.setPrompt(prompt);
-    input.prompt();
-    const { promise, resolve } = Promise.withResolvers<string>();
-    const bufferedLine = buffered.shift();
-    if (bufferedLine !== undefined) resolve(bufferedLine);
-    else waiters.push(resolve);
-    return promise;
-  };
-  return Object.assign(ask, { close: () => input.close() });
-}
-
-async function askProvider(ask: (prompt: string) => Promise<string>): Promise<PiProvider> {
-  while (true) {
-    const answer = (await ask("provider [anthropic/openai/ark-coding/faux] (default anthropic): ")).trim();
-    if (!answer) return "anthropic";
-    if (answer === "anthropic" || answer === "openai" || answer === "ark-coding" || answer === "faux") return answer;
-    console.log("unsupported provider, try again");
-  }
-}
-
-async function askApiKeyEnv(ask: (prompt: string) => Promise<string>, provider: PiProvider): Promise<string> {
-  const destination = provider === "anthropic" ? "ANTHROPIC_API_KEY" : provider === "openai" ? "OPENAI_API_KEY" : "ARK_API_KEY";
-  while (true) {
-    const answer = (await ask(`environment variable holding the API key (default ${destination}): `)).trim();
-    if (!answer) return destination;
-    if (/^[A-Z_][A-Z0-9_]*$/.test(answer)) return answer;
-    console.log("expected an environment variable name like MY_PROVIDER_KEY");
-  }
-}
-
-async function askArkLimits(ask: (prompt: string) => Promise<string>): Promise<{ contextWindowTokens: number; maxOutputTokensPerTurn: number }> {
-  const contextWindowTokens = Number((await ask("context window tokens (e.g. 256000): ")).trim());
-  const maxOutputTokensPerTurn = Number((await ask("max output tokens per turn (e.g. 32000): ")).trim());
-  if (!Number.isInteger(contextWindowTokens) || contextWindowTokens <= 0 || !Number.isInteger(maxOutputTokensPerTurn) || maxOutputTokensPerTurn <= 0) throw new Error("ark-coding requires integer context-window and max-output tokens");
-  return { contextWindowTokens, maxOutputTokensPerTurn };
-}

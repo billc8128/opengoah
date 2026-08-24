@@ -72,7 +72,9 @@ export class Supervisor {
   readonly #profiles: Map<string, AgentProfile>;
   readonly #verifyMetricsAfterWake: boolean;
 
-  constructor(readonly ledger: Ledger, readonly runner: Runner, readonly clock: Clock, options: SupervisorOptions = {}) {
+  #runner: Runner;
+  constructor(readonly ledger: Ledger, runner: Runner, readonly clock: Clock, options: SupervisorOptions = {}) {
+    this.#runner = runner;
     this.#leaseMs = options.leaseMs ?? 30_000;
     this.#memoryTailChars = options.memoryTailChars ?? 12_000;
     this.#allowExternalActions = options.allowExternalActions ?? false;
@@ -90,6 +92,19 @@ export class Supervisor {
     this.registerMetricContract(goalId, contract);
     this.#metricCollectors.set(goalId, { goalId, contract, spec, intervalMs, nextAt: 0 });
   }
+
+  /**
+   * Hot-swap the runner after a config reload. Refused while a wake is leased
+   * or running: a live child must never observe its runner vanish mid-flight.
+   * The next tick claims wakes through the new runner, and spawn-time env
+   * resolution applies the new credentials to the next spawn.
+   */
+  swapRunner(runner: Runner): void {
+    const active = this.ledger.wakes().filter((wake) => wake.status === "leased" || wake.status === "running");
+    if (active.length > 0) throw new Error("cannot swap runner while a wake is leased or running");
+    this.#runner = runner;
+  }
+  get runner(): Runner { return this.#runner; }
   createGoal(goal: GoalSnapshot, actor = "human"): void { this.ledger.putGoal(goal, actor); }
   startGoal(objective: string, id: string = randomUUID()): { goal: GoalSnapshot; wake: WakeSnapshot } {
     if (!objective.trim()) throw new Error("root objective is required");
@@ -167,7 +182,6 @@ export class Supervisor {
       this.ledger.recoverExpiredWake(expired.id, this.#now());
     }
   }
-
   async tick(): Promise<WakeSnapshot | null> {
     const claimed = await this.#claimNextWake();
     const wake = claimed?.wake ?? null;

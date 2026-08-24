@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { CONTRACT_VERSION, wakeStream, type AgentProfile, type ConnectorManifest, type MetricContract, type MetricProcessSpec } from "goah-ledger-contract";
 import { SQLITE_SCHEMA_VERSION, SqliteLedger } from "goah-ledger-sqlite";
-import { createPiModel, piWorkerPath, ProcessRunner } from "goah-runner-pi";
+import { createPiModel, piWorkerPath, ProcessRunner, resolveEnvSpec, type ProcessRunnerOptions } from "goah-runner-pi";
 import { renderDashboard, runSupervisorDaemon, Supervisor } from "goah-supervisor";
 
 export interface GoahConfig {
@@ -35,12 +35,13 @@ export interface InitOptions {
 export interface DoctorCheck { name: string; ok: boolean; detail: string }
 const configRoots = new WeakMap<GoahConfig, string>();
 
-export function loadConfig(path = "goah.config.json", options: { resolveSecrets?: boolean } = {}): GoahConfig {
+export function loadConfig(path = "goah.config.json"): GoahConfig {
   const absolute = resolve(path);
   const config = JSON.parse(readFileSync(absolute, "utf8")) as GoahConfig & { workspace?: string; limits?: unknown; heartbeatPolicies?: unknown; progressPolicies?: unknown };
   if (config.version !== 1) throw new Error(`unsupported goah config version: ${String(config.version)}`);
   const base = dirname(absolute);
   const root = config.workspace ? absolutePath(base, config.workspace) : base;
+  delete config.workspace;
   delete config.limits;
   delete config.heartbeatPolicies;
   delete config.progressPolicies;
@@ -48,16 +49,16 @@ export function loadConfig(path = "goah.config.json", options: { resolveSecrets?
   config.stateDir = absolutePath(base, config.stateDir);
   config.runner.command = resolveCommand(config.runner.command);
   config.runner.args = config.runner.args.map((arg) => arg === "$GOAH_PI_WORKER" ? piWorkerPath() : arg);
-  if (options.resolveSecrets !== false) config.runner.env = resolveEnv(config.runner.env);
-  for (const connector of config.connectors ?? []) { connector.command = resolveCommand(connector.command); if (options.resolveSecrets !== false) connector.env = resolveEnv(connector.env); }
-  for (const metric of config.metrics ?? []) { metric.process.command = resolveCommand(metric.process.command); if (options.resolveSecrets !== false) metric.process.env = resolveEnv(metric.process.env); }
+  for (const connector of config.connectors ?? []) connector.command = resolveCommand(connector.command);
+  for (const metric of config.metrics ?? []) metric.process.command = resolveCommand(metric.process.command);
   return config;
 }
 
 export function createRuntime(config: GoahConfig): { ledger: SqliteLedger; supervisor: Supervisor } {
   mkdirSync(config.stateDir, { recursive: true });
   const ledger = new SqliteLedger(join(config.stateDir, "ledger.sqlite"));
-  const runner = new ProcessRunner({ ...config.runner, cwd: configRoot(config) });
+  const { env: runnerEnv, ...runnerSpec } = config.runner;
+  const runner = new ProcessRunner({ ...runnerSpec, envSpec: runnerEnv, cwd: configRoot(config) });
   const supervisor = new Supervisor(ledger, runner, new class { now(): Date { return new Date(); } }(), {
     ...(config.profiles ? { profiles: config.profiles } : {}),
     ...(config.approvers ? { approvers: config.approvers } : {}),
@@ -170,7 +171,7 @@ export function diagnoseConfig(config: GoahConfig): { ok: boolean; checks: Docto
     accessSync(config.runner.command, constants.X_OK);
     const workerArg = config.runner.args[0];
     if (workerArg && isAbsolute(workerArg)) accessSync(workerArg, constants.R_OK);
-    const env = resolveEnv(config.runner.env);
+    const env = resolveEnvSpec(config.runner.env, { root: configRoot(config) });
     const provider = requiredEnv(env, "GOAH_PI_PROVIDER");
     const modelId = requiredEnv(env, "GOAH_PI_MODEL");
     const model = createPiModel(provider, modelId, env).model;
@@ -195,14 +196,6 @@ export function statusSnapshot(ledger: SqliteLedger): object {
   return { seq: events.at(-1)?.seq ?? 0, goals, wakes, actions: ledger.actions(), modelCapabilities, recentHandoffs: handoffs };
 }
 
-function resolveEnv(env: Record<string, string> = {}): Record<string, string> {
-  return Object.fromEntries(Object.entries(env).map(([key, value]) => {
-    if (!value.startsWith("env:")) return [key, value];
-    const name = value.slice(4); const resolved = process.env[name];
-    if (resolved === undefined) throw new Error(`required environment variable is missing: ${name}`);
-    return [key, resolved];
-  }));
-}
 function defaultModel(provider: PiProvider): string {
   if (provider === "anthropic") return "claude-sonnet-4-6";
   if (provider === "faux") return "faux-goah";

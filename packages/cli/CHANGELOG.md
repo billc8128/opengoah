@@ -1,9 +1,12 @@
 # Changelog
 
+## 0.9.0
+
+- Spawn-time credential resolution (`env:NAME` + `.env` chain), `config.reload` hot runner swap, `goah setup` TUI wizard, `/model` and `/setup` TUI commands, and a fixed-slot welcome panel from a read-only ledger snapshot.
+
 ## 0.8.0
 
 - Bare `goah` works from any directory: global profile (`~/.goah/profile.json`) with inline first-use onboarding and automatic workspace config materialization; non-interactive commands fail with an actionable message.
-- Interactive shell is now a full-screen TUI (`@mariozechner/pi-tui`) streaming CEO wakes with `/goal`, `/observe`, `/status`, `/approve`, `/reject`; non-TTY falls back to one-shot streaming.
 
 ## 0.7.0
 

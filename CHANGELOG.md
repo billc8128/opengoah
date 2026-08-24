@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.0
+
+- Credentials resolve at spawn time: config files hold only `env:NAME` references, `loadConfig` never resolves secrets, and every runner/verifier spawn resolves fresh (daemon process env > `<workspace>/.env` > `~/.goah/.env`). Editing `.env` or rotating a shell export applies to the next wake without restarting the Supervisor; resolved secrets no longer live in the daemon's memory for its lifetime.
+- The control protocol gains `config.reload`: the daemon hot-swaps its runner (refused while a wake is leased/running), so TUI-driven config changes take effect immediately. `action.reject` also gained its missing protocol branch.
+- `goah setup` runs a TUI wizard (provider → model → key env → summary; piped fallback for non-TTY) writing `~/.goah/profile.json`; first-run `goah` enters it automatically.
+- TUI gains `/model ID` (write config + hot reload) and `/setup` (re-enter the wizard, reload daemon), matching the pi/omp/hermes baseline of in-session provider/model commands that take effect without restart.
+- The TUI opens with a fixed-slot welcome panel: read-only ledger snapshot (root goal, agents, recent handoffs) with zero daemon dependency; a missing ledger renders placeholders so the layout never shifts.
+
 ## 0.8.0
 
 - Bare `goah` now works from any directory: missing workspace config falls back to the global profile (`~/.goah/profile.json`, credentials stored as `env:NAME` references), runs first-use onboarding inline on a fresh machine, and materializes the directory's `goah.config.json` automatically. Non-interactive commands without a config fail with an actionable message.

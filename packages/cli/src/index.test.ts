@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { controlAvailable, controlEndpoint, loadConfig, redactValue, SupervisorLock } from "./index.js";
+import { controlAvailable, controlEndpoint, diagnoseConfig, loadConfig, redactValue, SupervisorLock } from "./index.js";
 
 const cli = fileURLToPath(new URL("./cli.js", import.meta.url));
 
@@ -41,7 +41,10 @@ test("CLI initializes versioned config, resolves secret references, and enforces
   const raw = JSON.parse(readFileSync(join(directory, "goah.config.json"), "utf8"));
   raw.runner.env.ANTHROPIC_API_KEY = "env:GOAH_CLI_TEST_KEY";
   writeFileSync(join(directory, "goah.config.json"), JSON.stringify(raw));
-  assert.equal(loadConfig(join(directory, "goah.config.json")).runner.env?.ANTHROPIC_API_KEY, "secret");
+  // Config keeps the reference; resolution happens at spawn time (doctor resolves independently).
+  assert.equal(loadConfig(join(directory, "goah.config.json")).runner.env?.ANTHROPIC_API_KEY, "env:GOAH_CLI_TEST_KEY");
+  const diagnosed = diagnoseConfig(loadConfig(join(directory, "goah.config.json")));
+  assert.equal(diagnosed.checks.some((check: { name: string; ok: boolean }) => check.name === "runner" && check.ok), true);
   delete process.env.GOAH_CLI_TEST_KEY;
   const lock = new SupervisorLock(join(directory, ".goah")); lock.acquire();
   assert.throws(() => new SupervisorLock(join(directory, ".goah")).acquire(), /already running/);
@@ -167,7 +170,7 @@ test("CLI exposes one-objective CEO entry and coalesces human corrections", () =
 test("CLI revises and confirms a root through the resident Supervisor control socket", async () => {
   const directory = repository();
   invoke(directory, "init", "--provider", "faux");
-  const config = loadConfig(join(directory, "goah.config.json"), { resolveSecrets: false });
+  const config = loadConfig(join(directory, "goah.config.json"));
   const env = { ...process.env, GOAH_STATE_HOME: join(tmpdir(), "goah-cli-test-state") };
   const daemon = spawn(process.execPath, [cli, "start"], { cwd: directory, env, stdio: "ignore" });
   try {

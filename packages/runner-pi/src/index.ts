@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
+import { resolveEnvSpec } from "./env-spec.js";
 import { fileURLToPath } from "node:url";
 import {
   assertHandoff,
@@ -13,6 +14,7 @@ import {
 } from "goah-ledger-contract";
 
 export { createPiModel, parseModelCapabilities } from "./model-provider.js";
+export { resolveEnvSpec } from "./env-spec.js";
 
 export interface PiStep {
   trace?: Array<{ type: string; data: JsonValue }>;
@@ -69,6 +71,8 @@ export interface ProcessRunnerOptions {
   args?: string[];
   cwd?: string;
   env?: Record<string, string>;
+  /** Unresolved env spec (may contain `env:NAME` references); resolved at every spawn. */
+  envSpec?: Record<string, string> | undefined;
   inheritEnv?: string[];
   killGraceMs?: number;
   timeoutMs?: number;
@@ -92,11 +96,11 @@ export class ProcessRunner implements Runner {
   constructor(readonly options: ProcessRunnerOptions) {}
 
   prepare(request: RunRequest): RunnerHandle {
+    const explicit = this.options.envSpec ? resolveEnvSpec(this.options.envSpec, { root: this.options.cwd ?? process.cwd() }) : this.options.env;
     const child = spawn(this.options.command, this.options.args ?? [], {
       detached: process.platform !== "win32",
       ...(this.options.cwd ? { cwd: this.options.cwd } : {}),
-      env: childEnvironment(this.options.env, this.options.inheritEnv),
-      stdio: ["pipe", "pipe", "pipe"],
+      env: childEnvironment(explicit, this.options.inheritEnv),
     });
     let started = false;
     let timedOut = false;
