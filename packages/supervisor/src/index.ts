@@ -798,10 +798,10 @@ function asChildGoal(value: JsonValue | undefined): { id: string; objective: str
   return { id: String(input.id), objective: String(input.objective), observationMethod: String(input.observationMethod), verificationMethod: String(input.verificationMethod), owner: String(input.owner) };
 }
 function defaultCapabilities(role: AgentRole): AgentCapability[] {
-  if (role === "ceo") return ["ledger.search", "mail.send", "schedule.set", "action.submit", "audit.ack", "memory.append", "team.list", "goal.get", "goal.create", "goal.work", "goal.delegate", "goal.reassign", "goal.revise", "goal.pause", "goal.resume", "goal.complete", "human.request", "work_record.list", "work_record.read", "work_record.history", "work_record.diff", "work_record.search", "work_record.update"];
+  if (role === "ceo") return ["ledger.search", "mail.send", "schedule.set", "action.submit", "audit.ack", "team.list", "goal.get", "goal.create", "goal.work", "goal.delegate", "goal.reassign", "goal.revise", "goal.pause", "goal.resume", "goal.complete", "human.request", "work_record.list", "work_record.read", "work_record.history", "work_record.diff", "work_record.search", "work_record.update"];
   if (role === "verifier") return ["ledger.search", "mail.send", "memory.append", "audit.write"];
   if (role === "audit") return ["ledger.search", "mail.send", "memory.append", "audit.write"];
-  return ["ledger.search", "mail.send", "schedule.set", "action.submit", "audit.ack", "memory.append", "goal.get", "work_record.list", "work_record.read", "work_record.history", "work_record.diff", "work_record.search", "work_record.update"];
+  return ["ledger.search", "mail.send", "schedule.set", "action.submit", "audit.ack", "goal.get", "work_record.list", "work_record.read", "work_record.history", "work_record.diff", "work_record.search", "work_record.update"];
 }
 
 export * from "./verification.js";

@@ -660,18 +660,18 @@ export class SqliteLedger implements Ledger {
     });
   }
 
-  #createWorkRecord(goal: GoalSnapshot, actor: string, turnId: string, wakeId?: string): WorkRecordSnapshot {
+  #createWorkRecord(goal: GoalSnapshot, actor: string, turnId: string, wakeId?: string, seed?: { content: string; evidence: number[] }): WorkRecordSnapshot {
     return this.#recordWorkRecord({
       goalId: goal.id,
       recordRevision: 0,
       goalRevision: goal.revision,
-      content: initialWorkRecord(),
+      content: seed?.content ?? initialWorkRecord(),
       updatedBy: actor,
       updatedInTurn: turnId,
       updatedInWake: wakeId ?? null,
       updatedAt: this.#now(),
       reason: "Goal created",
-      evidence: [],
+      evidence: seed?.evidence ?? [],
       lastEventSeq: 0,
     }, "work_record.created");
   }
@@ -771,6 +771,18 @@ export class SqliteLedger implements Ledger {
     }
   }
 
+  #legacyWorkRecord(goal: GoalSnapshot): { content: string; evidence: number[] } {
+    const handoff = this.lastEvent(goal.owner, "handoff.recorded");
+    const legacy = handoff?.data && typeof handoff.data === "object" && !Array.isArray(handoff.data) && !("goalId" in handoff.data) ? handoff.data as { observations?: string[]; results?: string[]; nextSteps?: string[]; blocker?: string } : null;
+    const notes = this.readStream(`memory:${goal.owner}`).filter((event) => event.type === "memory.appended");
+    const list = (items: string[] | undefined) => items?.length ? items.map((item) => `- ${item}`).join("\n") : "None recorded.";
+    const decisions = notes.length ? notes.map((event) => `- ${String((event.data as { note?: string }).note ?? "")} [event:${event.seq}]`).join("\n") : "None recorded.";
+    return {
+      content: `# Current State\n\nMigrated from the previous Goal continuity model.\n\n# Observations\n\n${list(legacy?.observations)}\n\n# Work Completed\n\n${list(legacy?.results)}\n\n# Decisions\n\n${decisions}\n\n# Blockers\n\n${legacy?.blocker ?? "None recorded."}\n\n# Next Steps\n\n${list(legacy?.nextSteps)}\n`,
+      evidence: [...(handoff ? [handoff.seq] : []), ...notes.map((event) => event.seq)],
+    };
+  }
+
   #migrateLegacy(): void {
     this.#transaction(() => {
       const goalColumns = new Set((this.db.prepare("PRAGMA table_info(goals)").all() as Array<{ name: string }>).map((row) => row.name));
@@ -828,7 +840,7 @@ export class SqliteLedger implements Ledger {
       }
       this.db.exec(createWorkRecords);
       for (const goal of this.goals()) {
-        if (!this.workRecord(goal.id)) this.#createWorkRecord(goal, "supervisor", `migration:work-record:${goal.id}`);
+        if (!this.workRecord(goal.id)) this.#createWorkRecord(goal, "supervisor", `migration:work-record:${goal.id}`, undefined, this.#legacyWorkRecord(goal));
       }
       this.db.exec(`${indexesAndTriggers} INSERT INTO events_fts(events_fts) VALUES('rebuild'); PRAGMA user_version=${SQLITE_SCHEMA_VERSION};`);
     });

@@ -62,10 +62,36 @@ test("schema v7 adds nullable Goal observation methods without rewriting history
   migrated.close();
 });
 
-test("schema has events plus five projections and replay reproduces all of them", () => {
+test("schema v8 seeds Work Records from legacy handoff and memory timelines", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "goah-v8-")), "ledger.sqlite");
+  const source = new SqliteLedger(path, { clock: new FixedClock() });
+  source.putGoal({ id: "legacy", parentId: null, objective: "ship", observationMethod: "Inspect release state.", verificationMethod: "Require release evidence.", owner: "worker", phase: "active", revision: 0 }, "human");
+  source.appendEvent({ streamId: "memory:worker", ts: new FixedClock().value, actor: "worker", type: "memory.appended", data: { note: "approach A was rejected", wakeId: "old" } });
+  source.appendEvent({ streamId: "wake:old", ts: new FixedClock().value, actor: "worker", type: "handoff.recorded", data: { observations: ["release inspected"], results: ["candidate built"], nextSteps: ["publish"] } });
+  source.close();
+  const raw = new DatabaseSync(path);
+  raw.exec(`DROP TRIGGER events_no_update; DROP TRIGGER events_no_delete; DROP TRIGGER events_fts_insert;
+    DROP TABLE work_records;
+    DELETE FROM events WHERE type IN ('work_record.created','work_record.updated');
+    DROP TRIGGER goals_valid_transition;
+    ALTER TABLE goals RENAME TO goals_v8;
+    CREATE TABLE goals(id TEXT PRIMARY KEY,parent_id TEXT,objective TEXT,observation_method TEXT,owner TEXT,phase TEXT,revision INTEGER);
+    INSERT INTO goals SELECT id,parent_id,objective,observation_method,owner,phase,revision FROM goals_v8;
+    DROP TABLE goals_v8;
+    PRAGMA user_version=8;`);
+  raw.close();
+  const migrated = new SqliteLedger(path, { clock: new FixedClock() });
+  assert.equal(migrated.goal("legacy")?.verificationMethod, "Inspect release state.");
+  assert.match(migrated.workRecord("legacy")?.content ?? "", /release inspected/);
+  assert.match(migrated.workRecord("legacy")?.content ?? "", /approach A was rejected/);
+  assert.deepEqual(migrated.workRecord("legacy")?.evidence.length, 2);
+  migrated.close();
+});
+
+test("schema has events plus six projections and replay reproduces all of them", () => {
   const ledger = new SqliteLedger(":memory:", { clock: new FixedClock() });
-  const tables = (ledger.db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name IN ('actions','events','goals','mailbox','schedule','wakes') ORDER BY name").all() as Array<{ name: string }>).map(({ name }) => name);
-  assert.deepEqual(tables, ["actions", "events", "goals", "mailbox", "schedule", "wakes"]);
+  const tables = (ledger.db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name IN ('actions','events','goals','mailbox','schedule','wakes','work_records') ORDER BY name").all() as Array<{ name: string }>).map(({ name }) => name);
+  assert.deepEqual(tables, ["actions", "events", "goals", "mailbox", "schedule", "wakes", "work_records"]);
   const root: GoalSnapshot = { id: "root", parentId: null, objective: "keep tests green", observationMethod: null, verificationMethod: null, owner: "agent-1", phase: "active", revision: 0 };
   ledger.putGoal(root, "human");
   ledger.putSchedule({ id: "s1", agent: "agent-1", nextWakeAt: "2030-01-01T00:00:00.000Z", reason: "start", setBy: "agent-1" }, "agent-1");

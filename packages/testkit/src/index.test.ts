@@ -322,7 +322,8 @@ test("official Pi agent core worker completes a structured handoff through the p
   assert.equal(prepared.tools?.some((tool) => tool.name === "delegate_goal"), false);
   assert.equal(prepared.tools?.some((tool) => tool.name === "team_list"), false);
   assert.equal(prepared.tools?.some((tool) => tool.name === "ledger_search"), true);
-  for (const name of ["read", "write", "edit", "bash", "handoff", "memory_append"]) assert.equal(prepared.tools?.some((tool) => tool.name === name), true, name);
+  for (const name of ["read", "write", "edit", "bash", "handoff", "work_record_update"]) assert.equal(prepared.tools?.some((tool) => tool.name === name), true, name);
+  assert.equal(prepared.tools?.some((tool) => tool.name === "memory_append"), false);
   assert.deepEqual(ledger.lastEvent("worker", "handoff.recorded")?.data, { goalId: "root", goalRevision: 0, recordRevision: 1, outcome: "progress", evidence: [2] });
   ledger.close();
 });
@@ -342,7 +343,8 @@ test("official Pi worker exposes organization tools only to the CEO profile", as
   assert.equal(prepared.tools?.some((tool) => tool.name === "delegate_goal"), true);
   assert.equal(prepared.tools?.some((tool) => tool.name === "team_list"), true);
   assert.equal(prepared.tools?.some((tool) => tool.name === "put_goal"), false);
-  for (const name of ["read", "write", "edit", "bash", "handoff", "memory_append"]) assert.equal(prepared.tools?.some((tool) => tool.name === name), true, name);
+  for (const name of ["read", "write", "edit", "bash", "handoff", "work_record_update"]) assert.equal(prepared.tools?.some((tool) => tool.name === name), true, name);
+  assert.equal(prepared.tools?.some((tool) => tool.name === "memory_append"), false);
   ledger.close();
 });
 
@@ -375,26 +377,18 @@ test("bidirectional runner RPC applies child capabilities and rejects parent-onl
   ledger.close();
 });
 
-test("memory.append facts persist across wakes and inject a bounded working-memory tail", async () => {
+test("legacy Goal memory remains readable while Goal Agents write Work Records instead", async () => {
   const clock = new SimulatedClock();
   const ledger = createMemoryLedger({ clock });
   const staleNote = `legacy survey: ${"x".repeat(500)}`;
-  const firstContext = join(mkdtempSync(join(tmpdir(), "goah-memory-")), "context-1.json");
-  const supervisor = new Supervisor(ledger, fauxRunner([
-    { rpc: { method: "memory.append", params: { note: staleNote } } },
-    { rpc: { method: "memory.append", params: { note: "integration tests fake-fail when the clock is mocked; approach A rejected: metric freshness window" } } },
-    { handoff: { handoff: { observations: [], results: [], nextSteps: [] }, mail: [], nextWakeAt: null } },
-  ], firstContext), clock, { memoryTailChars: 200 });
+  const supervisor = new Supervisor(ledger, fauxRunner([]), clock, { memoryTailChars: 200 });
   supervisor.createGoal(goal());
-  supervisor.planWake("worker", clock.now().toISOString(), "memory-first");
-  assert.equal((await supervisor.tick())?.status, "done");
+  ledger.appendEvent({ streamId: "memory:worker", ts: clock.now().toISOString(), actor: "worker", type: "memory.appended", data: { note: staleNote, wakeId: "legacy-1" } });
+  ledger.appendEvent({ streamId: "memory:worker", ts: clock.now().toISOString(), actor: "worker", type: "memory.appended", data: { note: "integration tests fake-fail when the clock is mocked; approach A rejected: metric freshness window", wakeId: "legacy-2" } });
   const memoryEvents = ledger.readStream(`memory:worker`).filter((item) => item.type === "memory.appended");
   assert.equal(memoryEvents.length, 2);
-  assert.equal(memoryEvents[0]?.actor, "worker");
-  assert.equal(ledger.events().filter((item) => item.type === "rpc.memory.append").length, 2);
 
   const secondContext = join(mkdtempSync(join(tmpdir(), "goah-memory-")), "context-2.json");
-  clock.advance(1);
   supervisor.planWake("worker", clock.now().toISOString(), "memory-second");
   assert.equal((await new Supervisor(ledger, fauxRunner([{ handoff: { handoff: { observations: [], results: [], nextSteps: [] }, mail: [], nextWakeAt: null } }], secondContext), clock, { memoryTailChars: 200 }).tick())?.status, "done");
   const context = JSON.parse(readFileSync(secondContext, "utf8")) as { text: string; sourceSeqs: number[] };
