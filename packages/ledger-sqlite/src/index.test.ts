@@ -146,6 +146,20 @@ test("handoff event and mail acknowledgement roll back together", () => {
   ledger.close();
 });
 
+test("ordinary interaction records a response and acknowledges only its Human message", () => {
+  const ledger = new SqliteLedger(":memory:", { clock: new FixedClock() });
+  ledger.enqueueWake(wake("interaction", "ceo"), "supervisor");
+  ledger.claimNextWake("2030-01-01T00:00:00.000Z", "2030-01-01T00:01:00.000Z", "lease");
+  ledger.markWakeRunning("interaction", "2030-01-01T00:00:01.000Z", "lease");
+  ledger.putMail({ id: "current", to: "ceo", from: "human", level: "fyi", body: { message: "hello" }, readAt: null }, "human");
+  ledger.putMail({ id: "other", to: "ceo", from: "human", level: "decision", body: { message: "goal correction" }, readAt: null }, "human");
+  const event = ledger.commitInteraction({ agent: "ceo", wakeId: "interaction", mailId: "current", ts: "2030-01-01T00:00:02.000Z", response: { content: "你好" } });
+  assert.equal(event.type, "interaction.completed");
+  assert.deepEqual((event.data as { response: { content: string } }).response, { content: "你好" });
+  assert.deepEqual(ledger.unreadMail("ceo").map((mail) => mail.id), ["other"]);
+  ledger.close();
+});
+
 test("injected clock is authoritative and newer schemas are rejected", () => {
   const clock = new FixedClock("2020-01-01T00:00:00.000Z");
   const ledger = new SqliteLedger(":memory:", { clock });

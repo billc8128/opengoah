@@ -6,6 +6,7 @@ import {
   assertHandoff,
   type JsonValue,
   type AgentCapability,
+  type AssistantResponse,
   type RunRequest,
   type Runner,
   type RunnerHandle,
@@ -20,6 +21,7 @@ export { resolveEnvSpec } from "./env-spec.js";
 
 export interface PiStep {
   trace?: Array<{ type: string; data: JsonValue }>;
+  response?: AssistantResponse;
   handoff?: WakeOutput;
   stopped?: boolean;
 }
@@ -54,11 +56,12 @@ export class PiRunnerAdapter {
       while (true) {
         const step = await session.step();
         for (const trace of step.trace ?? []) request.emit(trace);
+        if (step.response) return { outcome: "response", response: step.response };
         if (step.handoff) {
           assertHandoff(step.handoff.handoff);
           return { outcome: "handoff", output: step.handoff };
         }
-        if (step.stopped) return { outcome: "abnormal", reason: "runner stopped without a valid handoff" };
+        if (step.stopped) return { outcome: "abnormal", reason: request.turn.goalBinding ? "runner stopped without a valid handoff" : "runner stopped without a response" };
       }
     } catch (error) {
       return { outcome: "abnormal", reason: error instanceof Error ? error.message : String(error) };
@@ -153,7 +156,7 @@ export class ProcessRunner implements Runner {
         void (async () => {
           try {
             const runtime = await this.options.prepareRuntime?.(request);
-            const serializable: WorkerRequest = { wake: request.wake, context: request.context, ...(runtime !== undefined ? { runtime } : {}) };
+            const serializable: WorkerRequest = { wake: request.wake, turn: request.turn, context: request.context, ...(runtime !== undefined ? { runtime } : {}) };
             child.stdin?.write(`${JSON.stringify({ type: "start", request: serializable } satisfies ParentMessage)}\n`);
             if (this.options.timeoutMs) timer = setTimeout(() => { timedOut = true; void terminate(); }, this.options.timeoutMs);
           } catch (error) {

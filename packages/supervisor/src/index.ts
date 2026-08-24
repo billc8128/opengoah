@@ -35,6 +35,7 @@ import {
   type RunnerProfile,
   type ScheduleSnapshot,
   type TeamMemberView,
+  type TurnContext,
   type WakeOutput,
   type WakeSnapshot,
   wakeStream,
@@ -143,6 +144,14 @@ export class Supervisor {
     if (!wake) throw new Error("CEO wake was not admitted for an active root goal");
     return { goal, wake };
   }
+  interactWithCeo(message: string): { mail: MailSnapshot; wake: WakeSnapshot } {
+    if (!message.trim()) throw new Error("message is required");
+    const mail: MailSnapshot = { id: randomUUID(), to: "ceo", from: "human", level: "fyi", body: { type: "interaction", message }, readAt: null };
+    this.ledger.putMail(mail, "human");
+    const wake = this.#enqueueTrigger("ceo", `interaction:${mail.id}`);
+    if (!wake) throw new Error("CEO interaction was not admitted");
+    return { mail, wake };
+  }
   sendToCeo(body: JsonValue, level: "fyi" | "decision" | "emergency" = "decision"): { mail: MailSnapshot; wake: WakeSnapshot } {
     const mail = { id: randomUUID(), to: "ceo", from: "human", level, body, readAt: null };
     this.ledger.putMail(mail, "human");
@@ -230,9 +239,11 @@ export class Supervisor {
     let renewal: NodeJS.Timeout | undefined;
     try {
       running = this.ledger.markWakeRunning(wake.id, this.#now(), leaseToken);
-      const context = this.#loadContext(running);
+      const turn = this.#turnContext(running);
+      const context = this.#loadContext(running, turn);
       handle = this.runner.prepare({
         wake: running,
+        turn,
         context,
         now: () => this.#now(),
         emit: (trace) => this.ledger.appendRunnerEvent({ streamId: wakeStream(running.id), ts: this.#now(), actor: running.agent, type: trace.type, data: trace.data }, leaseToken),
@@ -254,6 +265,15 @@ export class Supervisor {
       this.#handles.delete(running.id);
       if (result.outcome === "abnormal") {
         await this.#markAbnormal(running, result.reason);
+        return this.#wake(running.id);
+      }
+
+      if (result.outcome === "response") {
+        if (turn.goalBinding) throw new Error("a Goal-bound Turn must finish with a handoff");
+        const mailId = interactionMailId(running);
+        if (!mailId) throw new Error("an ordinary response requires an interaction mail");
+        this.ledger.commitInteraction({ agent: running.agent, wakeId: running.id, mailId, ts: this.#now(), response: result.response });
+        this.ledger.finishWake(running.id, "done", this.#now());
         return this.#wake(running.id);
       }
 
@@ -418,9 +438,9 @@ export class Supervisor {
     const exact = this.ledger.wakeByTrigger(agent, triggerRef);
     if (exact) return exact;
     const ownsLiveGoal = this.ledger.goalsForOwner(agent).some((goal) => goal.phase === "active" || goal.phase === "blocked");
-    const ceoInterrupt = agent === "ceo" && (triggerRef.startsWith("mail:") || triggerRef.startsWith("child-"));
+    const ceoInterrupt = agent === "ceo" && (triggerRef.startsWith("interaction:") || triggerRef.startsWith("mail:") || triggerRef.startsWith("child-"));
     if (!ownsLiveGoal && !ceoInterrupt) return null;
-    const queued = this.ledger.queuedWakeForAgent(agent);
+    const queued = triggerRef.startsWith("interaction:") ? null : this.ledger.queuedWakeForAgent(agent);
     if (queued) {
       this.ledger.appendEvent({ streamId: wakeStream(queued.id), ts: this.#now(), actor: "supervisor", type: "wake.trigger_coalesced", data: { wakeId: queued.id, triggerRef } });
       return queued;
@@ -463,10 +483,38 @@ export class Supervisor {
     throw new Error(`CEO motion invalid: ${violation.reason}${violation.idleAgents.length ? ` (${violation.idleAgents.join(", ")})` : ""}`);
   }
 
-  #loadContext(wake: WakeSnapshot): JsonValue {
+  #turnContext(wake: WakeSnapshot): TurnContext {
+    if (interactionMailId(wake)) return { source: { kind: "human" } };
+    const goals = this.ledger.goalsForOwner(wake.agent).filter((goal) => goal.phase === "active");
+    const goal = goals.find((candidate) => candidate.parentId === null) ?? goals[0];
+    const humanMail = wake.triggerRef.startsWith("mail:") && this.ledger.mailbox().some((mail) => mail.id === wake.triggerRef.slice(5) && mail.from === "human");
+    return { source: humanMail ? { kind: "human" } : { kind: "goal_driver", round: wake.attempt }, ...(goal ? { goalBinding: { goalId: goal.id, goalRevision: goal.revision } } : {}) };
+  }
+
+  #loadContext(wake: WakeSnapshot, turn: TurnContext): JsonValue {
     const profile = this.#profiles.get(wake.agent) ?? { agent: wake.agent, role: "child" as const };
     const role = profile.role;
     const capabilities = profile.capabilities ?? defaultCapabilities(role);
+    const runnerProfile = this.#runnerProfiles.get(profile.runnerProfile ?? "default");
+    if (!turn.goalBinding && interactionMailId(wake)) {
+      const mail = this.ledger.mailbox().find((candidate) => candidate.id === interactionMailId(wake));
+      const body = mail?.body && typeof mail.body === "object" && !Array.isArray(mail.body) ? mail.body as Record<string, JsonValue> : {};
+      const message = typeof body.message === "string" ? body.message : "";
+      const mailEvent = this.ledger.eventsSince(0, ["mail.put"]).findLast((event) => (event.data as { snapshot?: { id?: string } }).snapshot?.id === mail?.id);
+      const recent = this.ledger.eventsSince(0, ["interaction.completed"]).filter((event) => event.actor === wake.agent).slice(-8).map((event) => {
+        const data = event.data as { mailId?: string; response?: { content?: string } };
+        const prior = this.ledger.mailbox().find((candidate) => candidate.id === data.mailId);
+        const priorBody = prior?.body && typeof prior.body === "object" && !Array.isArray(prior.body) ? prior.body as Record<string, JsonValue> : {};
+        return `Human: ${typeof priorBody.message === "string" ? priorBody.message : ""}\nAssistant: ${data.response?.content ?? ""}`;
+      });
+      return {
+        text: [`# Human message\n\n${message}`, ...(recent.length ? [`# Recent conversation\n\n${recent.join("\n\n")}`] : [])].join("\n\n"),
+        sourceSeqs: mailEvent ? [mailEvent.seq] : [],
+        capabilities,
+        systemPrompt: profile.systemPrompt ?? "You are Goah's primary Agent. Respond naturally to the Human, use tools when useful, and keep the final answer concise. Do not create or operate a Goal unless the Human expresses durable Goal intent.",
+        ...(runnerProfile ? { runnerProfile } : {}),
+      } as unknown as JsonValue;
+    }
     const goals = role === "ceo" ? this.ledger.goals() : this.ledger.goalsForOwner(wake.agent);
     const mail = this.ledger.unreadMail(wake.agent);
     const handoff = this.ledger.lastEvent(wake.agent, "handoff.recorded");
@@ -480,7 +528,6 @@ export class Supervisor {
     const actions = this.ledger.actions().filter((action) => action.agent === wake.agent && (action.status === "unknown" || Boolean(action.auditAdvice && !action.adviceAcked)));
     const revisionWarnings = goals.flatMap((goal) => this.#goalRevisionWarning(goal));
     const workingMemory = selectWorkingMemory(this.ledger.readStream(memoryStream(wake.agent)), this.#memoryTailChars);
-    const runnerProfile = this.#runnerProfiles.get(profile.runnerProfile ?? "default");
     return { ...composeActiveContext({ role, capabilities, systemPrompt: profile.systemPrompt ?? defaultRolePrompt(role), wake, goals, mail, actions, lastHandoff: handoff, teamHandoffs, team: role === "ceo" ? this.teamList() : [], revisionWarnings, recoveryEvents, workingMemory }), ...(runnerProfile ? { runnerProfile } : {}) } as unknown as JsonValue;
   }
 
@@ -675,6 +722,7 @@ function minimalEnvironment(explicit: Record<string, string> = {}): NodeJS.Proce
   return { ...env, ...explicit };
 }
 function escapeHtml(value: string): string { return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"); }
+function interactionMailId(wake: WakeSnapshot): string | null { return wake.triggerRef.startsWith("interaction:") ? wake.triggerRef.slice("interaction:".length) : null; }
 function asRecord(value: JsonValue): Record<string, JsonValue> { if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("RPC params must be an object"); return value; }
 function numberArray(value: JsonValue | undefined): number[] { if (!Array.isArray(value) || value.some((item) => typeof item !== "number")) throw new Error("RPC evidence must be a number array"); return value as number[]; }
 function asChildGoal(value: JsonValue | undefined): { id: string; objective: string; observationMethod: string; owner: string } {

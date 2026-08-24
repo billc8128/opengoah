@@ -28,6 +28,7 @@ export function createMemoryLedger(options: SqliteLedgerOptions = {}): SqliteLed
 export interface FauxStep {
   advanceMs?: number;
   trace?: Array<{ type: string; data: JsonValue }>;
+  response?: string;
   write?: { path: string; content: string };
   handoff?: WakeOutput;
   stop?: boolean;
@@ -54,7 +55,7 @@ export class FauxPiDriver implements PiDriver {
         }
         step.effect?.(request);
         if (step.crash) throw new Error(step.crash);
-        return { ...(step.trace ? { trace: step.trace } : {}), ...(step.handoff ? { handoff: step.handoff } : {}), ...(step.stop ? { stopped: true } : {}) };
+        return { ...(step.trace ? { trace: step.trace } : {}), ...(step.response !== undefined ? { response: { content: step.response } } : {}), ...(step.handoff ? { handoff: step.handoff } : {}), ...(step.stop ? { stopped: true } : {}) };
       },
       close: async () => undefined,
     };

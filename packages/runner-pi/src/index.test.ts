@@ -1,18 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { RunRequest, WakeSnapshot, WakeOutput } from "goah-ledger-contract";
+import type { AssistantResponse, RunRequest, WakeSnapshot, WakeOutput } from "goah-ledger-contract";
 import { PiRunnerAdapter, ProcessRunner, type PiDriver } from "./index.js";
 import { bashTimeoutMs, compactMessages, compactMessagesToTokenBudget, resolveContextPolicy, runBashCommand, snapshotModelConfig, validateNextWakeAt } from "./pi-worker.js";
 import { createPiModel, modelCatalog, providerCatalog } from "./model-provider.js";
 
 const wake: WakeSnapshot = { id: "w", agent: "a", triggerRef: "t", status: "running", leaseUntil: "2026-08-18T00:01:00.000Z", attempt: 1, startedAt: "2026-08-18T00:00:00.000Z", endedAt: null, enqueuedSeq: 1, leaseToken: "lease", runnerPid: null };
+const goalTurn = { source: { kind: "goal_driver" as const, round: 1 }, goalBinding: { goalId: "goal", goalRevision: 0 } };
 
-function driver(steps: Array<{ stop?: boolean; handoff?: WakeOutput }>): PiDriver {
+function driver(steps: Array<{ stop?: boolean; response?: AssistantResponse; handoff?: WakeOutput }>): PiDriver {
   return {
     createSession: async () => ({
       step: async () => {
         const step = steps.shift() ?? { stop: true };
-        return { ...(step.stop ? { stopped: true } : {}), ...(step.handoff ? { handoff: step.handoff } : {}) };
+        return { ...(step.stop ? { stopped: true } : {}), ...(step.response ? { response: step.response } : {}), ...(step.handoff ? { handoff: step.handoff } : {}) };
       },
       close: async () => undefined,
     }),
@@ -26,13 +27,20 @@ test("runner policy is external and a multi-step driver can hand off", async () 
     { handoff: { handoff: { observations: [], results: ["done"], nextSteps: [] }, mail: [], nextWakeAt: null } },
   ]);
   const request: RunRequest = {
-    wake, context: {},
+    wake, turn: goalTurn, context: {},
     now: () => now, emit: () => undefined,
   };
   const handle = new PiRunnerAdapter(faux).prepare(request);
   handle.begin();
   const result = await handle.result;
   assert.equal(result.outcome, "handoff");
+});
+
+test("an unbound Turn returns a normal assistant response without handoff", async () => {
+  const request: RunRequest = { wake, turn: { source: { kind: "human" } }, context: {}, now: () => "2026-08-18T00:00:00.000Z", emit: () => undefined };
+  const handle = new PiRunnerAdapter(driver([{ response: { content: "你好" } }])).prepare(request);
+  handle.begin();
+  assert.deepEqual(await handle.result, { outcome: "response", response: { content: "你好" } });
 });
 
 test("bash commands are killed by process-group timeout and become visible tool errors", async () => {
@@ -54,7 +62,7 @@ test("bash commands are killed by process-group timeout and become visible tool 
 
 test("stopping without handoff is abnormal", async () => {
   const handle = new PiRunnerAdapter(driver([{ stop: true }])).prepare({
-    wake, context: {},
+    wake, turn: goalTurn, context: {},
     now: () => "2026-08-18T00:00:00.000Z", emit: () => undefined,
   });
   handle.begin();
@@ -65,7 +73,7 @@ test("stopping without handoff is abnormal", async () => {
 test("ProcessRunner may opt into its own timeout policy", async () => {
   const runner = new ProcessRunner({ command: process.execPath, args: ["-e", "process.stdin.resume(); setInterval(() => {}, 1000)"], killGraceMs: 25, timeoutMs: 50 });
   const handle = runner.prepare({
-    wake, context: {},
+    wake, turn: goalTurn, context: {},
     now: () => new Date().toISOString(), emit: () => undefined,
   });
   assert.ok(handle.pid);

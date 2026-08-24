@@ -32,7 +32,7 @@ test("local Console serves assets, redacted snapshots, and CEO control through S
     body: JSON.stringify({ message: "Launch a profitable store" }),
   })
   assert.equal(ceoResponse.status, 202)
-  assert.equal(runtime.ledger.goals()[0]?.objective, "Launch a profitable store")
+  assert.equal(runtime.ledger.goals().length, 0)
 
   const snapshotResponse = await fetch(`${metadata.url}api/snapshot?token=${metadata.token}`)
   assert.equal(snapshotResponse.status, 200)
@@ -94,8 +94,8 @@ test("Console chat streams a CEO interaction and decisions resolve gated actions
     assert.equal(finished?.status, "done")
     assert.equal(frames.at(-1)?.type, "result")
     assert.ok(frames.some((frame) => frame.type === "accepted"))
-    assert.ok(frames.some((frame) => frame.type === "event" && frame.event?.type === "handoff.recorded"))
-    assert.equal(runtime.ledger.goals()[0]?.objective, "Operate the store")
+    assert.ok(frames.some((frame) => frame.type === "event" && frame.event?.type === "interaction.completed"))
+    assert.equal(runtime.ledger.goals().length, 0)
     const second = await fetch(`${metadata.url}api/chat?token=${metadata.token}`, {
       method: "POST",
       headers: { "content-type": "application/json" },

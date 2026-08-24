@@ -5,6 +5,7 @@ import type { JsonValue, RunnerResult, WakeOutput } from "goah-ledger-contract";
 
 interface WorkerStep {
   trace?: Array<{ type: string; data: JsonValue }>;
+  response?: string;
   write?: { path: string; content: string };
   handoff?: WakeOutput;
   crash?: string;
@@ -30,6 +31,7 @@ await runProcessWorker(async (request, emit, rpc): Promise<RunnerResult> => {
     if (step.crash) throw new Error(step.crash);
     if (step.delayMs) await new Promise((resolve) => setTimeout(resolve, step.delayMs));
     if (step.hang) await new Promise(() => undefined);
+    if (step.response !== undefined) return { outcome: "response", response: { content: step.response } };
     if (step.handoff) return { outcome: "handoff", output: step.handoff };
   }
   return { outcome: "abnormal", reason: "faux worker stopped without handoff" };

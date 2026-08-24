@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Agent, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
-import { fauxAssistantMessage, fauxToolCall, Type, type Message } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxText, fauxToolCall, Type, type Message } from "@earendil-works/pi-ai";
 import { SESSION_FORMAT_VERSION, type AgentCapability, type JsonValue, type RunnerResult, type SessionMessage, type WakeOutput } from "goah-ledger-contract";
 import { runProcessWorker, type WorkerRpc } from "./index.js";
 import { createPiModel } from "./model-provider.js";
@@ -23,6 +23,7 @@ export function compactMessages(messages: AgentMessage[], maxRecent = 8): AgentM
 export async function runPiWorker(): Promise<void> {
   await runProcessWorker(async (request, emit, rpc): Promise<RunnerResult> => {
     const contextRecord = typeof request.context === "object" && request.context !== null && !Array.isArray(request.context) ? request.context : {};
+    const goalBound = request.turn.goalBinding !== undefined;
     const profile = contextRecord.runnerProfile && typeof contextRecord.runnerProfile === "object" && !Array.isArray(contextRecord.runnerProfile) ? contextRecord.runnerProfile as Record<string, unknown> : {};
     const runnerConfig = profile.config && typeof profile.config === "object" && !Array.isArray(profile.config) ? profile.config as Record<string, unknown> : {};
     const provider = typeof runnerConfig.provider === "string" ? runnerConfig.provider : process.env.GOAH_PI_PROVIDER ?? "anthropic";
@@ -34,11 +35,16 @@ export async function runPiWorker(): Promise<void> {
     const model = typeof privateAuth.baseUrl === "string" ? { ...configured.model, baseUrl: privateAuth.baseUrl } : configured.model;
     if (provider === "faux") {
       const faux = configured.faux!;
-      const handoff = JSON.parse(process.env.GOAH_PI_FAUX_HANDOFF ?? "{}") as Record<string, unknown>;
-      faux.setResponses([fauxAssistantMessage(fauxToolCall("handoff", handoff), { stopReason: "toolUse" })]);
+      if (goalBound) {
+        const handoff = JSON.parse(process.env.GOAH_PI_FAUX_HANDOFF ?? "{}") as Record<string, unknown>;
+        faux.setResponses([fauxAssistantMessage(fauxToolCall("handoff", handoff), { stopReason: "toolUse" })]);
+      } else {
+        faux.setResponses([fauxAssistantMessage([fauxText(process.env.GOAH_PI_FAUX_RESPONSE ?? "Hello from Goah.")])]);
+      }
     }
 
     let output: WakeOutput | null = null;
+    let response = "";
     let compactions = 0;
     let messageCounter = 0;
     const messageIds = new WeakMap<object, string>();
@@ -55,13 +61,15 @@ export async function runPiWorker(): Promise<void> {
     const capabilities = Array.isArray(contextRecord.capabilities)
       ? new Set(contextRecord.capabilities.filter((value): value is AgentCapability => typeof value === "string"))
       : undefined;
-    const tools = createTools(root, (value) => { output = value; }, rpc, request.wake.startedAt, capabilities);
+    const tools = createTools(root, (value) => { output = value; }, rpc, request.wake.startedAt, capabilities, goalBound);
     const contextPolicy = resolveContextPolicy(model.contextWindow, process.env);
     emit({ type: "session.started", data: { formatVersion: SESSION_FORMAT_VERSION, provider, model: modelId, runner: "pi", contextWindowTokens: model.contextWindow, maxOutputTokensPerTurn: model.maxTokens } });
     const suppliedPrompt = typeof contextRecord.systemPrompt === "string" ? contextRecord.systemPrompt : undefined;
     const activeContext = typeof contextRecord.text === "string" ? contextRecord.text : JSON.stringify(request.context);
     const sourceSeqs = Array.isArray(contextRecord.sourceSeqs) ? contextRecord.sourceSeqs.filter((value): value is number => Number.isInteger(value)) : [];
-    const systemPrompt = `${process.env.GOAH_PI_SYSTEM_PROMPT ?? suppliedPrompt ?? "You are a goal-oriented worker."}\nYou must finish by calling handoff exactly once. Treat the supplied context as authoritative.`;
+    const systemPrompt = goalBound
+      ? `${process.env.GOAH_PI_SYSTEM_PROMPT ?? suppliedPrompt ?? "You are a goal-oriented worker."}\nYou must finish by calling handoff exactly once. Treat the supplied context as authoritative.`
+      : `${process.env.GOAH_PI_SYSTEM_PROMPT ?? suppliedPrompt ?? "You are Goah's primary Agent."}\nRespond normally to the Human. Do not call handoff. Treat the supplied context as authoritative.`;
     const agent = new Agent({
       initialState: {
         systemPrompt,
@@ -111,6 +119,7 @@ export async function runPiWorker(): Promise<void> {
       } else if (event.type === "message_update") {
         emit({ type: "message.assistant.delta", data: { messageId: idFor(event.message), delta: JSON.parse(JSON.stringify(event.assistantMessageEvent)) as JsonValue } });
       } else if (event.type === "message_end" && event.message.role === "assistant") {
+        response = messageText(event.message);
         emit({ type: "message.assistant.completed", data: { message: sessionMessage(event.message, idFor(event.message)) as unknown as JsonValue } });
       } else if (event.type === "tool_execution_start") emit({ type: "tool.called", data: { callId: event.toolCallId, name: event.toolName, arguments: JSON.parse(JSON.stringify(event.args)) as JsonValue } });
       else if (event.type === "tool_execution_end") emit({ type: "tool.completed", data: { callId: event.toolCallId, messageId: `tool:${event.toolCallId}`, name: event.toolName, result: JSON.parse(JSON.stringify(event.result)) as JsonValue, isError: event.isError } });
@@ -118,6 +127,7 @@ export async function runPiWorker(): Promise<void> {
       else if (event.type === "agent_end") emit({ type: "session.completed", data: {} });
     });
     await agent.prompt(`Wake started at: ${request.wake.startedAt ?? "unknown"}\n\n${activeContext}\n\nRunner root: ${root}. Manage local files directly when the goal requires them.`);
+    if (!goalBound) return response ? { outcome: "response", response: { content: response } } : { outcome: "abnormal", reason: "Pi worker exited without a response" };
     if (!output) return { outcome: "abnormal", reason: "Pi worker exited without a valid handoff" };
     return { outcome: "handoff", output };
   });
@@ -143,7 +153,7 @@ function sessionMessage(message: AgentMessage, id: string): SessionMessage {
   return { id, role, content: (value.content ?? value) as JsonValue, ...(value.usage !== undefined ? { usage: value.usage as JsonValue } : {}) };
 }
 
-function createTools(root: string, handoff: (output: WakeOutput) => void, rpc: WorkerRpc, wakeStartedAt: string | null, capabilities?: ReadonlySet<AgentCapability>): AgentTool<any>[] {
+function createTools(root: string, handoff: (output: WakeOutput) => void, rpc: WorkerRpc, wakeStartedAt: string | null, capabilities?: ReadonlySet<AgentCapability>, goalBound = true): AgentTool<any>[] {
   const handoffTool: AgentTool<any> = {
     name: "handoff",
     label: "Handoff",
@@ -194,7 +204,7 @@ function createTools(root: string, handoff: (output: WakeOutput) => void, rpc: W
     parameters: Type.Object({ command: Type.String(), timeoutMs: Type.Optional(Type.Number()) }), executionMode: "sequential",
     execute: async (_id, params, signal) => runBashCommand(root, params as { command: string; timeoutMs?: number }, signal),
   };
-  return [readTool, writeTool, editTool, bashTool, ...rpcTools, handoffTool];
+  return [readTool, writeTool, editTool, bashTool, ...rpcTools, ...(goalBound ? [handoffTool] : [])];
 }
 
 const BASH_TIMEOUT_HARD_CAP_MS = 600_000;

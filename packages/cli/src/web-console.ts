@@ -120,8 +120,7 @@ async function route(request: IncomingMessage, response: ServerResponse, supervi
       const body = await readBody(request)
       const message = typeof body.message === "string" ? body.message.trim() : ""
       if (!message) { sendJson(response, 400, { error: "message is required" }); return }
-      const root = ledger.goals().find((goal) => goal.parentId === null && goal.owner === "ceo" && goal.phase !== "complete")
-      sendJson(response, 202, root ? supervisor.sendToCeo({ message }) : supervisor.startGoal(message))
+      sendJson(response, 202, supervisor.interactWithCeo(message))
       return
     }
     if (request.method === "POST" && url.pathname === "/api/chat") {

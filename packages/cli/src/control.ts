@@ -146,8 +146,7 @@ async function interact(message: string, socket: Socket, supervisor: Supervisor,
 /** Shared CEO interaction stream used by the interactive shell and the web Console. */
 export async function* interactFrames(message: string, supervisor: Supervisor, ledger: Ledger, isActive: () => boolean = () => true): AsyncGenerator<ControlFrame> {
   if (!message.trim()) throw new Error("message is required");
-  const root = ledger.goals().find((goal) => goal.parentId === null && goal.owner === "ceo" && goal.phase !== "complete");
-  const accepted = root ? supervisor.sendToCeo({ message }) : supervisor.startGoal(message);
+  const accepted = supervisor.interactWithCeo(message);
   yield { type: "accepted", wakeId: accepted.wake.id, value: accepted as unknown as JsonValue };
   let lastSeq = 0;
   while (true) {
@@ -155,11 +154,12 @@ export async function* interactFrames(message: string, supervisor: Supervisor, l
     for (const event of ledger.eventsForWake(accepted.wake.id)) {
       if (event.seq <= lastSeq) continue;
       lastSeq = event.seq;
-      if (event.type.startsWith("message.assistant") || event.type.startsWith("tool.") || event.type.startsWith("rpc.") || event.type === "handoff.recorded" || event.type.startsWith("wake.")) yield { type: "event", event: event as unknown as JsonValue };
+      if (event.type.startsWith("message.assistant") || event.type.startsWith("tool.") || event.type.startsWith("rpc.") || event.type === "handoff.recorded" || event.type === "interaction.completed" || event.type.startsWith("wake.")) yield { type: "event", event: event as unknown as JsonValue };
     }
     const wake = ledger.wake(accepted.wake.id);
     if (wake && ["done", "abnormal", "merge_blocked"].includes(wake.status)) {
-      yield { type: "result", value: { wake, handoff: ledger.lastEvent("ceo", "handoff.recorded") } as unknown as JsonValue };
+      const interaction = ledger.eventsForWake(wake.id).findLast((event) => event.type === "interaction.completed");
+      yield { type: "result", value: { wake, ...(interaction ? { response: (interaction.data as { response?: JsonValue }).response ?? null } : { handoff: ledger.lastEvent("ceo", "handoff.recorded") }) } as unknown as JsonValue };
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 50));

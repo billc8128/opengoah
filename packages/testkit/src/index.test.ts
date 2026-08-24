@@ -81,7 +81,7 @@ test("recovery kills the recorded runner before another wake can use its local r
   ledger.enqueueWake(queuedWake("running"), "supervisor");
   const leased = ledger.claimNextWake(clock.now().toISOString(), new Date(clock.now().getTime() + 100).toISOString(), "lease")!;
   const running = ledger.markWakeRunning(leased.id, clock.now().toISOString(), "lease");
-  const handle = runner.prepare({ wake: running, context: {}, now: () => clock.now().toISOString(), emit: () => undefined });
+  const handle = runner.prepare({ wake: running, turn: { source: { kind: "system", reason: "test" } }, context: {}, now: () => clock.now().toISOString(), emit: () => undefined });
   ledger.attachWakeProcess(running.id, "lease", handle.pid!, clock.now().toISOString());
   handle.begin();
   await waitFor(() => existsSync(join(repo, "running.txt")));
