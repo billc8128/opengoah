@@ -72,7 +72,7 @@ Requires Node.js >= 24 (uses `node:sqlite`).
 git clone https://github.com/billc8128/opengoah.git
 cd goah
 npm install
-npm test          # 71 contract, replay, organization, observation, control-socket, recovery, approval, audit, and connector tests
+npm test          # contract, replay, Runner routing, organization, recovery, approval, audit, and connector tests
 npm run example   # one full wake: goal → schedule → lease → faux run → handoff → done
 npm run example:guardian
 npm run test:soak
@@ -82,7 +82,7 @@ Initialize and operate a configured supervisor:
 
 ```bash
 npm install --global @goah/cli
-goah init --provider anthropic --model claude-sonnet-4-6
+goah setup
 goah doctor
 goah "Launch a profitable store"
 # Reattach later:
@@ -103,7 +103,9 @@ goah goal-complete first-goal --reason "observation passed" --evidence <seq>
 goah status
 ```
 
-`goah` starts the resident Supervisor when necessary and attaches the interactive CEO. `/goal ...` revises the active root and invalidates its old observation method; `/observe ...` confirms the replacement through human authority. `goah start` remains the explicit daemon command and `goah wake <agent>` queues a manual wake. Provider credentials stay as `env:NAME` references in `goah.config.json`; `doctor` resolves and validates them without printing them. For an offline installation check, use `goah init --provider faux`.
+`goah` starts the resident Supervisor when necessary and attaches the interactive CEO. `/goal ...` revises the active root and invalidates its old observation method; `/observe ...` confirms the replacement through human authority. `goah start` remains the explicit daemon command and `goah wake <agent>` queues a manual wake. `goah daemon status|logs|restart|stop` manages the resident process.
+
+Goah Core knows only Runner Profiles. Each Runner owns its configuration semantics: the Pi Runner exposes Pi's built-in provider/model registry, OAuth, API-key environment references, custom endpoints, and local Ollama/LM Studio/llama.cpp targets. Use `goah runner setup [PROFILE]`, `goah runner profile assign AGENT PROFILE`, `goah auth ...`, and `goah model ...`. OAuth credentials stay in the Runner credential store; only the selected wake's resolved request credential crosses the private worker pipe, never Agent context or the Ledger. For an offline installation check, use `goah init --provider faux`.
 
 Inspect and export the replayable Session ledger without requiring provider credentials:
 
@@ -118,16 +120,15 @@ goah session export <wake-id> --output session.json
 
 `session show` summarizes event types, request count, replayed messages, and the last Active Context. Export is redacted by default: common secret fields, bearer/API-key patterns, and the current home path are removed while event identities remain intact. `--raw` is an explicit local-only escape hatch and may contain sensitive prompts and tool results.
 
-Ark Coding Plan requires explicit model capabilities because its model-list API does not publish context/output limits:
+Runner Profiles allow different Agents to use different execution backends or Pi targets:
 
 ```bash
-goah init --provider ark-coding --model glm-5.2 \
-  --api-key-env ARK_API_KEY \
-  --context-window-tokens 256000 \
-  --max-output-tokens 32000
+goah runner setup fast
+goah runner profile assign worker fast
+goah runner status
 ```
 
-Replace those sample limits with the selected model's published values.
+Ark is not a built-in special case. If needed later, configure it as a Pi custom endpoint rather than extending Goah Core.
 
 ## How it works
 
@@ -189,7 +190,7 @@ Read this before pointing goah at anything real.
 Mechanically enforced today:
 
 - No external side effects by default: a connector must declare a capability for an action's kind, and non-dry-run connectors additionally require an explicit supervisor opt-in. Anything undeclared is gated, fail-closed.
-- Runner and connector code executes in child processes with bounded environments. Connector secrets are explicitly scoped to that connector; runners never receive a ledger connection. Pi's Bash subprocess receives a minimal utility environment rather than provider API-key variables. Control state defaults to `~/.goah/state`, outside the runner root.
+- Runner and connector code executes in child processes with bounded environments. Connector secrets are explicitly scoped to that connector; runners never receive a ledger connection. Pi authentication is resolved before a wake starts; the worker receives only that request's scoped auth over its private process pipe, while Pi's Bash subprocess receives no provider API-key variables. Control state defaults to `~/.goah/state`, outside the runner root.
 - The events table is append-only (enforced by SQLite triggers); invalid wake/action state transitions are rejected by both the library and the database.
 - `request.prepared` records model-visible behavior but excludes provider API keys, authorization headers, abort handles, and transport-private objects.
 - Recovery Active Context includes only the abnormal reason, interrupted/compaction markers, and tool calls with unknown outcomes; raw deltas and request snapshots remain in the ledger for explicit inspection.

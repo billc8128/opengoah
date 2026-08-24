@@ -1,106 +1,103 @@
-import {
-  createModels,
-  createProvider,
-  envApiKeyAuth,
-  fauxProvider,
-  type Api,
-  type Model,
-} from "@earendil-works/pi-ai";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { createModels, createProvider, defaultProviderAuthContext, envApiKeyAuth, fauxProvider, type Api, type Model, type MutableModels } from "@earendil-works/pi-ai";
+import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
-import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
-import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
+import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
+import { builtinModels, builtinProviders, getBuiltinModels, getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
+import { JsonCredentialStore } from "./credential-store.js";
 
-const ARK_CODING_BASE_URL = "https://ark.cn-beijing.volces.com/api/coding/v3";
+export const LOCAL_PROVIDERS = ["ollama", "lm-studio", "llama.cpp"] as const;
+export type LocalProvider = typeof LOCAL_PROVIDERS[number];
 
-export interface ModelCapabilities {
-  contextWindowTokens: number;
-  maxOutputTokensPerTurn: number;
+export interface ProviderSummary { id: string; name: string; modelCount: number; oauth: boolean; apiKey: boolean; local: boolean }
+export interface ModelSummary { provider: string; id: string; name: string; contextWindow: number; maxTokens: number; reasoning: boolean }
+export interface ConfiguredPiModel { models: MutableModels; model: Model<Api>; faux?: ReturnType<typeof fauxProvider> }
+
+export function defaultAuthFile(): string {
+  return process.env.GOAH_PI_AUTH_FILE ?? join(process.env.GOAH_STATE_HOME ?? join(homedir(), ".goah"), "auth.json");
 }
 
-export function createPiModel(provider: string, modelId: string, env: NodeJS.ProcessEnv = process.env): {
-  models: ReturnType<typeof createModels>;
-  model: Model<Api>;
-  faux?: ReturnType<typeof fauxProvider>;
-} {
-  const models = createModels();
-  let model: Model<Api> | undefined;
-  if (provider === "anthropic") {
-    models.setProvider(anthropicProvider());
-    const baseUrl = env.GOAH_PI_BASE_URL;
-    const known = knownModel(() => models.getModel(provider, modelId));
-    if (known) {
-      model = known;
-      if (baseUrl) model = { ...model, baseUrl } as Model<Api>;
-    } else {
-      if (!baseUrl) throw new Error(`Pi model not found: ${provider}/${modelId}`);
-      const capabilities = env.GOAH_PI_MODEL_CAPABILITIES
-        ? parseModelCapabilities(env.GOAH_PI_MODEL_CAPABILITIES)
-        : { contextWindowTokens: 200_000, maxOutputTokensPerTurn: 32_768 };
-      model = {
-        id: modelId, name: modelId, api: "anthropic-messages", provider, baseUrl,
-        reasoning: false, input: ["text"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: capabilities.contextWindowTokens,
-        maxTokens: capabilities.maxOutputTokensPerTurn,
-      };
-    }
-  } else if (provider === "openai") {
-    models.setProvider(openaiProvider());
-    model = models.getModel(provider, modelId);
-  } else if (provider === "ark-coding") {
-    const baseUrl = env.GOAH_PI_BASE_URL ?? ARK_CODING_BASE_URL;
-    const capabilities = parseModelCapabilities(env.GOAH_PI_MODEL_CAPABILITIES);
-    const arkModel: Model<"openai-responses"> = {
-      id: modelId,
-      name: modelId,
-      api: "openai-responses",
-      provider,
-      baseUrl,
-      reasoning: true,
-      input: ["text"],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: capabilities.contextWindowTokens,
-      maxTokens: capabilities.maxOutputTokensPerTurn,
-      compat: { supportsDeveloperRole: false },
-    };
-    models.setProvider(createProvider({
-      id: provider,
-      name: "Ark Coding Plan",
-      baseUrl,
-      auth: { apiKey: envApiKeyAuth("Ark API key", ["ARK_API_KEY"]) },
-      models: [arkModel],
-      api: openAIResponsesApi(),
-    }));
-    model = models.getModel(provider, modelId);
-  } else if (provider === "faux") {
+export function providerCatalog(): ProviderSummary[] {
+  const rows = builtinProviders().map((provider) => ({
+    id: provider.id,
+    name: provider.name,
+    modelCount: provider.getModels().length,
+    oauth: provider.auth.oauth !== undefined,
+    apiKey: provider.auth.apiKey !== undefined,
+    local: false,
+  }));
+  for (const id of LOCAL_PROVIDERS) rows.push({ id, name: localName(id), modelCount: 0, oauth: false, apiKey: false, local: true });
+  return rows.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+export function modelCatalog(provider?: string): ModelSummary[] {
+  if (provider && isLocalProvider(provider)) return [];
+  const providers = provider ? [provider] : getBuiltinProviders();
+  return providers.flatMap((providerId) => getBuiltinModels(providerId as Parameters<typeof getBuiltinModels>[0]).map((model) => ({
+    provider: model.provider,
+    id: model.id,
+    name: model.name,
+    contextWindow: model.contextWindow,
+    maxTokens: model.maxTokens,
+    reasoning: model.reasoning,
+  })));
+}
+
+export function createPiModel(provider: string, modelId: string, env: NodeJS.ProcessEnv = process.env): ConfiguredPiModel {
+  if (provider === "faux") {
+    const models = createModels();
     const faux = fauxProvider({ provider, models: [{ id: modelId, contextWindow: 128_000, maxTokens: 32_000 }] });
     models.setProvider(faux.provider);
     return { models, model: faux.getModel() as Model<Api>, faux };
-  } else {
-    throw new Error(`unsupported GOAH Pi provider: ${provider}`);
   }
-  if (!model) throw new Error(`Pi model not found: ${provider}/${modelId}`);
-  return { models, model };
+
+  const ambient = defaultProviderAuthContext();
+  const models = builtinModels({ credentials: new JsonCredentialStore(env.GOAH_PI_AUTH_FILE ?? defaultAuthFile()), authContext: { env: async (name) => env[name] ?? ambient.env(name), fileExists: ambient.fileExists } });
+  if (isLocalProvider(provider)) models.setProvider(localProvider(provider, modelId, env));
+  else if (!models.getProvider(provider) && env.GOAH_PI_BASE_URL) models.setProvider(customProvider(provider, modelId, env));
+  const model = models.getModel(provider, modelId);
+  if (!model) throw new Error(`Model not found: ${provider}/${modelId}`);
+  const baseUrl = env.GOAH_PI_BASE_URL;
+  return { models, model: baseUrl ? { ...model, baseUrl } as Model<Api> : model };
 }
 
-function knownModel(resolve: () => Model<Api> | undefined): Model<Api> | undefined {
-  try { return resolve(); } catch { return undefined; }
+function customProvider(provider: string, modelId: string, env: NodeJS.ProcessEnv) {
+  const api = env.GOAH_PI_API ?? "openai-completions";
+  const baseUrl = env.GOAH_PI_BASE_URL!;
+  const model: Model<Api> = {
+    id: modelId, name: modelId, api, provider, baseUrl,
+    reasoning: env.GOAH_PI_REASONING === "true", input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: positive(env.GOAH_PI_CONTEXT_WINDOW_TOKENS, 128_000), maxTokens: positive(env.GOAH_PI_MAX_OUTPUT_TOKENS, 16_384),
+  };
+  const stream = api === "anthropic-messages" ? anthropicMessagesApi() : api === "openai-responses" ? openAIResponsesApi() : openAICompletionsApi();
+  return createProvider({ id: provider, name: provider, baseUrl, auth: { apiKey: envApiKeyAuth(`${provider} API key`, ["GOAH_PI_API_KEY"]) }, models: [model], api: stream });
 }
 
-export function parseModelCapabilities(value: string | undefined): ModelCapabilities {
-  if (value === undefined) throw new Error("GOAH_PI_MODEL_CAPABILITIES is required for ark-coding");
-  const parsed = JSON.parse(value) as Partial<ModelCapabilities>;
-  if (!Number.isInteger(parsed.contextWindowTokens) || parsed.contextWindowTokens! <= 0
-    || !Number.isInteger(parsed.maxOutputTokensPerTurn) || parsed.maxOutputTokensPerTurn! <= 0
-    || parsed.maxOutputTokensPerTurn! >= parsed.contextWindowTokens!) {
-    throw new Error("invalid GOAH_PI_MODEL_CAPABILITIES");
-  }
-  return parsed as ModelCapabilities;
+export async function resolvedApiKey(models: MutableModels, provider: string): Promise<string | undefined> {
+  return (await models.getAuth(provider))?.auth.apiKey;
 }
 
-export function providerApiKey(provider: string): string | undefined {
-  if (provider === "anthropic") return process.env.ANTHROPIC_API_KEY;
-  if (provider === "openai") return process.env.OPENAI_API_KEY;
-  if (provider === "ark-coding") return process.env.ARK_API_KEY;
-  return undefined;
+function localProvider(provider: LocalProvider, modelId: string, env: NodeJS.ProcessEnv) {
+  const baseUrl = env.GOAH_PI_BASE_URL ?? localBaseUrl(provider);
+  const model: Model<"openai-completions"> = {
+    id: modelId, name: modelId, api: "openai-completions", provider, baseUrl,
+    reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: positive(env.GOAH_PI_CONTEXT_WINDOW_TOKENS, 128_000),
+    maxTokens: positive(env.GOAH_PI_MAX_OUTPUT_TOKENS, 16_384),
+  };
+  return createProvider({
+    id: provider, name: localName(provider), baseUrl,
+    auth: { apiKey: { name: `${localName(provider)} local`, check: async () => ({ type: "api_key", source: "local" }), resolve: async () => ({ auth: {}, source: "local" }) } },
+    models: [model], api: openAICompletionsApi(),
+  });
 }
+
+function localBaseUrl(provider: LocalProvider): string {
+  if (provider === "ollama") return process.env.OLLAMA_BASE_URL ?? "http://127.0.0.1:11434/v1";
+  if (provider === "lm-studio") return process.env.LM_STUDIO_BASE_URL ?? "http://127.0.0.1:1234/v1";
+  return process.env.LLAMA_CPP_BASE_URL ?? "http://127.0.0.1:8080/v1";
+}
+function localName(provider: LocalProvider): string { return provider === "ollama" ? "Ollama" : provider === "lm-studio" ? "LM Studio" : "llama.cpp"; }
+function isLocalProvider(value: string): value is LocalProvider { return (LOCAL_PROVIDERS as readonly string[]).includes(value); }
+function positive(value: string | undefined, fallback: number): number { const parsed = Number(value); return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback; }

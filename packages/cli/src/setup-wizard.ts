@@ -1,31 +1,14 @@
-/**
- * `goah setup` — interactive TUI wizard.
- *
- * Scenes render with pi-tui components on one screen: a persistent header and
- * a swap slot that alternates between SelectList (arrow-key selection,
- * omp/pi-style) and Input (free text). Non-TTY invocations fall back to the
- * piped line-queue prompt so onboarding also works over pipes and in CI.
- */
-import { TUI, Text, Input, SelectList, ProcessTerminal, type Component, type SelectItem, type SelectListTheme } from "@mariozechner/pi-tui";
-import { writeDefaultProfile, writeDefaultConfig, type InitOptions, type PiProvider } from "./index.js";
+/** Generic Runner setup. Provider/model semantics remain inside each Runner plugin. */
+import { spawn } from "node:child_process";
+import { Input, ProcessTerminal, SelectList, Text, TUI, type Component, type SelectItem, type SelectListTheme } from "@mariozechner/pi-tui";
+import type { JsonValue, RunnerProfile, RunnerSetupInteraction } from "goah-ledger-contract";
+import { readDefaultRunnerProfile, updateWorkspaceRunnerProfile, writeDefaultRunnerProfile } from "./index.js";
 import { stdioQueue } from "./prompt-queue.js";
+import { runnerManifests, runnerPlugin } from "./runner-registry.js";
 
-interface WizardResult { options: InitOptions }
+export interface WizardResult { profile: RunnerProfile | null }
 
-const PROVIDERS: Array<{ value: PiProvider; label: string; description: string }> = [
-  { value: "anthropic", label: "anthropic", description: "Claude models via ANTHROPIC_API_KEY" },
-  { value: "openai", label: "openai", description: "OpenAI models via OPENAI_API_KEY" },
-  { value: "ark-coding", label: "ark-coding", description: "Volcano Ark coding plans (explicit context/output limits)" },
-  { value: "faux", label: "faux", description: "Offline simulated runner for smoke tests" },
-];
-
-const KNOWN_MODELS: Partial<Record<PiProvider, string[]>> = {
-  anthropic: ["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"],
-};
-
-const CUSTOM = "__custom__";
-
-const listTheme: SelectListTheme = {
+const theme: SelectListTheme = {
   selectedPrefix: (text) => `\x1b[36m❯\x1b[0m ${text}`,
   selectedText: (text) => `\x1b[1m${text}\x1b[22m`,
   description: (text) => `\x1b[2m${text}\x1b[22m`,
@@ -33,123 +16,92 @@ const listTheme: SelectListTheme = {
   noMatch: (text) => `\x1b[2m${text}\x1b[22m`,
 };
 
-/** Interactive or piped setup wizard. Returns the options that were chosen. */
-export async function runSetupWizard(): Promise<WizardResult> {
-  if (!process.stdin.isTTY || !process.stdout.isTTY) return runPipedWizard();
+export async function runSetupWizard(current: RunnerProfile | null = readDefaultRunnerProfile()): Promise<WizardResult> {
+  return process.stdin.isTTY && process.stdout.isTTY ? runTui(current) : runPiped(current);
+}
 
+async function runTui(current: RunnerProfile | null): Promise<WizardResult> {
   const tui = new TUI(new ProcessTerminal());
   const header = new Text("");
   let slot: Component | null = null;
-  const { promise: done, resolve: resolveDone } = Promise.withResolvers<WizardResult>();
-
-  const setHeader = (title: string, subtitle: string): void => {
-    header.setText(["", `\x1b[1m Goah setup — ${title}\x1b[22m`, `\x1b[2m ${subtitle}\x1b[22m`, ""].join("\n"));
-  };
-  const setSlot = (component: Component): void => {
-    if (slot) tui.removeChild(slot);
-    slot = component;
-    tui.addChild(component);
-    tui.setFocus(component);
-    tui.requestRender();
-  };
-  /** Arrow-key selection; resolves the chosen value, or null when cancelled. */
-  const pick = (title: string, subtitle: string, items: SelectItem[]): Promise<string | null> => {
-    setHeader(title, subtitle);
-    const list = new SelectList(items, 8, listTheme);
-    const { promise, resolve } = Promise.withResolvers<string | null>();
-    list.onSelect = (item) => resolve(item.value);
-    list.onCancel = () => resolve(null);
-    setSlot(list);
-    return promise;
-  };
-  /** Free-text entry on one Input line; the prompt lives in the header so the TUI owns every glyph on screen. */
-  const askText = (title: string, subtitle: string, prompt: string): Promise<string> => {
-    setHeader(title, `${subtitle}\n ${prompt}`);
-    const input = new Input();
-    const { promise, resolve } = Promise.withResolvers<string>();
-    let answerLine: ((value: string) => void) | null = resolve;
-    input.onSubmit = (line) => { input.setValue(""); const deliver = answerLine; answerLine = null; deliver?.(line.trim()); };
-    setSlot(input);
-    return promise;
+  const replace = (component: Component): void => { if (slot) tui.removeChild(slot); slot = component; tui.addChild(component); tui.setFocus(component); tui.requestRender(); };
+  const setHeader = (title: string, description = ""): void => { header.setText(["", `\x1b[1m Goah setup — ${title}\x1b[22m`, description ? `\x1b[2m ${description}\x1b[22m` : "", ""].join("\n")); };
+  const interaction: RunnerSetupInteraction = {
+    select: ({ title, description, choices }) => new Promise((resolve) => {
+      setHeader(title, description);
+      const list = new SelectList(choices as SelectItem[], 10, theme);
+      list.onSelect = (item) => resolve(item.value);
+      list.onCancel = () => resolve(null);
+      replace(list);
+    }),
+    input: ({ title, description, prompt, initial }) => new Promise((resolve) => {
+      setHeader(title, `${description ?? ""}\n ${prompt}`.trim());
+      const input = new Input();
+      if (initial) input.setValue(initial);
+      input.onSubmit = (line) => resolve(line.trim());
+      input.onEscape = () => resolve(null);
+      replace(input);
+    }),
+    notify: (message) => { setHeader("Authentication", message); tui.requestRender(); },
+    openUrl,
   };
 
   tui.addChild(header);
+  const { promise, resolve } = Promise.withResolvers<WizardResult>();
   void (async () => {
-    let options: InitOptions = {};
-    try {
-      const providerValue = await pick("Provider", "↑/↓ to move, Enter to select, Esc to cancel", PROVIDERS.map((entry) => ({ value: entry.value, label: entry.label, description: entry.description })));
-      if (!providerValue) { resolveDone({ options }); return; }
-      const provider = providerValue as PiProvider;
-      options = { provider };
-
-      const known = KNOWN_MODELS[provider] ?? [];
-      let model = "";
-      if (known.length > 0) {
-        const modelValue = await pick("Model", `Provider: ${provider}`, [...known.map((id) => ({ value: id, label: id })), { value: CUSTOM, label: "custom…", description: "type the model id yourself" }]);
-        if (!modelValue) { resolveDone({ options }); return; }
-        model = modelValue === CUSTOM ? await askText("Model", `Provider: ${provider}`, "model id:") : modelValue;
-      } else {
-        model = await askText("Model", `Provider: ${provider}`, "model id:");
+    while (true) {
+      try {
+        const manifests = runnerManifests();
+        const runner = await interaction.select({ title: "Runner", description: "The Runner owns its model, provider, authentication, and execution semantics.", choices: manifests.map((item) => ({ value: item.id, label: item.name, description: item.description })) });
+        if (!runner) { resolve({ profile: null }); return; }
+        const config = await runnerPlugin(runner).configurator.setup(current?.runner === runner ? current.config : null, interaction);
+        if (config === null) { resolve({ profile: null }); return; }
+        const confirmation = await interaction.select({ title: "Confirm", description: `${runner} runner\n ${summarize(config)}`, choices: [{ value: "save", label: "Save runner profile" }, { value: "cancel", label: "Cancel" }] });
+        resolve({ profile: confirmation === "save" ? { id: current?.id ?? "default", runner, config } : null });
+        return;
+      } catch (error) {
+        const choice = await interaction.select({ title: "Setup failed", description: error instanceof Error ? error.message : String(error), choices: [{ value: "retry", label: "Try again" }, { value: "cancel", label: "Cancel without saving" }] });
+        if (choice !== "retry") { resolve({ profile: null }); return; }
       }
-      if (!model) { resolveDone({ options }); return; }
-      options = { ...options, model };
-
-      if (provider !== "faux") {
-        const destination = provider === "anthropic" ? "ANTHROPIC_API_KEY" : provider === "openai" ? "OPENAI_API_KEY" : "ARK_API_KEY";
-        const apiKeyEnv = await askText("API key", "Goah stores the variable NAME only — never the secret", `env var holding the key (Enter = ${destination}):`);
-        options = { ...options, apiKeyEnv: apiKeyEnv && /^[A-Z_][A-Z0-9_]*$/.test(apiKeyEnv) ? apiKeyEnv : destination };
-      }
-
-      if (provider === "ark-coding") {
-        const contextWindowTokens = Number(await askText("Context window", "Ark's model-list API does not publish limits; enter the published value", "context window tokens (e.g. 256000):"));
-        const maxOutputTokensPerTurn = Number(await askText("Max output", "per-turn output cap", "max output tokens per turn (e.g. 32000):"));
-        if (!Number.isInteger(contextWindowTokens) || contextWindowTokens <= 0 || !Number.isInteger(maxOutputTokensPerTurn) || maxOutputTokensPerTurn <= 0) throw new Error("ark-coding requires integer context-window and max-output tokens");
-        options = { ...options, contextWindowTokens, maxOutputTokensPerTurn };
-      }
-
-      const summary = ["", `  provider  ${options.provider}`, `  model     ${options.model}`, ...(options.apiKeyEnv ? [`  key env   ${options.apiKeyEnv}`] : []), ...(options.contextWindowTokens ? [`  context   ${options.contextWindowTokens}`, `  output    ${options.maxOutputTokensPerTurn}`] : [])].join("\n");
-      const confirmation = await pick("Confirm", `${summary}`, [{ value: "save", label: "Save profile" }, { value: "cancel", label: "Cancel" }]);
-      if (confirmation !== "save") options = {};
-    } catch (error) {
-      setHeader("Error", error instanceof Error ? error.message : String(error));
     }
-    resolveDone({ options });
   })();
   tui.start();
-  const result = await done;
+  const result = await promise;
   tui.stop();
   return result;
 }
 
-/** Non-TTY fallback: sequential numbered prompts through the shared line queue. */
-async function runPipedWizard(): Promise<WizardResult> {
+async function runPiped(current: RunnerProfile | null): Promise<WizardResult> {
   const ask = stdioQueue();
+  const interaction: RunnerSetupInteraction = {
+    select: async ({ title, choices }) => {
+      const answer = Number(await ask(`${title}: ${choices.map((choice, index) => `${index + 1}) ${choice.label}`).join("  ")} — select: `));
+      return choices[answer - 1]?.value ?? null;
+    },
+    input: async ({ prompt, initial }) => (await ask(`${prompt}${initial ? ` (${initial})` : ""}: `)) || initial || null,
+    notify: (message) => process.stdout.write(`${message}\n`),
+  };
   try {
-    const providerIndex = await ask(`${PROVIDERS.map((entry, index) => `${index + 1}) ${entry.label}`).join("  ")} — pick 1-${PROVIDERS.length}: `);
-    const provider = PROVIDERS[Math.max(0, Math.min(PROVIDERS.length - 1, Number(providerIndex) - 1))]!.value;
-    const model = await ask("model id: ");
-    if (!model) return { options: {} };
-    const options: InitOptions = { provider, model };
-    if (provider !== "faux") {
-      const destination = provider === "anthropic" ? "ANTHROPIC_API_KEY" : provider === "openai" ? "OPENAI_API_KEY" : "ARK_API_KEY";
-      const apiKeyEnv = await ask(`API key environment variable (default ${destination}): `);
-      options.apiKeyEnv = apiKeyEnv && /^[A-Z_][A-Z0-9_]*$/.test(apiKeyEnv) ? apiKeyEnv : destination;
-    }
-    if (provider === "ark-coding") {
-      const contextWindowTokens = Number(await ask("context window tokens: "));
-      const maxOutputTokensPerTurn = Number(await ask("max output tokens per turn: "));
-      if (Number.isInteger(contextWindowTokens) && contextWindowTokens > 0 && Number.isInteger(maxOutputTokensPerTurn) && maxOutputTokensPerTurn > 0) {
-        options.contextWindowTokens = contextWindowTokens;
-        options.maxOutputTokensPerTurn = maxOutputTokensPerTurn;
-      }
-    }
-    return { options };
+    const manifests = runnerManifests();
+    const runner = await interaction.select({ title: "Runner", choices: manifests.map((item) => ({ value: item.id, label: item.name })) });
+    if (!runner) return { profile: null };
+    const config = await runnerPlugin(runner).configurator.setup(current?.runner === runner ? current.config : null, interaction);
+    return { profile: config === null ? null : { id: current?.id ?? "default", runner, config } };
   } finally { ask.close(); }
 }
 
-/** Persist the wizard result and (optionally) materialize this directory's workspace config. */
 export function applyWizardResult(result: WizardResult, configPath: string | null): void {
-  if (!result.options.provider) throw new Error("setup was cancelled; no profile written");
-  writeDefaultProfile(result.options);
-  if (configPath) writeDefaultConfig(configPath, result.options);
+  if (!result.profile) throw new Error("Setup was cancelled; your existing configuration was not changed.");
+  writeDefaultRunnerProfile(result.profile);
+  if (configPath) updateWorkspaceRunnerProfile(configPath, result.profile);
+}
+
+function summarize(config: JsonValue): string {
+  if (!config || typeof config !== "object" || Array.isArray(config)) return String(config);
+  return Object.entries(config).filter(([key]) => !/key|token|secret|password/i.test(key)).map(([key, value]) => `${key}: ${String(value)}`).join("\n ");
+}
+function openUrl(url: string): void {
+  const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
+  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+  spawn(command, args, { detached: true, stdio: "ignore" }).unref();
 }

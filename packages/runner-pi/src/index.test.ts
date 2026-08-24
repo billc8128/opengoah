@@ -3,7 +3,7 @@ import test from "node:test";
 import type { RunRequest, WakeSnapshot, WakeOutput } from "goah-ledger-contract";
 import { PiRunnerAdapter, ProcessRunner, type PiDriver } from "./index.js";
 import { bashTimeoutMs, compactMessages, compactMessagesToTokenBudget, resolveContextPolicy, runBashCommand, snapshotModelConfig, validateNextWakeAt } from "./pi-worker.js";
-import { createPiModel, providerApiKey } from "./model-provider.js";
+import { createPiModel, modelCatalog, providerCatalog } from "./model-provider.js";
 
 const wake: WakeSnapshot = { id: "w", agent: "a", triggerRef: "t", status: "running", leaseUntil: "2026-08-18T00:01:00.000Z", attempt: 1, startedAt: "2026-08-18T00:00:00.000Z", endedAt: null, enqueuedSeq: 1, leaseToken: "lease", runnerPid: null };
 
@@ -85,28 +85,11 @@ test("mid-turn compaction changes only the model view and preserves boundary mes
   assert.match((compacted[1] as { content: string }).content, /Source message indexes/);
 });
 
-test("Ark Coding Plan is exposed as an OpenAI Responses provider", () => {
-  const previousKey = process.env.ARK_API_KEY;
-  const previousBaseUrl = process.env.GOAH_PI_BASE_URL;
-  const previousCapabilities = process.env.GOAH_PI_MODEL_CAPABILITIES;
-  process.env.ARK_API_KEY = "test-key";
-  process.env.GOAH_PI_BASE_URL = "https://example.test/api/coding/v3";
-  try {
-    delete process.env.GOAH_PI_MODEL_CAPABILITIES;
-    assert.throws(() => createPiModel("ark-coding", "glm-test"), /MODEL_CAPABILITIES is required/);
-    process.env.GOAH_PI_MODEL_CAPABILITIES = JSON.stringify({ contextWindowTokens: 256_000, maxOutputTokensPerTurn: 32_000 });
-    const { model } = createPiModel("ark-coding", "glm-test");
-    assert.equal(model.provider, "ark-coding");
-    assert.equal(model.api, "openai-responses");
-    assert.equal(model.baseUrl, "https://example.test/api/coding/v3");
-    assert.equal(model.contextWindow, 256_000);
-    assert.equal(model.maxTokens, 32_000);
-    assert.equal(providerApiKey("ark-coding"), "test-key");
-  } finally {
-    if (previousKey === undefined) delete process.env.ARK_API_KEY; else process.env.ARK_API_KEY = previousKey;
-    if (previousBaseUrl === undefined) delete process.env.GOAH_PI_BASE_URL; else process.env.GOAH_PI_BASE_URL = previousBaseUrl;
-    if (previousCapabilities === undefined) delete process.env.GOAH_PI_MODEL_CAPABILITIES; else process.env.GOAH_PI_MODEL_CAPABILITIES = previousCapabilities;
-  }
+test("Pi runner exposes the upstream provider and model registries", () => {
+  assert.ok(providerCatalog().length >= 39);
+  assert.ok(modelCatalog("openai").length > 10);
+  assert.equal(createPiModel("openai", "gpt-5.5").model.provider, "openai");
+  assert.throws(() => createPiModel("ark-coding", "glm-test"), /Model not found/);
 });
 
 test("context policy derives compaction from the selected model manifest", () => {

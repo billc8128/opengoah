@@ -9,30 +9,36 @@
 import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import type { RunnerDisplay } from "./live-config.js";
 
 export interface WelcomeSnapshot {
   root: { id: string; objective: string; phase: string } | null;
   team: Array<{ agent: string; status: string }>;
   handoffs: Array<{ agent: string; result: string }>;
-  provider: string;
-  model: string;
+  conversation: Array<{ speaker: string; text: string }>;
+  runner: string;
+  target: string;
 }
 
 export const WELCOME_TEAM_SLOTS = 3;
 export const WELCOME_HANDOFF_SLOTS = 2;
+export const WELCOME_CONVERSATION_SLOTS = 4;
 
 interface GoalRow { id: string; objective: string; phase: string; parent_id: string | null; owner: string }
 interface HandoffRow { actor: string; data: string }
 
 /** Read workspace facts from the ledger file; a missing or unreadable ledger yields an empty snapshot. */
-export function welcomeSnapshot(stateDir: string, runnerEnv: Record<string, string | undefined>): WelcomeSnapshot {
+export function welcomeSnapshot(stateDir: string, runner: RunnerDisplay): WelcomeSnapshot {
   const database = join(stateDir, "ledger.sqlite");
-  if (!existsSync(database)) return { root: null, team: [], handoffs: [], provider: runnerEnv.GOAH_PI_PROVIDER ?? "", model: runnerEnv.GOAH_PI_MODEL ?? "" };
+  if (!existsSync(database)) return { root: null, team: [], handoffs: [], conversation: [], runner: runner.runner, target: runner.target };
   const db = new DatabaseSync(database, { readOnly: true });
   try {
     const goals = db.prepare("SELECT id, objective, phase, parent_id, owner FROM goals").all() as unknown as GoalRow[];
     const root = goals.find((goal) => goal.parent_id === null && goal.owner === "ceo" && goal.phase !== "complete") ?? goals.find((goal) => goal.parent_id === null) ?? null;
-    const team = (db.prepare("SELECT owner AS agent, phase AS status FROM goals WHERE parent_id IS NOT NULL ORDER BY id").all() as unknown as Array<{ agent: string; status: string }>).slice(0, WELCOME_TEAM_SLOTS);
+    const wakeRows = db.prepare("SELECT agent, status FROM wakes ORDER BY enqueued_seq DESC").all() as unknown as Array<{ agent: string; status: string }>;
+    const childGoals = goals.filter((goal) => goal.parent_id !== null);
+    const owners = [...new Set(childGoals.map((goal) => goal.owner))];
+    const team = owners.map((agent) => ({ agent, status: wakeRows.find((wake) => wake.agent === agent && ["running", "leased", "queued"].includes(wake.status))?.status ?? childGoals.find((goal) => goal.owner === agent)?.phase ?? "idle" })).slice(0, WELCOME_TEAM_SLOTS);
     const handoffRows = (db.prepare("SELECT actor, data FROM events WHERE type='handoff.recorded' ORDER BY seq DESC LIMIT ?").all(WELCOME_HANDOFF_SLOTS) as unknown as HandoffRow[]).reverse();
     const handoffs = handoffRows.flatMap((row) => {
       try {
@@ -41,14 +47,16 @@ export function welcomeSnapshot(stateDir: string, runnerEnv: Record<string, stri
         return [{ agent: row.actor, result }];
       } catch { return [{ agent: row.actor, result: "" }]; }
     });
-    return { root: root ? { id: root.id, objective: root.objective, phase: root.phase } : null, team, handoffs, provider: runnerEnv.GOAH_PI_PROVIDER ?? "", model: runnerEnv.GOAH_PI_MODEL ?? "" };
+    const conversationRows = db.prepare("SELECT actor, type, data FROM events WHERE type IN ('mail.put','handoff.recorded') ORDER BY seq DESC LIMIT 30").all() as unknown as Array<{ actor: string; type: string; data: string }>;
+    const conversation = conversationRows.reverse().flatMap((row) => conversationLine(row)).slice(-WELCOME_CONVERSATION_SLOTS);
+    return { root: root ? { id: root.id, objective: root.objective, phase: root.phase } : null, team, handoffs, conversation, runner: runner.runner, target: runner.target };
   } finally { db.close(); }
 }
 
 /** Render the snapshot into a fixed-height block of plain lines (fixed slots keep layout stable). */
 export function renderWelcome(snapshot: WelcomeSnapshot, hasHistory: boolean): string[] {
   const lines: string[] = [];
-  lines.push(`Goah — ${hasHistory ? "Welcome back!" : "Welcome!"}  ${snapshot.provider ? `${snapshot.provider}/${snapshot.model}` : "(unconfigured)"}`);
+  lines.push(`Goah — ${hasHistory ? "Welcome back!" : "Welcome!"}  ${snapshot.runner ? `${snapshot.runner} · ${snapshot.target}` : "(unconfigured)"}`);
   lines.push("");
   lines.push(snapshot.root ? `Goal: ${snapshot.root.objective} [${snapshot.root.phase}]` : "Goal: none yet — type one to start");
   lines.push("");
@@ -64,6 +72,31 @@ export function renderWelcome(snapshot: WelcomeSnapshot, hasHistory: boolean): s
     lines.push(handoff ? `  ${handoff.agent}: ${handoff.result || "(handed off)"}` : "  ·");
   }
   lines.push("");
+  lines.push("Conversation:");
+  for (let index = 0; index < WELCOME_CONVERSATION_SLOTS; index += 1) {
+    const item = snapshot.conversation[index];
+    lines.push(item ? `  ${item.speaker}: ${item.text}` : "  ·");
+  }
+  lines.push("");
   lines.push("Tips: type a goal · /model ID switches · /setup re-runs onboarding · /status inspects · /quit exits");
   return lines;
 }
+
+function conversationLine(row: { actor: string; type: string; data: string }): Array<{ speaker: string; text: string }> {
+  try {
+    const data = JSON.parse(row.data) as Record<string, unknown>;
+    if (row.type === "mail.put") {
+      const snapshot = data.snapshot && typeof data.snapshot === "object" ? data.snapshot as Record<string, unknown> : {};
+      if (snapshot.from !== "human" || snapshot.to !== "ceo") return [];
+      const body = snapshot.body && typeof snapshot.body === "object" ? snapshot.body as Record<string, unknown> : {};
+      const text = typeof body.message === "string" ? body.message : typeof snapshot.body === "string" ? snapshot.body : "";
+      return text ? [{ speaker: "You", text: shorten(text) }] : [];
+    }
+    if (row.actor !== "ceo") return [];
+    const results = Array.isArray(data.results) ? data.results.filter((item): item is string => typeof item === "string") : [];
+    const observations = Array.isArray(data.observations) ? data.observations.filter((item): item is string => typeof item === "string") : [];
+    const text = results[0] ?? observations[0] ?? "";
+    return text ? [{ speaker: "CEO", text: shorten(text) }] : [];
+  } catch { return []; }
+}
+function shorten(value: string): string { return value.length > 120 ? `${value.slice(0, 117)}…` : value; }

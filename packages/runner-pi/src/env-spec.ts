@@ -21,6 +21,7 @@ export interface EnvSpecSource {
 }
 
 export const ENV_REFERENCE_PREFIX = "env:";
+export const OPTIONAL_ENV_REFERENCE_PREFIX = "env?:";
 
 /** Parse one `.env` file into key/value pairs; missing files yield {}. Minimal grammar: KEY=VALUE, quotes stripped, comments and blanks ignored. */
 export function parseEnvFile(text: string): Record<string, string> {
@@ -63,6 +64,12 @@ export function resolveEnvSpec(spec: Record<string, string> | undefined, source:
   const [fileLayer] = envFileChain(source);
   const resolved: Record<string, string> = {};
   for (const [key, value] of Object.entries(spec)) {
+    if (value.startsWith(OPTIONAL_ENV_REFERENCE_PREFIX)) {
+      const name = value.slice(OPTIONAL_ENV_REFERENCE_PREFIX.length);
+      const optional = process.env[name] ?? fileLayer?.[name];
+      if (optional !== undefined) resolved[key] = optional;
+      continue;
+    }
     if (!value.startsWith(ENV_REFERENCE_PREFIX)) { resolved[key] = value; continue; }
     const name = value.slice(ENV_REFERENCE_PREFIX.length);
     const fromProcess = process.env[name];

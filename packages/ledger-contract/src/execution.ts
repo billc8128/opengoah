@@ -48,7 +48,24 @@ export type AgentRole = "child" | "ceo" | "verifier" | "audit";
 export type AgentCapability = "ledger.search" | "mail.send" | "schedule.set" | "action.submit" | "audit.ack" | "audit.write" | "goal.put"
   | "team.list" | "goal.delegate" | "goal.reassign" | "goal.revise" | "goal.pause" | "goal.resume" | "goal.complete" | "human.request"
   | "memory.append";
-export interface AgentProfile { agent: string; role: AgentRole; capabilities?: AgentCapability[]; systemPrompt?: string }
+export interface RunnerProfile { id: string; runner: string; config: JsonValue; credentialRefs?: string[] }
+export interface AgentProfile { agent: string; role: AgentRole; capabilities?: AgentCapability[]; systemPrompt?: string; runnerProfile?: string }
+export interface RunnerChoice { value: string; label: string; description?: string }
+export interface RunnerSetupInteraction {
+  select(input: { title: string; description?: string; choices: RunnerChoice[] }): Promise<string | null>;
+  input(input: { title: string; description?: string; prompt: string; initial?: string }): Promise<string | null>;
+  notify(message: string): void;
+  openUrl?(url: string): void;
+}
+export interface RunnerManifest { id: string; name: string; description: string; commands?: Array<{ name: string; description: string }> }
+export interface RunnerDiagnostic { ok: boolean; name: string; detail: string }
+export interface RunnerCommandResult { config?: JsonValue; output: string[] }
+export interface RunnerConfigurator {
+  describe(): RunnerManifest;
+  setup(current: JsonValue | null, interaction: RunnerSetupInteraction): Promise<JsonValue | null>;
+  doctor(config: JsonValue, context?: { root: string }): Promise<RunnerDiagnostic[]>;
+  runCommand?(command: string, args: string[], config: JsonValue, interaction: RunnerSetupInteraction): Promise<RunnerCommandResult>;
+}
 export interface RunRequest { wake: WakeSnapshot; context: JsonValue; now(): string; emit(event: RunnerTraceEvent): void; rpc?(method: AgentCapability, params: JsonValue): Promise<JsonValue> }
 export type RunnerResult = { outcome: "handoff"; output: WakeOutput } | { outcome: "abnormal"; reason: string };
 export interface RunnerHandle { pid: number | null; begin(): void; result: Promise<RunnerResult>; terminate(): Promise<void> }

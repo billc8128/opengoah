@@ -65,7 +65,7 @@ test("Console chat streams a CEO interaction and decisions resolve gated actions
   const root = mkdtempSync(join(tmpdir(), "goah-console-chat-"))
   const configPath = join(root, "goah.config.json")
   const config = { ...defaultConfig(root, { provider: "faux" }), stateDir: join(root, "state") }
-  config.runner.env = { ...config.runner.env, GOAH_PI_FAUX_HANDOFF: JSON.stringify({ observations: ["oriented"], results: ["plan ready"], nextSteps: [], blocker: "waiting for data" }) }
+  config.runnerProfiles![0]!.config = { provider: "faux", model: "faux-goah", fauxHandoff: { observations: ["oriented"], results: ["plan ready"], nextSteps: [], blocker: "waiting for data" } }
   writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`)
   const runtime = createRuntime(loadConfig(configPath))
 

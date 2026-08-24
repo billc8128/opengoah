@@ -6,28 +6,35 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { requestControl } from "./control.js";
+import type { RunnerSetupInteraction } from "goah-ledger-contract";
+import { loadConfig, updateWorkspaceRunnerProfile } from "./index.js";
+import { runnerPlugin } from "./runner-registry.js";
 
-interface RunnerEnv { GOAH_PI_PROVIDER?: string; GOAH_PI_MODEL?: string; [key: string]: string | undefined }
+export interface RunnerDisplay { runner: string; target: string }
 
-export function readRunnerEnv(configPath: string): RunnerEnv {
-  const config = JSON.parse(readFileSync(resolve(configPath), "utf8")) as { runner?: { env?: RunnerEnv } };
-  return config.runner?.env ?? {};
-}
-
-function writeRunnerEnv(configPath: string, env: RunnerEnv): void {
-  const config = JSON.parse(readFileSync(resolve(configPath), "utf8")) as { runner: { env?: RunnerEnv } };
-  config.runner.env = env;
-  writeFileSync(resolve(configPath), `${JSON.stringify(config, null, 2)}\n`);
+export function readRunnerDisplay(configPath: string): RunnerDisplay {
+  const config = JSON.parse(readFileSync(resolve(configPath), "utf8")) as { runnerProfiles?: Array<{ id: string; runner: string; config: Record<string, unknown> }> };
+  const profile = config.runnerProfiles?.find((item) => item.id === "default") ?? config.runnerProfiles?.[0];
+  if (!profile) return { runner: "legacy", target: "configured" };
+  const target = typeof profile.config.provider === "string" && typeof profile.config.model === "string" ? `${profile.config.provider}/${profile.config.model}` : profile.id;
+  return { runner: profile.runner, target };
 }
 
 /** Switch the model for this workspace and reload the daemon. Returns the reload outcome. */
 export async function switchModel(configPath: string, stateDir: string, model: string): Promise<string> {
-  const env = readRunnerEnv(configPath);
   if (!model.trim()) throw new Error("model id is required");
-  writeRunnerEnv(configPath, { ...env, GOAH_PI_MODEL: model.trim() });
+  const config = loadConfig(configPath);
+  const profile = config.runnerProfiles?.find((item) => item.id === "default") ?? config.runnerProfiles?.[0];
+  if (!profile) throw new Error("no Runner Profile is configured");
+  const plugin = runnerPlugin(profile.runner);
+  if (!plugin.configurator.runCommand) throw new Error(`${profile.runner} does not support model switching`);
+  const interaction: RunnerSetupInteraction = { select: async () => null, input: async () => null, notify: () => undefined };
+  const result = await plugin.configurator.runCommand("model", [model.trim()], profile.config, interaction);
+  if (result.config === undefined) throw new Error(`${profile.runner} did not return an updated configuration`);
+  updateWorkspaceRunnerProfile(configPath, { ...profile, config: result.config });
   const outcome = await requestControl(stateDir, { op: "config.reload", configPath: resolve(configPath) }).catch((error: unknown) => ({ reloaded: false, error: error instanceof Error ? error.message : String(error) }));
   const reloaded = Boolean((outcome as { reloaded?: boolean }).reloaded);
-  return reloaded ? `model switched to ${model.trim()} — applies to the next wake` : `model written to ${resolve(configPath)}; daemon reload failed (${String((outcome as { error?: string }).error ?? "daemon not running")}), it will pick up on next start`;
+  return reloaded ? result.output.join("\n") : `${result.output.join("\n")}; daemon reload failed (${String((outcome as { error?: string }).error ?? "daemon not running")}), it will apply on next start`;
 }
 
 /** Reload the daemon config after an external edit (e.g. the setup wizard rewrote it). */

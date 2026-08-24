@@ -33,7 +33,7 @@ execFileSync("git", ["commit", "-m", "initial"], { cwd: app });
 const bin = join(app, "node_modules", ".bin", process.platform === "win32" ? "goah.cmd" : "goah");
 const run = (...args) => execFileSync(bin, args, { cwd: app, encoding: "utf8" });
 run("init", "--provider", "faux", "--agent", "worker");
-const doctor = JSON.parse(run("doctor"));
+const doctor = JSON.parse(run("doctor", "--json"));
 if (!doctor.ok) throw new Error(`packed CLI doctor failed: ${JSON.stringify(doctor)}`);
 run("goal-create", "--id", "pack-smoke", "--owner", "worker", "--objective", "Prove the installed CLI works", "--observation-method", "Accept a fresh evidence-backed handoff from the installed CLI");
 run("goal-pause", "pack-smoke");

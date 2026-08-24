@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,36 +28,51 @@ function invokeFailure(directory: string, ...args: string[]): string {
   return result.stderr;
 }
 
+test("help and version work before workspace setup and command typos do not become goals", () => {
+  const directory = mkdtempSync(join(tmpdir(), "goah-help-"));
+  assert.match(invoke(directory, "--help"), /goah runner list/);
+  assert.match(invoke(directory, "--version"), /^\d+\.\d+\.\d+/);
+  assert.match(invokeFailure(directory, "statu"), /Did you mean "goah status"/);
+  assert.equal(existsSync(join(directory, "goah.config.json")), false);
+});
+
 test("CLI initializes versioned config, resolves secret references, and enforces singleton lock", () => {
   const directory = repository();
   invoke(directory, "init");
   const initialized = JSON.parse(readFileSync(join(directory, "goah.config.json"), "utf8"));
-  assert.equal(initialized.version, 1);
+  assert.equal(initialized.version, 2);
   assert.equal(initialized.workspace, undefined);
   assert.equal(initialized.stateDir.startsWith(directory), false);
   assert.equal(initialized.limits, undefined);
   assert.equal(initialized.profiles.some((profile: { agent: string; role: string }) => profile.agent === "ceo" && profile.role === "ceo"), true);
-  process.env.GOAH_CLI_TEST_KEY = "secret";
   const raw = JSON.parse(readFileSync(join(directory, "goah.config.json"), "utf8"));
-  raw.runner.env.ANTHROPIC_API_KEY = "env:GOAH_CLI_TEST_KEY";
-  writeFileSync(join(directory, "goah.config.json"), JSON.stringify(raw));
-  // Config keeps the reference; resolution happens at spawn time (doctor resolves independently).
-  assert.equal(loadConfig(join(directory, "goah.config.json")).runner.env?.ANTHROPIC_API_KEY, "env:GOAH_CLI_TEST_KEY");
+  assert.equal(raw.runner, undefined);
+  assert.equal(raw.runnerProfiles[0].runner, "pi");
+  assert.equal(raw.profiles.every((profile: { runnerProfile?: string }) => profile.runnerProfile === "default"), true);
   const diagnosed = diagnoseConfig(loadConfig(join(directory, "goah.config.json")));
   assert.equal(diagnosed.checks.some((check: { name: string; ok: boolean }) => check.name === "runner" && check.ok), true);
-  delete process.env.GOAH_CLI_TEST_KEY;
   const lock = new SupervisorLock(join(directory, ".goah")); lock.acquire();
   assert.throws(() => new SupervisorLock(join(directory, ".goah")).acquire(), /already running/);
   lock.release();
   const next = new SupervisorLock(join(directory, ".goah")); next.acquire(); next.release();
 });
 
+test("version-one Pi config migrates in memory to an opaque Runner Profile", () => {
+  const directory = repository();
+  const path = join(directory, "goah.config.json");
+  writeFileSync(path, JSON.stringify({ version: 1, stateDir: ".goah", runner: { command: process.execPath, args: ["$GOAH_PI_WORKER"], env: { GOAH_PI_PROVIDER: "faux", GOAH_PI_MODEL: "faux-goah" } }, profiles: [{ agent: "ceo", role: "ceo" }] }));
+  const migrated = loadConfig(path);
+  assert.deepEqual(migrated.runnerProfiles, [{ id: "default", runner: "pi", config: { provider: "faux", model: "faux-goah" } }]);
+  assert.equal(migrated.profiles?.[0]?.runnerProfile, "default");
+  assert.equal(JSON.parse(readFileSync(path, "utf8")).runnerProfiles, undefined);
+});
+
 test("CLI runs the install-to-first-handoff path with the faux provider", () => {
   const directory = repository();
   invoke(directory, "init", "--provider", "faux", "--agent", "worker");
-  const doctor = JSON.parse(invoke(directory, "doctor"));
+  const doctor = JSON.parse(invoke(directory, "doctor", "--json"));
   assert.equal(doctor.ok, true);
-  assert.equal(doctor.checks.find((item: { name: string }) => item.name === "runner").detail.includes("faux/faux-goah"), true);
+  assert.match(doctor.checks.find((item: { name: string }) => item.name === "runner").detail, /default:pi/);
   const created = JSON.parse(invoke(directory, "goal-create", "--id", "first", "--owner", "worker", "--objective", "Complete the first handoff", "--wake-now"));
   assert.equal(created.goal.id, "first");
   assert.equal(created.wake.status, "queued");
@@ -92,26 +107,12 @@ test("CLI runs the install-to-first-handoff path with the faux provider", () => 
   assert.equal(JSON.parse(invoke(directory, "status")).wakes.length, 2);
 });
 
-test("CLI writes and diagnoses an explicit Ark model capability manifest", () => {
+test("CLI rejects an unsupported legacy Ark provider", () => {
   const directory = repository();
-  invoke(directory, "init", "--provider", "ark-coding", "--model", "glm-test", "--api-key-env", "GOAH_TEST_ARK_KEY", "--context-window-tokens", "256000", "--max-output-tokens", "32000");
-  const raw = JSON.parse(readFileSync(join(directory, "goah.config.json"), "utf8"));
-  assert.equal(raw.runner.env.ARK_API_KEY, "env:GOAH_TEST_ARK_KEY");
-  assert.deepEqual(JSON.parse(raw.runner.env.GOAH_PI_MODEL_CAPABILITIES), { contextWindowTokens: 256_000, maxOutputTokensPerTurn: 32_000 });
-  const missing = spawnSync(process.execPath, [cli, "doctor"], { cwd: directory, encoding: "utf8", env: { ...process.env, GOAH_STATE_HOME: join(tmpdir(), "goah-cli-test-state") } });
-  assert.equal(missing.status, 1);
-  const missingResult = JSON.parse(missing.stdout);
-  assert.equal(missingResult.ok, false);
-  assert.match(missingResult.checks.find((item: { name: string }) => item.name === "runner").detail, /GOAH_TEST_ARK_KEY/);
-  assert.deepEqual(JSON.parse(invoke(directory, "session", "list")), []);
-  process.env.GOAH_TEST_ARK_KEY = "secret";
-  try {
-    const doctor = JSON.parse(invoke(directory, "doctor"));
-    assert.equal(doctor.ok, true);
-    assert.match(doctor.checks.find((item: { name: string }) => item.name === "runner").detail, /context=256000 output=32000/);
-  } finally {
-    delete process.env.GOAH_TEST_ARK_KEY;
-  }
+  invoke(directory, "init", "--provider", "ark-coding", "--model", "glm-test");
+  const result = spawnSync(process.execPath, [cli, "run-once"], { cwd: directory, encoding: "utf8", env: { ...process.env, GOAH_STATE_HOME: join(tmpdir(), "goah-cli-test-state") } });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Model not found/);
 });
 
 test("session export redaction preserves structure while removing common secrets and home paths", () => {
@@ -144,7 +145,7 @@ test("CLI exposes the complete goal lifecycle with revisioned transitions", () =
 test("CLI runs a local operations goal without Git", () => {
   const directory = mkdtempSync(join(tmpdir(), "goah-operations-"));
   invoke(directory, "init", "--provider", "faux", "--agent", "operator");
-  const doctor = JSON.parse(invoke(directory, "doctor"));
+  const doctor = JSON.parse(invoke(directory, "doctor", "--json"));
   assert.equal(doctor.ok, true);
   assert.match(doctor.checks.find((item: { name: string }) => item.name === "root").detail, /runner-owned local execution/);
   invoke(directory, "goal-create", "--id", "store", "--owner", "operator", "--objective", "Open a storefront", "--wake-now");
@@ -188,6 +189,15 @@ test("CLI revises and confirms a root through the resident Supervisor control so
     daemon.kill("SIGTERM");
     if (daemon.exitCode === null) await once(daemon, "close");
   }
+});
+
+test("daemon lifecycle is inspectable and stoppable", () => {
+  const directory = repository();
+  invoke(directory, "init", "--provider", "faux");
+  assert.match(invoke(directory, "daemon", "status"), /stopped/);
+  assert.match(invoke(directory, "web"), /^http:\/\/127\.0\.0\.1:/);
+  assert.match(invoke(directory, "daemon", "status"), /running/);
+  assert.match(invoke(directory, "daemon", "stop"), /stopped/);
 });
 
 async function waitFor(predicate: () => Promise<boolean>): Promise<void> {

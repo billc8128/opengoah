@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.0
+
+- Added generic Runner Profile setup/management, Runner-owned auth/model commands, daemon lifecycle commands, human-readable doctor output, safe onboarding recovery, and complete TUI prompt routing/stream feedback.
+- New workspaces no longer embed a global Pi provider environment in generic Goah configuration; legacy Pi runner configs migrate in memory to a default Runner Profile.
+
 ## 0.9.2
 
 - Wizard text prompts render inside the TUI header; the raw stdout prompt was erased by differential rendering.

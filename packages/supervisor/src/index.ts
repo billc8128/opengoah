@@ -32,6 +32,7 @@ import {
   type ReassignmentResult,
   type Runner,
   type RunnerHandle,
+  type RunnerProfile,
   type ScheduleSnapshot,
   type TeamMemberView,
   type WakeOutput,
@@ -43,6 +44,29 @@ import { defaultRolePrompt } from "./roles.js";
 
 export { composeActiveContext, selectRecoveryEvents, type ActiveContextInput, type ActiveContextView } from "./context-view.js";
 
+/** Dispatches each wake to the runner selected by its opaque Runner Profile. */
+export class RunnerRouter implements Runner {
+  readonly isolation = "process" as const;
+  readonly #byPid = new Map<number, Runner>();
+  constructor(readonly runners: ReadonlyMap<string, Runner>, readonly fallback = "default") {}
+  prepare(request: Parameters<Runner["prepare"]>[0]): RunnerHandle {
+    const context = request.context && typeof request.context === "object" && !Array.isArray(request.context) ? request.context as Record<string, unknown> : {};
+    const profile = context.runnerProfile && typeof context.runnerProfile === "object" && !Array.isArray(context.runnerProfile) ? context.runnerProfile as Record<string, unknown> : {};
+    const id = typeof profile.id === "string" ? profile.id : this.fallback;
+    const runner = this.runners.get(id);
+    if (!runner) throw new Error(`runner profile is not configured: ${id}`);
+    const handle = runner.prepare(request);
+    if (handle.pid) this.#byPid.set(handle.pid, runner);
+    void handle.result.finally(() => { if (handle.pid) this.#byPid.delete(handle.pid); });
+    return handle;
+  }
+  async terminateProcess(pid: number): Promise<void> {
+    const runner = this.#byPid.get(pid);
+    if (!runner) return;
+    await runner.terminateProcess(pid);
+  }
+}
+
 export interface SupervisorOptions {
   leaseMs?: number;
   memoryTailChars?: number;
@@ -52,6 +76,7 @@ export interface SupervisorOptions {
   silence?: { maxSilentMs?: number; notify?: string } | null;
   retryPolicy?: { maxAttempts: number; baseDelayMs: number };
   profiles?: AgentProfile[];
+  runnerProfiles?: RunnerProfile[];
   verifyMetricsAfterWake?: boolean;
 }
 
@@ -70,6 +95,8 @@ export class Supervisor {
   readonly #silence: { maxSilentMs: number; notify: string } | null;
   readonly #retryPolicy: NonNullable<SupervisorOptions["retryPolicy"]>;
   readonly #profiles: Map<string, AgentProfile>;
+  readonly #runnerProfiles: Map<string, RunnerProfile>;
+  readonly #handles = new Map<string, RunnerHandle>();
   readonly #verifyMetricsAfterWake: boolean;
 
   #runner: Runner;
@@ -83,6 +110,7 @@ export class Supervisor {
     this.#silence = options.silence === null ? null : { maxSilentMs: options.silence?.maxSilentMs ?? 12 * 3_600_000, notify: options.silence?.notify ?? "ceo" };
     this.#retryPolicy = options.retryPolicy ?? { maxAttempts: 0, baseDelayMs: 1_000 };
     this.#profiles = new Map([["ceo", { agent: "ceo", role: "ceo" } satisfies AgentProfile], ...(options.profiles ?? []).map((profile) => [profile.agent, profile] as const)]);
+    this.#runnerProfiles = new Map((options.runnerProfiles ?? []).map((profile) => [profile.id, profile] as const));
     this.#verifyMetricsAfterWake = options.verifyMetricsAfterWake ?? false;
   }
 
@@ -99,10 +127,11 @@ export class Supervisor {
    * The next tick claims wakes through the new runner, and spawn-time env
    * resolution applies the new credentials to the next spawn.
    */
-  swapRunner(runner: Runner): void {
+  swapRunner(runner: Runner, profiles?: RunnerProfile[]): void {
     const active = this.ledger.wakes().filter((wake) => wake.status === "leased" || wake.status === "running");
     if (active.length > 0) throw new Error("cannot swap runner while a wake is leased or running");
     this.#runner = runner;
+    if (profiles) { this.#runnerProfiles.clear(); for (const profile of profiles) this.#runnerProfiles.set(profile.id, profile); }
   }
   get runner(): Runner { return this.#runner; }
   createGoal(goal: GoalSnapshot, actor = "human"): void { this.ledger.putGoal(goal, actor); }
@@ -175,6 +204,15 @@ export class Supervisor {
     return at <= this.#now() ? this.#enqueueSchedule(schedule) : null;
   }
 
+  async stopAgentWake(agent: string): Promise<WakeSnapshot | null> {
+    const wake = this.ledger.wakes().find((item) => item.agent === agent && ["running", "leased", "queued"].includes(item.status));
+    if (!wake) return null;
+    if (wake.status === "queued") { this.#suppressQueuedWake(agent, "stopped by human"); return this.#wake(wake.id); }
+    const handle = this.#handles.get(wake.id);
+    if (handle) await handle.terminate(); else if (wake.runnerPid) await this.runner.terminateProcess(wake.runnerPid);
+    return this.#wake(wake.id);
+  }
+
   async recover(): Promise<void> {
     this.ledger.recoverDispatchingActions();
     for (const expired of this.ledger.expiredWakes(this.#now())) {
@@ -200,6 +238,7 @@ export class Supervisor {
         emit: (trace) => this.ledger.appendRunnerEvent({ streamId: wakeStream(running.id), ts: this.#now(), actor: running.agent, type: trace.type, data: trace.data }, leaseToken),
         rpc: (method, params) => this.#agentRpc(running, leaseToken, method, params),
       });
+      this.#handles.set(running.id, handle);
       if (handle.pid) running = this.ledger.attachWakeProcess(running.id, leaseToken, handle.pid, this.#now());
       renewal = setInterval(() => {
         try {
@@ -212,6 +251,7 @@ export class Supervisor {
       const result = await handle.result;
       clearInterval(renewal); renewal = undefined;
       await handle.terminate();
+      this.#handles.delete(running.id);
       if (result.outcome === "abnormal") {
         await this.#markAbnormal(running, result.reason);
         return this.#wake(running.id);
@@ -235,6 +275,7 @@ export class Supervisor {
     } catch (error) {
       if (renewal) clearInterval(renewal);
       if (handle) await handle.terminate();
+      this.#handles.delete(running.id);
       await this.#markAbnormal(running, error instanceof Error ? error.message : String(error));
       return this.#wake(running.id);
     }
@@ -439,7 +480,8 @@ export class Supervisor {
     const actions = this.ledger.actions().filter((action) => action.agent === wake.agent && (action.status === "unknown" || Boolean(action.auditAdvice && !action.adviceAcked)));
     const revisionWarnings = goals.flatMap((goal) => this.#goalRevisionWarning(goal));
     const workingMemory = selectWorkingMemory(this.ledger.readStream(memoryStream(wake.agent)), this.#memoryTailChars);
-    return composeActiveContext({ role, capabilities, systemPrompt: profile.systemPrompt ?? defaultRolePrompt(role), wake, goals, mail, actions, lastHandoff: handoff, teamHandoffs, team: role === "ceo" ? this.teamList() : [], revisionWarnings, recoveryEvents, workingMemory }) as unknown as JsonValue;
+    const runnerProfile = this.#runnerProfiles.get(profile.runnerProfile ?? "default");
+    return { ...composeActiveContext({ role, capabilities, systemPrompt: profile.systemPrompt ?? defaultRolePrompt(role), wake, goals, mail, actions, lastHandoff: handoff, teamHandoffs, team: role === "ceo" ? this.teamList() : [], revisionWarnings, recoveryEvents, workingMemory }), ...(runnerProfile ? { runnerProfile } : {}) } as unknown as JsonValue;
   }
 
   #requiredConnector(name: string): ConnectorProcessSpec { const value = this.#connectors.get(name); if (!value) throw new Error(`connector not registered: ${name}`); return value; }

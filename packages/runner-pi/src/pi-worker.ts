@@ -6,7 +6,7 @@ import { Agent, type AgentMessage, type AgentTool } from "@earendil-works/pi-age
 import { fauxAssistantMessage, fauxToolCall, Type, type Message } from "@earendil-works/pi-ai";
 import { SESSION_FORMAT_VERSION, type AgentCapability, type JsonValue, type RunnerResult, type SessionMessage, type WakeOutput } from "goah-ledger-contract";
 import { runProcessWorker, type WorkerRpc } from "./index.js";
-import { createPiModel, providerApiKey } from "./model-provider.js";
+import { createPiModel } from "./model-provider.js";
 
 
 export function compactMessages(messages: AgentMessage[], maxRecent = 8): AgentMessage[] {
@@ -22,11 +22,16 @@ export function compactMessages(messages: AgentMessage[], maxRecent = 8): AgentM
 
 export async function runPiWorker(): Promise<void> {
   await runProcessWorker(async (request, emit, rpc): Promise<RunnerResult> => {
-    const provider = process.env.GOAH_PI_PROVIDER ?? "anthropic";
-    const modelId = process.env.GOAH_PI_MODEL;
+    const contextRecord = typeof request.context === "object" && request.context !== null && !Array.isArray(request.context) ? request.context : {};
+    const profile = contextRecord.runnerProfile && typeof contextRecord.runnerProfile === "object" && !Array.isArray(contextRecord.runnerProfile) ? contextRecord.runnerProfile as Record<string, unknown> : {};
+    const runnerConfig = profile.config && typeof profile.config === "object" && !Array.isArray(profile.config) ? profile.config as Record<string, unknown> : {};
+    const provider = typeof runnerConfig.provider === "string" ? runnerConfig.provider : process.env.GOAH_PI_PROVIDER ?? "anthropic";
+    const modelId = typeof runnerConfig.model === "string" ? runnerConfig.model : process.env.GOAH_PI_MODEL;
     if (!modelId) throw new Error("GOAH_PI_MODEL is required");
     const configured = createPiModel(provider, modelId);
-    const { models, model } = configured;
+    const { models } = configured;
+    const privateAuth = request.runtime && typeof request.runtime === "object" && !Array.isArray(request.runtime) ? request.runtime as Record<string, unknown> : {};
+    const model = typeof privateAuth.baseUrl === "string" ? { ...configured.model, baseUrl: privateAuth.baseUrl } : configured.model;
     if (provider === "faux") {
       const faux = configured.faux!;
       const handoff = JSON.parse(process.env.GOAH_PI_FAUX_HANDOFF ?? "{}") as Record<string, unknown>;
@@ -47,7 +52,6 @@ export async function runPiWorker(): Promise<void> {
       return id;
     };
     const root = resolve(process.cwd());
-    const contextRecord = typeof request.context === "object" && request.context !== null && !Array.isArray(request.context) ? request.context : {};
     const capabilities = Array.isArray(contextRecord.capabilities)
       ? new Set(contextRecord.capabilities.filter((value): value is AgentCapability => typeof value === "string"))
       : undefined;
@@ -62,6 +66,7 @@ export async function runPiWorker(): Promise<void> {
       initialState: {
         systemPrompt,
         model,
+        thinkingLevel: typeof runnerConfig.thinking === "string" ? runnerConfig.thinking as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" : "off",
         tools,
       },
       streamFn: async (requestModel, context, options) => {
@@ -78,9 +83,12 @@ export async function runPiWorker(): Promise<void> {
             sourceSeqs,
           },
         });
-        return models.streamSimple(requestModel, context, { ...options, ...(process.env.GOAH_PI_CACHE_RETENTION === "none" ? { cacheRetention: "none" as const } : {}) });
+        const runtimeProvider = models.getProvider(requestModel.provider);
+        if (!runtimeProvider) throw new Error(`Provider not found: ${requestModel.provider}`);
+        const runtimeModel = typeof privateAuth.baseUrl === "string" ? { ...requestModel, baseUrl: privateAuth.baseUrl } : requestModel;
+        return runtimeProvider.streamSimple(runtimeModel, context, { ...options, ...(typeof privateAuth.apiKey === "string" ? { apiKey: privateAuth.apiKey } : {}), ...(privateAuth.headers && typeof privateAuth.headers === "object" && !Array.isArray(privateAuth.headers) ? { headers: privateAuth.headers as Record<string, string> } : {}), ...(process.env.GOAH_PI_CACHE_RETENTION === "none" ? { cacheRetention: "none" as const } : {}) });
       },
-      getApiKey: (id) => providerApiKey(id),
+      getApiKey: () => typeof privateAuth.apiKey === "string" ? privateAuth.apiKey : undefined,
       transformContext: async (messages) => {
         let view = messages;
         if (estimateMessages(messages) >= contextPolicy.compactAtTokens) {

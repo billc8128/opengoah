@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import { runGoahTui } from "./tui.js";
 import { runSetupWizard, applyWizardResult } from "./setup-wizard.js";
-import { memoryStream, type JsonValue } from "goah-ledger-contract";
-import { controlAvailable, createRuntime, diagnoseConfig, exportSession, listSessions, loadConfig, readConsoleMetadata, replayWakeSession, requestControl, runControlServer, runWebConsole, showSession, showSessionContext, statusSnapshot, streamControl, streamEvents, SupervisorLock, writeDefaultConfig, readDefaultProfile, type ConsoleMetadata, type ControlFrame, type ControlRequest, type GoahConfig, type PiProvider } from "./index.js";
+import { memoryStream, type JsonValue, type RunnerCommandResult, type RunnerProfile, type RunnerSetupInteraction } from "goah-ledger-contract";
+import { controlAvailable, createRuntime, diagnoseConfig, exportSession, listSessions, loadConfig, readConsoleMetadata, readDefaultRunnerProfile, replayWakeSession, requestControl, runControlServer, runWebConsole, showSession, showSessionContext, statusSnapshot, streamControl, streamEvents, SupervisorLock, updateWorkspaceRunnerProfile, writeDefaultConfig, writeDefaultRunnerProfile, type ConsoleMetadata, type ControlFrame, type ControlRequest, type GoahConfig } from "./index.js";
+import { runnerPlugin } from "./runner-registry.js";
+import { stdioQueue } from "./prompt-queue.js";
 const args = normalizeArgs(process.argv.slice(2));
 
 try {
@@ -18,18 +20,25 @@ try {
 
 async function main(): Promise<void> {
   const rawCommand = args[0];
+  if (["help", "--help", "-h"].includes(rawCommand ?? "")) { printHelp(); return; }
+  if (["version", "--version", "-V"].includes(rawCommand ?? "")) { console.log(packageVersion()); return; }
+  const typo = rawCommand && !rawCommand.startsWith("-") && !knownCommand(rawCommand) ? closestCommand(rawCommand) : null;
+  if (typo && args.length === 1 && !rawCommand!.includes(" ")) throw new Error(`Unknown command "${rawCommand}". Did you mean "goah ${typo}"? Use "goah goal start --objective …" to start a goal explicitly.`);
   const interactive = rawCommand === undefined || rawCommand === "--continue" || Boolean(rawCommand && !rawCommand.startsWith("-") && !knownCommand(rawCommand));
   const command = interactive ? "interactive" : rawCommand!;
-  const initialMessage = interactive && rawCommand && rawCommand !== "--continue" ? rawCommand : null;
+  const initialMessage = interactive && rawCommand && rawCommand !== "--continue" ? args.filter((value) => !value.startsWith("--")).join(" ") : null;
   const configPath = option("--config") ?? "goah.config.json";
   if (command === "setup") {
     const result = await runSetupWizard();
-    applyWizardResult(result, existsSync(configPath) ? null : null);
-    console.log(`Profile saved to ~/.goah/profile.json${existsSync(configPath) ? "" : " (run \`goah\` in any directory to create a workspace)"}`);
+    if (!result.profile) { console.log("Setup cancelled; nothing changed."); return; }
+    applyWizardResult(result, existsSync(configPath) ? configPath : null);
+    console.log(`Profile saved to ~/.goah/profile.json${existsSync(configPath) ? " and this workspace was updated" : " (run \`goah\` in any directory to create a workspace)"}`);
     return;
   }
+  if (command === "auth" || command === "model") { await runRunnerCommand(command, args.slice(1), configPath); return; }
+  if (command === "runner" && ["list", "setup"].includes(args[1] ?? "list")) { await runRunnerEarly(configPath); return; }
   if (command === "init") {
-    const provider = providerOption(option("--provider") ?? "anthropic");
+    const provider = providerOption(option("--provider") ?? "faux");
     writeDefaultConfig(configPath, {
       provider,
       ...(option("--model") ? { model: option("--model")! } : {}),
@@ -49,10 +58,16 @@ async function main(): Promise<void> {
       if (!existsSync(configPath)) throw new Error(`no Goah workspace here (missing goah.config.json); run \`goah\` to create one interactively, or \`goah init\` for flag-based setup`);
       return loadConfig(configPath);
     })();
+  if (command === "runner") { await runRunnerManagement(config, configPath); return; }
+  if (command === "daemon") { await runDaemonCommand(config, configPath); return; }
   if (command === "doctor") {
     const result = diagnoseConfig(config);
-    console.log(JSON.stringify(result, null, 2));
-    if (!result.ok) process.exitCode = 1;
+    const runnerChecks = await diagnoseRunnerProfiles(config, configPath);
+    const checks = [...result.checks, ...runnerChecks];
+    const ok = checks.every((item) => item.ok);
+    if (flag("--json")) console.log(JSON.stringify({ ok, checks }, null, 2));
+    else for (const check of checks) console.log(`${check.ok ? "✓" : "✗"} ${check.name}: ${check.detail}`);
+    if (!ok) process.exitCode = 1;
     return;
   }
 
@@ -81,7 +96,16 @@ async function main(): Promise<void> {
       const stop = () => controller.abort(); process.on("SIGINT", stop); process.on("SIGTERM", stop);
       await Promise.all([
         run(supervisor, controller.signal),
-        runControlServer(supervisor, ledger, config.stateDir, controller.signal),
+        runControlServer(supervisor, ledger, config.stateDir, controller.signal, {
+          stop: () => controller.abort(),
+          reloadRuntime: async (path) => {
+            const replacement = createRuntime(loadConfig(path));
+            const runner = replacement.supervisor.runner;
+            const profiles = loadConfig(path).runnerProfiles;
+            replacement.ledger.close();
+            return { runner, ...(profiles ? { profiles } : {}) };
+          },
+        }),
         runWebConsole(supervisor, ledger, config.stateDir, controller.signal, { onListening: ({ url }) => console.log(`Goah Console: ${url}`) }),
       ]);
     } else if (command === "run-once") {
@@ -180,7 +204,10 @@ async function waitForConsole(stateDir: string): Promise<ConsoleMetadata> {
 }
 async function ensureDaemon(configPath: string, stateDir: string): Promise<void> {
   if (await controlAvailable(stateDir)) return;
-  const child = spawn(process.execPath, [process.argv[1]!, "start", "--config", resolve(configPath)], { cwd: process.cwd(), detached: true, stdio: "ignore", env: process.env });
+  mkdirSync(stateDir, { recursive: true });
+  const log = openSync(join(stateDir, "daemon.log"), "a");
+  const child = spawn(process.execPath, [process.argv[1]!, "start", "--config", resolve(configPath)], { cwd: process.cwd(), detached: true, stdio: ["ignore", log, log], env: process.env });
+  closeSync(log);
   child.unref();
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
@@ -216,8 +243,13 @@ function remoteRequest(command: string): ControlRequest | null {
 
 function printHelp(): void {
   console.log(`goah ["OBJECTIVE"] | goah --continue
-goah init [--provider anthropic|openai|ark-coding|faux] [--model ID]
+goah setup
+goah runner list|setup|status|doctor|profile
+goah auth list|status|login PROVIDER|logout PROVIDER
+goah model list [PROVIDER]
+goah init [--provider ID] [--model ID]
 goah doctor
+goah daemon status|logs|restart|stop
 goah web [--open]
 goah goal start --objective TEXT [--id ID]
 goah ceo send --message TEXT
@@ -255,16 +287,15 @@ function requiredPositional(index: number, label: string): string {
   return value;
 }
 function evidence(): number[] { return required("--evidence").split(",").map(Number); }
-function providerOption(value: string): PiProvider {
-  if (!["anthropic", "openai", "ark-coding", "faux"].includes(value)) throw new Error(`unsupported provider: ${value}`);
-  return value as PiProvider;
+function providerOption(value: string): string {
+  return value.trim();
 }
 function mutates(command: string): boolean { return ["start", "run-once", "wake", "goal-start", "ceo-send", "ceo-approve", "goal-create", "goal-update", "goal-pause", "goal-resume", "goal-complete", "approve", "reject"].includes(command); }
 function normalizeArgs(values: string[]): string[] {
   if ((values[0] === "goal" || values[0] === "ceo") && values[1] && !values[1].startsWith("--")) return [`${values[0]}-${values[1]}`, ...values.slice(2)];
   return values;
 }
-function knownCommand(value: string): boolean { return ["setup", "help", "init", "doctor", "web", "start", "run-once", "wake", "status", "session", "context", "events", "memory", "goal-list", "goal-show", "goal-create", "goal-update", "goal-pause", "goal-resume", "goal-complete", "goal-start", "ceo-send", "ceo-status", "ceo-inbox", "ceo-approve", "action-list", "approve", "reject", "dashboard"].includes(value); }
+function knownCommand(value: string): boolean { return ["setup", "help", "version", "runner", "daemon", "auth", "model", "init", "doctor", "web", "start", "run-once", "wake", "status", "session", "context", "events", "memory", "goal-list", "goal-show", "goal-create", "goal-update", "goal-pause", "goal-resume", "goal-complete", "goal-start", "ceo-send", "ceo-status", "ceo-inbox", "ceo-approve", "action-list", "approve", "reject", "dashboard"].includes(value); }
 function asRecord(value: JsonValue): Record<string, JsonValue> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("expected an object"); return value; }
 function firstRecord(value: JsonValue | undefined): Record<string, JsonValue> | null { return Array.isArray(value) && value[0] && typeof value[0] === "object" && !Array.isArray(value[0]) ? value[0] : null; }
 function messageText(value: JsonValue | undefined): string {
@@ -275,13 +306,153 @@ function messageText(value: JsonValue | undefined): string {
 
 /** Interactive entry bootstrap: first-use setup wizard (or stored profile), then materialize this directory's workspace config. */
 async function bootstrapWorkspace(configPath: string): Promise<void> {
-  const profile = readDefaultProfile();
+  let profile = readDefaultRunnerProfile();
   if (!profile) {
-    console.log("No Goah profile found — running first-use setup (stored in ~/.goah/profile.json; credentials stay as environment references).");
+    console.log(profile ? "Your Goah setup is incomplete — resuming setup now." : "No Goah profile found — running first-use setup.");
     const result = await runSetupWizard();
+    if (!result.profile) throw new Error("Setup cancelled; no workspace was created.");
     applyWizardResult(result, null);
+    profile = result.profile;
   }
-  writeDefaultConfig(configPath, readDefaultProfile() ?? { provider: "faux" });
+  updateWorkspaceRunnerProfile(configPath, profile);
   console.log(`Created ${resolve(configPath)} — this directory is now a Goah workspace.`);
 }
 
+async function runRunnerCommand(command: string, commandArgs: string[], configPath: string): Promise<void> {
+  const workspace = existsSync(configPath) ? loadConfig(configPath) : null;
+  const profile = workspace?.runnerProfiles?.find((item) => item.id === "default") ?? workspace?.runnerProfiles?.[0] ?? readDefaultRunnerProfile();
+  if (!profile) throw new Error("No Runner Profile is configured; run `goah setup` first.");
+  const plugin = runnerPlugin(profile.runner);
+  if (!plugin.configurator.runCommand) throw new Error(`${profile.runner} does not expose runner commands.`);
+  const interaction = stdioInteraction();
+  let result: RunnerCommandResult;
+  try { result = await plugin.configurator.runCommand(command, commandArgs, profile.config, interaction); }
+  finally { interaction.close(); }
+  for (const line of result.output) console.log(line);
+  if (result.config !== undefined) {
+    const updated: RunnerProfile = { ...profile, config: result.config };
+    writeDefaultRunnerProfile(updated);
+    if (workspace) updateWorkspaceRunnerProfile(configPath, updated);
+  }
+}
+
+async function runRunnerEarly(configPath: string): Promise<void> {
+  const action = args[1] ?? "list";
+  if (action === "list") { for (const manifest of (await import("./runner-registry.js")).runnerManifests()) console.log(`${manifest.id.padEnd(16)} ${manifest.description}`); return; }
+  const profileId = args[2] ?? "default";
+  if (!existsSync(configPath) && profileId !== "default") throw new Error("Named Runner Profiles require a Goah workspace.");
+  const current = existsSync(configPath) ? loadConfig(configPath).runnerProfiles?.find((item) => item.id === profileId) ?? null : readDefaultRunnerProfile();
+  const result = await runSetupWizard(current);
+  if (!result.profile) { console.log("Runner setup cancelled; nothing changed."); return; }
+  const profile = { ...result.profile, id: profileId };
+  if (profileId === "default") writeDefaultRunnerProfile(profile);
+  if (existsSync(configPath)) updateWorkspaceRunnerProfile(configPath, profile);
+  console.log(`Saved Runner Profile ${profile.id} (${profile.runner}).`);
+}
+
+async function runRunnerManagement(config: GoahConfig, configPath: string): Promise<void> {
+  const action = args[1] ?? "status";
+  if (action === "status") {
+    for (const profile of config.runnerProfiles ?? []) {
+      const checks = await runnerPlugin(profile.runner).configurator.doctor(profile.config, { root: process.cwd() });
+      console.log(`${profile.id} · ${profile.runner}`);
+      for (const check of checks) console.log(`  ${check.ok ? "✓" : "✗"} ${check.name}: ${check.detail}`);
+    }
+    return;
+  }
+  if (action === "doctor") {
+    const checks = await diagnoseRunnerProfiles(config, configPath);
+    for (const check of checks) console.log(`${check.ok ? "✓" : "✗"} ${check.name}: ${check.detail}`);
+    if (checks.some((check) => !check.ok)) process.exitCode = 1;
+    return;
+  }
+  if (action === "profile") {
+    const subcommand = args[2] ?? "list";
+    if (subcommand === "list") {
+      for (const profile of config.runnerProfiles ?? []) {
+        const agents = (config.profiles ?? []).filter((agent) => agent.runnerProfile === profile.id).map((agent) => agent.agent);
+        console.log(`${profile.id.padEnd(18)} ${profile.runner.padEnd(12)} agents=${agents.join(",") || "none"}`);
+      }
+      return;
+    }
+    if (subcommand === "assign") {
+      const agent = args[3]; const profileId = args[4];
+      if (!agent || !profileId) throw new Error("usage: goah runner profile assign AGENT PROFILE");
+      if (!config.runnerProfiles?.some((profile) => profile.id === profileId)) throw new Error(`Runner Profile not found: ${profileId}`);
+      const raw = JSON.parse(readFileSync(resolve(configPath), "utf8")) as GoahConfig;
+      const target = raw.profiles?.find((profile) => profile.agent === agent);
+      if (!target) throw new Error(`Agent profile not found: ${agent}`);
+      target.runnerProfile = profileId;
+      writeFileSync(resolve(configPath), `${JSON.stringify(raw, null, 2)}\n`);
+      console.log(`${agent} now uses Runner Profile ${profileId}.`);
+      return;
+    }
+    throw new Error(`Unknown runner profile command: ${subcommand}`);
+  }
+  throw new Error(`Unknown runner command: ${action}`);
+}
+
+async function diagnoseRunnerProfiles(config: GoahConfig, configPath = "goah.config.json"): Promise<Array<{ ok: boolean; name: string; detail: string }>> {
+  const checks: Array<{ ok: boolean; name: string; detail: string }> = [];
+  for (const profile of config.runnerProfiles ?? []) {
+    try {
+      for (const check of await runnerPlugin(profile.runner).configurator.doctor(profile.config, { root: resolve(configPath, "..") })) checks.push({ ...check, name: `runner:${profile.id}:${check.name}` });
+    } catch (error) { checks.push({ ok: false, name: `runner:${profile.id}`, detail: error instanceof Error ? error.message : String(error) }); }
+  }
+  return checks;
+}
+
+async function runDaemonCommand(config: GoahConfig, configPath: string): Promise<void> {
+  const action = args[1] ?? "status";
+  if (action === "status") {
+    const running = await controlAvailable(config.stateDir);
+    const metadata = readConsoleMetadata(config.stateDir);
+    console.log(running ? `running${metadata ? ` · pid ${metadata.pid} · ${metadata.url}` : ""}` : "stopped");
+    return;
+  }
+  if (action === "logs") {
+    const path = join(config.stateDir, "daemon.log");
+    if (!existsSync(path)) { console.log(`No daemon log at ${path}`); return; }
+    console.log(readFileSync(path, "utf8").split("\n").slice(-100).join("\n"));
+    return;
+  }
+  if (action === "stop" || action === "restart") {
+    if (await controlAvailable(config.stateDir)) await requestControl(config.stateDir, { op: "daemon.stop" });
+    const deadline = Date.now() + 5_000;
+    while (await controlAvailable(config.stateDir) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+    if (action === "stop") { console.log("Goah daemon stopped."); return; }
+    await ensureDaemon(configPath, config.stateDir);
+    console.log("Goah daemon restarted.");
+    return;
+  }
+  throw new Error(`Unknown daemon command: ${action}`);
+}
+
+function stdioInteraction(): RunnerSetupInteraction & { close(): void } {
+  const ask = stdioQueue();
+  return {
+    select: async ({ title, choices }) => { const answer = Number(await ask(`${title}: ${choices.map((choice, index) => `${index + 1}) ${choice.label}`).join("  ")} — select: `)); return choices[answer - 1]?.value ?? null; },
+    input: async ({ prompt, initial }) => (await ask(`${prompt}${initial ? ` (${initial})` : ""}: `)) || initial || null,
+    notify: (message) => console.log(message),
+    openUrl,
+    close: ask.close,
+  };
+}
+
+function packageVersion(): string { return (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version; }
+function closestCommand(value: string): string | null {
+  let best: { command: string; distance: number } | null = null;
+  for (const command of ["setup", "help", "auth", "model", "doctor", "web", "start", "status", "session", "context", "events", "memory", "goal", "ceo", "approve", "reject", "dashboard"]) {
+    const distance = editDistance(value, command);
+    if (!best || distance < best.distance) best = { command, distance };
+  }
+  return best && best.distance <= 2 ? best.command : null;
+}
+function editDistance(left: string, right: string): number {
+  const row = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= left.length; i += 1) {
+    let previous = row[0]!; row[0] = i;
+    for (let j = 1; j <= right.length; j += 1) { const saved = row[j]!; row[j] = Math.min(row[j]! + 1, row[j - 1]! + 1, previous + (left[i - 1] === right[j - 1] ? 0 : 1)); previous = saved; }
+  }
+  return row[right.length]!;
+}

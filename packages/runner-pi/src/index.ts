@@ -13,7 +13,9 @@ import {
   type WakeOutput,
 } from "goah-ledger-contract";
 
-export { createPiModel, parseModelCapabilities } from "./model-provider.js";
+export { createPiModel, defaultAuthFile, modelCatalog, providerCatalog, resolvedApiKey, LOCAL_PROVIDERS, type ModelSummary, type ProviderSummary } from "./model-provider.js";
+export { JsonCredentialStore } from "./credential-store.js";
+export { createPiProcessRunner, piConfig, piEnvironment, piRunnerConfigurator, type PiRunnerConfig } from "./configurator.js";
 export { resolveEnvSpec } from "./env-spec.js";
 
 export interface PiStep {
@@ -76,12 +78,14 @@ export interface ProcessRunnerOptions {
   inheritEnv?: string[];
   killGraceMs?: number;
   timeoutMs?: number;
+  /** Resolve private per-wake runtime material (for example scoped model auth) before the worker starts. Never enters RunRequest context or Ledger events. */
+  prepareRuntime?: (request: RunRequest) => Promise<JsonValue | undefined>;
 }
 
 export function piWorkerPath(): string { return fileURLToPath(new URL("./pi-worker.js", import.meta.url)); }
 export function verificationWorkerPath(): string { return fileURLToPath(new URL("./verification-worker.js", import.meta.url)); }
 
-type WorkerRequest = Omit<RunRequest, "now" | "emit" | "rpc">;
+type WorkerRequest = Omit<RunRequest, "now" | "emit" | "rpc"> & { runtime?: JsonValue };
 type WorkerMessage =
   | { type: "trace"; event: { type: string; data: JsonValue } }
   | { type: "rpc_request"; id: string; method: AgentCapability; params: JsonValue }
@@ -146,12 +150,17 @@ export class ProcessRunner implements Runner {
       begin: () => {
         if (started) return;
         started = true;
-        const serializable: WorkerRequest = {
-          wake: request.wake,
-          context: request.context,
-        };
-        child.stdin?.write(`${JSON.stringify({ type: "start", request: serializable } satisfies ParentMessage)}\n`);
-        if (this.options.timeoutMs) timer = setTimeout(() => { timedOut = true; void terminate(); }, this.options.timeoutMs);
+        void (async () => {
+          try {
+            const runtime = await this.options.prepareRuntime?.(request);
+            const serializable: WorkerRequest = { wake: request.wake, context: request.context, ...(runtime !== undefined ? { runtime } : {}) };
+            child.stdin?.write(`${JSON.stringify({ type: "start", request: serializable } satisfies ParentMessage)}\n`);
+            if (this.options.timeoutMs) timer = setTimeout(() => { timedOut = true; void terminate(); }, this.options.timeoutMs);
+          } catch (error) {
+            protocolError = error instanceof Error ? error.message : String(error);
+            await terminate();
+          }
+        })();
       },
       result,
       terminate,

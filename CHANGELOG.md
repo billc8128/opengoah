@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.10.0
+
+- Replaced model/provider fields in Goah Core with opaque Runner Profiles and a generic `RunnerConfigurator`; `RunnerRouter` selects a Runner per Agent without understanding its provider or model.
+- Pi Runner now owns the complete Pi provider/model registry, OAuth and API-key configuration, local-model discovery, custom OpenAI/Anthropic-compatible endpoints, model switching, and Runner-specific diagnostics. The Ark special case was removed.
+- Added `goah runner`, `goah auth`, `goah model`, and `goah daemon status|logs|restart|stop`; `doctor` is human-readable by default with `--json` for automation.
+- Fixed swallowed TUI prompts, wired approvals/help, rendered assistant deltas and tool completion, queued follow-up messages, and restored a compact Ledger-derived conversation recap on attach.
+- Incomplete onboarding state now resumes setup; cancel never overwrites the existing profile, workspace updates are atomic, and command typos no longer become model prompts.
+- Provider credentials remain outside worker environments and are resolved into per-wake private runtime material that never enters Agent context or the Ledger.
+
 ## 0.9.2
 
 - Fixed wizard text prompts: the prompt line now renders inside the TUI header instead of a raw stdout write that the differential renderer erased, leaving the Model/API-key scenes visibly waiting with no question.

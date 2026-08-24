@@ -1,17 +1,19 @@
-import { accessSync, constants, existsSync, mkdirSync, openSync, closeSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, openSync, closeSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { CONTRACT_VERSION, wakeStream, type AgentProfile, type ConnectorManifest, type MetricContract, type MetricProcessSpec } from "goah-ledger-contract";
+import { CONTRACT_VERSION, wakeStream, type AgentProfile, type ConnectorManifest, type MetricContract, type MetricProcessSpec, type RunnerProfile } from "goah-ledger-contract";
 import { SQLITE_SCHEMA_VERSION, SqliteLedger } from "goah-ledger-sqlite";
 import { createPiModel, piWorkerPath, ProcessRunner, resolveEnvSpec, type ProcessRunnerOptions } from "goah-runner-pi";
-import { renderDashboard, runSupervisorDaemon, Supervisor } from "goah-supervisor";
+import { renderDashboard, runSupervisorDaemon, RunnerRouter, Supervisor } from "goah-supervisor";
+import { runnerPlugin } from "./runner-registry.js";
 
 export interface GoahConfig {
-  version: 1;
+  version: 1 | 2;
   stateDir: string;
-  runner: { command: string; args: string[]; env?: Record<string, string>; inheritEnv?: string[] };
+  runner?: { command: string; args: string[]; env?: Record<string, string>; inheritEnv?: string[] };
+  runnerProfiles?: RunnerProfile[];
   profiles?: AgentProfile[];
   approvers?: string[];
   auditWriters?: string[];
@@ -22,9 +24,8 @@ export interface GoahConfig {
   metrics?: Array<{ goalId: string; contract: MetricContract; intervalMs: number; process: MetricProcessSpec }>;
 }
 
-export type PiProvider = "anthropic" | "openai" | "ark-coding" | "faux";
 export interface InitOptions {
-  provider?: PiProvider;
+  provider?: string;
   model?: string;
   apiKeyEnv?: string;
   agent?: string;
@@ -38,7 +39,7 @@ const configRoots = new WeakMap<GoahConfig, string>();
 export function loadConfig(path = "goah.config.json"): GoahConfig {
   const absolute = resolve(path);
   const config = JSON.parse(readFileSync(absolute, "utf8")) as GoahConfig & { workspace?: string; limits?: unknown; heartbeatPolicies?: unknown; progressPolicies?: unknown };
-  if (config.version !== 1) throw new Error(`unsupported goah config version: ${String(config.version)}`);
+  if (config.version !== 1 && config.version !== 2) throw new Error(`unsupported goah config version: ${String(config.version)}`);
   const base = dirname(absolute);
   const root = config.workspace ? absolutePath(base, config.workspace) : base;
   delete config.workspace;
@@ -47,8 +48,18 @@ export function loadConfig(path = "goah.config.json"): GoahConfig {
   delete config.progressPolicies;
   configRoots.set(config, root);
   config.stateDir = absolutePath(base, config.stateDir);
-  config.runner.command = resolveCommand(config.runner.command);
-  config.runner.args = config.runner.args.map((arg) => arg === "$GOAH_PI_WORKER" ? piWorkerPath() : arg);
+  if (config.runner) {
+    config.runner.command = resolveCommand(config.runner.command);
+    config.runner.args = config.runner.args.map((arg) => arg === "$GOAH_PI_WORKER" ? piWorkerPath() : arg);
+  }
+  if (!config.runnerProfiles?.length && config.runner?.env?.GOAH_PI_PROVIDER && config.runner.env.GOAH_PI_MODEL) {
+    const env = config.runner.env;
+    const provider = env.GOAH_PI_PROVIDER!;
+    const model = env.GOAH_PI_MODEL!;
+    const keyRef = Object.entries(env).find(([key, value]) => key.endsWith("API_KEY") && value.startsWith("env:"));
+    config.runnerProfiles = [{ id: "default", runner: "pi", config: { provider, model, ...(keyRef ? { apiKeyEnv: keyRef[1].slice(4) } : {}), ...(env.GOAH_PI_BASE_URL ? { baseUrl: env.GOAH_PI_BASE_URL } : {}) } }];
+    if (config.profiles) config.profiles = config.profiles.map((profile) => ({ ...profile, runnerProfile: profile.runnerProfile ?? "default" }));
+  }
   for (const connector of config.connectors ?? []) connector.command = resolveCommand(connector.command);
   for (const metric of config.metrics ?? []) metric.process.command = resolveCommand(metric.process.command);
   return config;
@@ -57,10 +68,12 @@ export function loadConfig(path = "goah.config.json"): GoahConfig {
 export function createRuntime(config: GoahConfig): { ledger: SqliteLedger; supervisor: Supervisor } {
   mkdirSync(config.stateDir, { recursive: true });
   const ledger = new SqliteLedger(join(config.stateDir, "ledger.sqlite"));
-  const { env: runnerEnv, ...runnerSpec } = config.runner;
-  const runner = new ProcessRunner({ ...runnerSpec, envSpec: runnerEnv, cwd: configRoot(config) });
+  const runner = config.runnerProfiles?.length
+    ? new RunnerRouter(new Map(config.runnerProfiles.map((profile) => [profile.id, runnerPlugin(profile.runner).create(profile.config, configRoot(config))])))
+    : legacyRunner(config);
   const supervisor = new Supervisor(ledger, runner, new class { now(): Date { return new Date(); } }(), {
     ...(config.profiles ? { profiles: config.profiles } : {}),
+    ...(config.runnerProfiles ? { runnerProfiles: config.runnerProfiles } : {}),
     ...(config.approvers ? { approvers: config.approvers } : {}),
     ...(config.auditWriters ? { auditWriters: config.auditWriters } : {}),
     ...(config.silencePolicy !== undefined ? { silence: config.silencePolicy } : {}),
@@ -73,14 +86,14 @@ export function createRuntime(config: GoahConfig): { ledger: SqliteLedger; super
 }
 
 export function defaultConfig(directory: string, options: InitOptions = {}): GoahConfig {
-  const provider = options.provider ?? "anthropic";
+  const provider = options.provider ?? "faux";
   const model = options.model ?? defaultModel(provider);
-  const runnerEnv = providerEnvironment(provider, model, options);
+  const runnerProfile: RunnerProfile = { id: "default", runner: "pi", config: { provider, model, thinking: "medium", ...(options.apiKeyEnv ? { apiKeyEnv: options.apiKeyEnv } : {}), ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}), ...(options.contextWindowTokens ? { contextWindowTokens: options.contextWindowTokens } : {}), ...(options.maxOutputTokensPerTurn ? { maxOutputTokens: options.maxOutputTokensPerTurn } : {}) } };
   return {
-    version: 1,
+    version: 2,
     stateDir: defaultStateDir(directory),
-    runner: { command: process.execPath, args: ["$GOAH_PI_WORKER"], env: runnerEnv },
-    profiles: [{ agent: "ceo", role: "ceo" }, { agent: options.agent ?? "worker", role: "child" }],
+    runnerProfiles: [runnerProfile],
+    profiles: [{ agent: "ceo", role: "ceo", runnerProfile: "default" }, { agent: options.agent ?? "worker", role: "child", runnerProfile: "default" }],
     approvers: ["human", "ceo"],
     auditWriters: ["verifier", "audit"],
     silencePolicy: { maxSilentMs: 12 * 3_600_000, notify: "ceo" },
@@ -104,39 +117,42 @@ export class SupervisorLock {
   release(): void { if (this.#owned) { rmSync(this.path, { force: true }); this.#owned = false; } }
 }
 
-export function writeDefaultConfig(path = "goah.config.json", options: InitOptions = {}): void {
+export function writeDefaultConfig(path = "goah.config.json", options: InitOptions = {}, overwrite = false): void {
   const absolute = resolve(path);
-  if (existsSync(absolute)) throw new Error(`${absolute} already exists`);
+  if (existsSync(absolute) && !overwrite) throw new Error(`${absolute} already exists`);
   writeFileSync(absolute, `${JSON.stringify(defaultConfig(dirname(absolute), options), null, 2)}\n`);
 }
 
 export function profilePath(): string { return join(process.env.GOAH_STATE_HOME ?? join(homedir(), ".goah"), "profile.json"); }
 
-/** Persisted provider defaults; credentials stay as `env:NAME` references and are never written to disk. */
-export function readDefaultProfile(): InitOptions | null {
+export function readDefaultRunnerProfile(): RunnerProfile | null {
   try {
-    const raw = JSON.parse(readFileSync(profilePath(), "utf8")) as Partial<Record<keyof InitOptions, unknown>>;
-    const profile: InitOptions = {};
-    for (const key of ["provider", "model", "apiKeyEnv", "baseUrl", "contextWindowTokens", "maxOutputTokensPerTurn"] as const) {
-      const value = raw[key];
-      if (key === "provider" && typeof value === "string") profile.provider = value as PiProvider;
-      else if (key === "apiKeyEnv" && typeof value === "string") profile.apiKeyEnv = value;
-      else if (key === "baseUrl" && typeof value === "string") profile.baseUrl = value;
-      else if (key === "model" && typeof value === "string") profile.model = value;
-      else if (key === "contextWindowTokens" && typeof value === "number" && Number.isInteger(value)) profile.contextWindowTokens = value;
-      else if (key === "maxOutputTokensPerTurn" && typeof value === "number" && Number.isInteger(value)) profile.maxOutputTokensPerTurn = value;
+    const raw = JSON.parse(readFileSync(profilePath(), "utf8")) as Record<string, unknown>;
+    if (typeof raw.id === "string" && typeof raw.runner === "string" && raw.config && typeof raw.config === "object") return raw as unknown as RunnerProfile;
+    if (typeof raw.provider === "string" && typeof raw.model === "string") {
+      const { provider, model, apiKeyEnv, baseUrl, contextWindowTokens, maxOutputTokensPerTurn } = raw;
+      return { id: "default", runner: "pi", config: { provider, model, ...(typeof apiKeyEnv === "string" ? { apiKeyEnv } : {}), ...(typeof baseUrl === "string" ? { baseUrl } : {}), ...(typeof contextWindowTokens === "number" ? { contextWindowTokens } : {}), ...(typeof maxOutputTokensPerTurn === "number" ? { maxOutputTokens: maxOutputTokensPerTurn } : {}) } };
     }
-    return Object.keys(profile).length ? profile : null;
+    return null;
   } catch { return null; }
 }
 
-export function writeDefaultProfile(options: InitOptions): void {
-  const profile: InitOptions = {};
-  for (const key of ["provider", "model", "apiKeyEnv", "baseUrl", "contextWindowTokens", "maxOutputTokensPerTurn"] as const) {
-    if (options[key] !== undefined) (profile as Record<string, unknown>)[key] = options[key];
-  }
+export function writeDefaultRunnerProfile(profile: RunnerProfile): void {
   mkdirSync(dirname(profilePath()), { recursive: true });
-  writeFileSync(profilePath(), `${JSON.stringify(profile, null, 2)}\n`);
+  const temporary = `${profilePath()}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(profile, null, 2)}\n`, { mode: 0o600 });
+  renameSync(temporary, profilePath());
+  chmodSync(profilePath(), 0o600);
+}
+
+export function updateWorkspaceRunnerProfile(path: string, profile: RunnerProfile): void {
+  const absolute = resolve(path);
+  const current = existsSync(absolute) ? JSON.parse(readFileSync(absolute, "utf8")) as GoahConfig : defaultConfig(dirname(absolute));
+  current.runnerProfiles = [...(current.runnerProfiles ?? []).filter((item) => item.id !== profile.id), profile];
+  current.profiles = (current.profiles ?? [{ agent: "ceo", role: "ceo" }, { agent: "worker", role: "child" }]).map((agent) => ({ ...agent, runnerProfile: agent.runnerProfile ?? profile.id }));
+  const temporary = `${absolute}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(current, null, 2)}\n`);
+  renameSync(temporary, absolute);
 }
 
 export function diagnoseConfig(config: GoahConfig): { ok: boolean; checks: DoctorCheck[] } {
@@ -168,6 +184,11 @@ export function diagnoseConfig(config: GoahConfig): { ok: boolean; checks: Docto
     finally { db.close(); }
   });
   check("runner", () => {
+    if (config.runnerProfiles?.length) {
+      for (const profile of config.runnerProfiles) runnerPlugin(profile.runner);
+      return config.runnerProfiles.map((profile) => `${profile.id}:${profile.runner}`).join(", ");
+    }
+    if (!config.runner) throw new Error("no runner is configured");
     accessSync(config.runner.command, constants.X_OK);
     const workerArg = config.runner.args[0];
     if (workerArg && isAbsolute(workerArg)) accessSync(workerArg, constants.R_OK);
@@ -175,9 +196,7 @@ export function diagnoseConfig(config: GoahConfig): { ok: boolean; checks: Docto
     const provider = requiredEnv(env, "GOAH_PI_PROVIDER");
     const modelId = requiredEnv(env, "GOAH_PI_MODEL");
     const model = createPiModel(provider, modelId, env).model;
-    const key = provider === "anthropic" ? "ANTHROPIC_API_KEY" : provider === "openai" ? "OPENAI_API_KEY" : provider === "ark-coding" ? "ARK_API_KEY" : null;
-    if (key && !env[key]) throw new Error(`${key} is missing`);
-    return `${provider}/${modelId} context=${model.contextWindow} output=${model.maxTokens}`;
+    return `${provider}/${modelId} context=${model.contextWindow} output=${model.maxTokens}; auth is checked when the wake starts`;
   });
   return { ok: checks.every((item) => item.ok), checks };
 }
@@ -196,25 +215,14 @@ export function statusSnapshot(ledger: SqliteLedger): object {
   return { seq: events.at(-1)?.seq ?? 0, goals, wakes, actions: ledger.actions(), modelCapabilities, recentHandoffs: handoffs };
 }
 
-function defaultModel(provider: PiProvider): string {
-  if (provider === "anthropic") return "claude-sonnet-4-6";
+function defaultModel(provider: string): string {
   if (provider === "faux") return "faux-goah";
-  throw new Error(`--model is required for provider ${provider}`);
+  throw new Error(`--model is required for ${provider}; interactive setup discovers models through the selected Runner.`);
 }
-function providerEnvironment(provider: PiProvider, model: string, options: InitOptions): Record<string, string> {
-  const env: Record<string, string> = { GOAH_PI_PROVIDER: provider, GOAH_PI_MODEL: model };
-  if (provider === "faux") {
-    env.GOAH_PI_FAUX_HANDOFF = JSON.stringify({ observations: ["faux runner completed"], results: [], nextSteps: [] });
-    return env;
-  }
-  const destination = provider === "anthropic" ? "ANTHROPIC_API_KEY" : provider === "openai" ? "OPENAI_API_KEY" : "ARK_API_KEY";
-  env[destination] = `env:${options.apiKeyEnv ?? destination}`;
-  if (options.baseUrl) env.GOAH_PI_BASE_URL = options.baseUrl;
-  if (provider === "ark-coding") {
-    if (!Number.isInteger(options.contextWindowTokens) || !Number.isInteger(options.maxOutputTokensPerTurn)) throw new Error("ark-coding requires --context-window-tokens and --max-output-tokens");
-    env.GOAH_PI_MODEL_CAPABILITIES = JSON.stringify({ contextWindowTokens: options.contextWindowTokens, maxOutputTokensPerTurn: options.maxOutputTokensPerTurn });
-  }
-  return env;
+function legacyRunner(config: GoahConfig): ProcessRunner {
+  if (!config.runner) throw new Error("no runner profiles are configured");
+  const { env, ...spec } = config.runner;
+  return new ProcessRunner({ ...spec, envSpec: env, cwd: configRoot(config) });
 }
 function requiredEnv(env: Record<string, string>, name: string): string { const value = env[name]; if (!value) throw new Error(`${name} is missing`); return value; }
 function nearestExisting(path: string): string { let current = resolve(path); while (!existsSync(current)) { const parent = dirname(current); if (parent === current) break; current = parent; } return current; }

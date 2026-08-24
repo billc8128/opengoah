@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall, Type } from "@earendil-works/pi-ai";
-import { createPiModel, providerApiKey } from "./model-provider.js";
+import { createPiModel, resolvedApiKey } from "./model-provider.js";
 interface VerificationResult { findings: Array<{ actionId: string; body: unknown; evidence: number[]; riskWeight: number }>; tokensUsed: number }
 
 export async function runVerificationWorker(): Promise<void> {
@@ -33,7 +33,7 @@ export async function runVerificationWorker(): Promise<void> {
       : request.operation === "reason_audit"
         ? "Compare already-audited facts against revealed action reasons. Identify unsupported claims or omitted counterevidence."
         : "Verify the handoff against trace facts and action evidence. Never trust self-report without support.";
-    const agent = new Agent({ initialState: { systemPrompt: `${systemPrompt} You must call report_findings exactly once.`, model, tools: [tool] }, streamFn: models.streamSimple.bind(models), getApiKey: providerApiKey, shouldStopAfterTurn: () => result !== null });
+    const agent = new Agent({ initialState: { systemPrompt: `${systemPrompt} You must call report_findings exactly once.`, model, tools: [tool] }, streamFn: models.streamSimple.bind(models), getApiKey: (id) => resolvedApiKey(models, id), shouldStopAfterTurn: () => result !== null });
     agent.subscribe((event) => { if (event.type === "message_end" && event.message.role === "assistant") tokensUsed += event.message.usage.totalTokens; });
     await agent.prompt(JSON.stringify(request.input));
     const finalResult = result as VerificationResult | null;
