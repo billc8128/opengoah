@@ -127,6 +127,16 @@ test("wake queue is FIFO, deduplicated, fenced and safely recovered", () => {
   ledger.close();
 });
 
+test("Human interaction wakes preempt queued automatic Goal work while preserving FIFO", () => {
+  const ledger = new SqliteLedger(":memory:", { clock: new FixedClock() });
+  ledger.enqueueWake({ ...wake("goal", "ceo"), triggerRef: "schedule:ceo" }, "supervisor");
+  ledger.enqueueWake({ ...wake("human-1", "ceo"), triggerRef: "interaction:one" }, "supervisor");
+  ledger.enqueueWake({ ...wake("human-2", "other"), triggerRef: "interaction:two" }, "supervisor");
+  assert.equal(ledger.claimNextWake("2030-01-01T00:00:00.000Z", "2030-01-01T00:01:00.000Z", "lease-1")?.id, "human-1");
+  assert.equal(ledger.claimNextWake("2030-01-01T00:00:00.000Z", "2030-01-01T00:01:00.000Z", "lease-2")?.id, "human-2");
+  ledger.close();
+});
+
 test("actions require real evidence and support approval plus audit delivery", () => {
   const ledger = new SqliteLedger(":memory:", { clock: new FixedClock() });
   assert.throws(() => ledger.requestAction(action("bad", [999_999]), "a"), /does not exist/);

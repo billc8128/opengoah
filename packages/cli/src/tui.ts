@@ -229,7 +229,11 @@ async function slashGoal(text: string, stateDir: string, push: (line: string) =>
     const status = await requestControl(stateDir, { op: "ceo.status" });
     const roots = status && typeof status === "object" && !Array.isArray(status) && Array.isArray((status as Record<string, unknown>).roots) ? (status as Record<string, unknown>).roots as unknown[] : [];
     const root = roots.find((item) => item && typeof item === "object" && !Array.isArray(item)) as Record<string, unknown> | undefined;
-    if (!root) throw new Error("no active root goal");
+    if (!root) {
+      if (!isGoal) throw new Error("no active root goal");
+      push(JSON.stringify(await requestControl(stateDir, { op: "goal.start", objective: value }), null, 2));
+      return;
+    }
     const op = isGoal
       ? { op: "goal.update" as const, id: String(root.id), objective: value }
       : { op: "goal.observe" as const, id: String(root.id), observationMethod: value };

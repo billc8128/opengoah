@@ -403,7 +403,7 @@ export class SqliteLedger implements Ledger {
     return this.#transaction(() => {
       const row = this.db.prepare(`SELECT * FROM wakes w WHERE status='queued' AND NOT EXISTS (
         SELECT 1 FROM wakes active WHERE active.agent=w.agent AND active.status IN ('leased','running')
-      ) ORDER BY enqueued_seq LIMIT 1`).get() as Row | undefined;
+      ) ORDER BY CASE WHEN trigger_ref LIKE 'interaction:%' THEN 0 ELSE 1 END,enqueued_seq LIMIT 1`).get() as Row | undefined;
       if (!row) return null;
       const current = mapWake(row);
       const next: WakeSnapshot = { ...current, status: "leased", leaseUntil, leaseToken, runnerPid: null, attempt: current.attempt + 1 };
