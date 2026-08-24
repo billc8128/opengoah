@@ -5,6 +5,7 @@ import { extname, join, normalize } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { JsonValue, Ledger } from "goah-ledger-contract"
 import type { Supervisor } from "goah-supervisor"
+import { interactFrames } from "./control.js"
 import { redactValue } from "./inspect.js"
 
 export interface ConsoleMetadata { url: string; host: string; port: number; pid: number; token: string }
@@ -71,7 +72,13 @@ export async function runWebConsole(
 ): Promise<void> {
   const host = options.host ?? "127.0.0.1"
   const token = randomUUID()
-  const server = createServer((request, response) => { void route(request, response, supervisor, ledger, token) })
+  const server = createServer((request, response) => {
+    route(request, response, supervisor, ledger, token).catch((error: unknown) => {
+      const message = { error: error instanceof Error ? error.message : String(error) }
+      if (response.headersSent) response.end(`data: ${JSON.stringify({ ...message, type: "error" })}\n\n`)
+      else sendJson(response, 500, message)
+    })
+  })
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(options.port ?? 0, host, resolve) })
   const address = server.address()
   if (!address || typeof address === "string") throw new Error("console server did not bind a TCP port")
@@ -115,6 +122,35 @@ async function route(request: IncomingMessage, response: ServerResponse, supervi
       if (!message) { sendJson(response, 400, { error: "message is required" }); return }
       const root = ledger.goals().find((goal) => goal.parentId === null && goal.owner === "ceo" && goal.phase !== "complete")
       sendJson(response, 202, root ? supervisor.sendToCeo({ message }) : supervisor.startGoal(message))
+      return
+    }
+    if (request.method === "POST" && url.pathname === "/api/chat") {
+      const body = await readBody(request)
+      const message = typeof body.message === "string" ? body.message.trim() : ""
+      if (!message) { sendJson(response, 400, { error: "message is required" }); return }
+      response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" })
+      let active = true
+      request.on("close", () => { active = false })
+      try {
+        for await (const frame of interactFrames(message, supervisor, ledger, () => active)) {
+          if (!active) break
+          response.write(`data: ${JSON.stringify(frame)}\n\n`)
+        }
+      } catch (error) {
+        if (active) response.write(`data: ${JSON.stringify({ type: "error", error: error instanceof Error ? error.message : String(error) })}\n\n`)
+      }
+      response.end()
+      return
+    }
+    if (request.method === "POST" && url.pathname === "/api/action") {
+      const body = await readBody(request)
+      const id = typeof body.id === "string" ? body.id : ""
+      const reason = typeof body.reason === "string" ? body.reason.trim() : ""
+      const evidence = Array.isArray(body.evidence) && body.evidence.every((item) => typeof item === "number") ? body.evidence as number[] : []
+      if (!id || !reason || evidence.length === 0) { sendJson(response, 400, { error: "id, reason, and evidence are required" }); return }
+      if (body.decision === "approve") { sendJson(response, 200, await supervisor.approveAction(id, "human", reason, evidence)); return }
+      if (body.decision === "reject") { sendJson(response, 200, supervisor.rejectAction(id, "human", reason, evidence)); return }
+      sendJson(response, 400, { error: "decision must be approve or reject" })
       return
     }
     sendJson(response, 404, { error: "not found" }); return

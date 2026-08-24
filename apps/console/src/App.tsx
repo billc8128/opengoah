@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react"
 import {
   Activity,
   ArrowLeft,
@@ -25,38 +25,38 @@ import { Accordion, Collapsible, Dialog, ScrollArea, Select, Tabs } from "./comp
 import { demoSnapshot } from "./demo"
 import type { ConsoleSnapshot, EventView, GoalView, SessionView, TeamView, TrajectoryItemView, TrajectoryPageView } from "./types"
 
-type View = "overview" | "trajectory" | "session" | "ledger" | "agents" | "settings"
+type View = "overview" | "chat" | "trajectory" | "session" | "ledger" | "agents" | "settings"
 
 const searchParams = new URLSearchParams(window.location.search)
 const isDemo = searchParams.has("demo")
 const requestedView = searchParams.get("view")
-const initialView: View = requestedView && ["overview", "trajectory", "session", "ledger", "agents", "settings"].includes(requestedView) ? requestedView as View : "overview"
+const initialView: View = requestedView && ["overview", "chat", "trajectory", "session", "ledger", "agents", "settings"].includes(requestedView) ? requestedView as View : "overview"
 
 export function App() {
   const [snapshot, setSnapshot] = useState<ConsoleSnapshot | null>(isDemo ? demoSnapshot : null)
   const [view, setView] = useState<View>(initialView)
   const [selectedAgent, setSelectedAgent] = useState("growth")
   const [selectedWakeId, setSelectedWakeId] = useState<string | null>(null)
-  const [composerOpen, setComposerOpen] = useState(false)
   const [connection, setConnection] = useState<"loading" | "live" | "error">(isDemo ? "live" : "loading")
+  const [approvalsOpen, setApprovalsOpen] = useState(false)
+
+  const load = useCallback(async () => {
+    if (isDemo) return
+    try {
+      const response = await fetch("/api/snapshot", { cache: "no-store" })
+      if (!response.ok) throw new Error(`snapshot request failed (${response.status})`)
+      const next = await response.json() as ConsoleSnapshot
+      setSnapshot(next); setConnection("live")
+    } catch { setConnection("error") }
+  }, [])
 
   useEffect(() => {
     if (isDemo) return
     let active = true
-    const load = async () => {
-      try {
-        const response = await fetch("/api/snapshot", { cache: "no-store" })
-        if (!response.ok) throw new Error(`snapshot request failed (${response.status})`)
-        const next = await response.json() as ConsoleSnapshot
-        if (active) { setSnapshot(next); setConnection("live") }
-      } catch {
-        if (active) setConnection("error")
-      }
-    }
     void load()
     const timer = window.setInterval(load, 2_000)
     return () => { active = false; window.clearInterval(timer) }
-  }, [])
+  }, [load])
 
   if (!snapshot) return <LoadingState connection={connection} />
 
@@ -67,14 +67,15 @@ export function App() {
       <Sidebar view={view} onView={setView} />
       <main className="console-main">
         {connection === "error" && <div className="connection-banner">Live refresh paused. Retrying the local Supervisor…</div>}
-        {view === "overview" && <Overview snapshot={snapshot} root={root} onView={setView} onTalk={() => setComposerOpen(true)} />}
+        {view === "overview" && <Overview snapshot={snapshot} root={root} onView={setView} onTalk={() => setView("chat")} onApprovals={() => setApprovalsOpen(true)} />}
+        {view === "chat" && <ChatView snapshot={snapshot} onRefresh={load} />}
         {view === "trajectory" && <OrganizationTrajectory snapshot={snapshot} onOpenSession={openSession} />}
         {view === "session" && <SessionTrace snapshot={snapshot} selectedWakeId={selectedWakeId} onSelectWake={setSelectedWakeId} onBack={() => setView("trajectory")} />}
         {view === "ledger" && <Ledger snapshot={snapshot} />}
         {view === "agents" && <Agents snapshot={snapshot} selected={selectedAgent} onSelect={setSelectedAgent} onOpenSession={openSession} />}
         {view === "settings" && <SettingsView snapshot={snapshot} />}
       </main>
-      {composerOpen && <CeoComposer onClose={() => setComposerOpen(false)} />}
+      {approvalsOpen && <ApprovalDialog snapshot={snapshot} onRefresh={load} onClose={() => setApprovalsOpen(false)} />}
     </div>
   )
 }
@@ -82,6 +83,7 @@ export function App() {
 function Sidebar({ view, onView }: { view: View; onView(view: View): void }) {
   const items: Array<{ id: View; label: string; icon: typeof House }> = [
     { id: "overview", label: "Overview", icon: House },
+    { id: "chat", label: "Chat", icon: MessageCircle },
     { id: "trajectory", label: "Trajectory", icon: Route },
     { id: "ledger", label: "Ledger", icon: Database },
     { id: "agents", label: "Agents", icon: Users },
@@ -106,11 +108,18 @@ function Sidebar({ view, onView }: { view: View; onView(view: View): void }) {
   )
 }
 
-function Overview({ snapshot, root, onView, onTalk }: { snapshot: ConsoleSnapshot; root: GoalView | null; onView(view: View): void; onTalk(): void }) {
+function Overview({ snapshot, root, onView, onTalk, onApprovals }: { snapshot: ConsoleSnapshot; root: GoalView | null; onView(view: View): void; onTalk(): void; onApprovals(): void }) {
   const children = snapshot.goals.filter((goal) => goal.parentId === root?.id)
   const ceo = snapshot.team.find((member) => member.agent === "ceo")
   const attention = snapshot.actions.filter((action) => ["requested", "unknown"].includes(action.status))
-  const recovery = snapshot.wakes.filter((wake) => ["abnormal", "merge_blocked"].includes(wake.status))
+  const recoveredWakeIds = new Set(snapshot.wakes.flatMap((wake) => {
+    const reference = wake.triggerRef.startsWith("recovery:")
+      ? wake.triggerRef.slice("recovery:".length)
+      : wake.triggerRef.startsWith("retry:") ? wake.triggerRef.slice("retry:".length).split("@")[0] : null
+    return reference ? [reference] : []
+  }))
+  const recovery = snapshot.wakes.filter((wake) =>
+    ["abnormal", "merge_blocked"].includes(wake.status) && !recoveredWakeIds.has(wake.id))
   const trajectory = trajectoryEvents(snapshot.events).slice(-3).reverse()
   return (
     <div className="overview-layout">
@@ -125,10 +134,10 @@ function Overview({ snapshot, root, onView, onTalk }: { snapshot: ConsoleSnapsho
             <button className="header-action" onClick={onTalk}><MessageCircle /> Talk to CEO</button>
           </div>
           <p className="observation"><strong>Observation:</strong> {root?.observationMethod ?? "Waiting for the CEO to propose an observation method."}</p>
-          {(attention[0] || recovery[0]) && <div className="attention-strip">
+          {(attention[0] || recovery[0]) && <button type="button" className="attention-strip attention-link" onClick={onApprovals}>
             {attention[0] && <span><CircleAlert /> Approval needed: <strong>{attention[0].kind}</strong></span>}
             {recovery[0] && <span className="danger"><RefreshCcw /> Recovery needed: <strong>{displayAgent(recovery[0].agent)}</strong></span>}
-          </div>}
+          </button>}
         </header>
 
         <section className="organization" aria-labelledby="organization-title">
@@ -344,21 +353,174 @@ function SettingsView({ snapshot }: { snapshot: ConsoleSnapshot }) {
   return <Page title="Settings" description="Local Console runtime details. Agent and connector configuration remains authoritative in goah.config.json."><div className="settings-list"><div><span>Mode</span><strong>Local, loopback only</strong></div><div><span>Refresh</span><strong>Every 2 seconds</strong></div><div><span>Latest event</span><strong>Seq #{snapshot.seq}</strong></div><div><span>Event payloads</span><strong>Redacted by default</strong></div></div></Page>
 }
 
-function CeoComposer({ onClose }: { onClose(): void }) {
-  const [message, setMessage] = useState("")
-  const [state, setState] = useState<"idle" | "sending" | "sent" | "error">("idle")
-  const submit = async () => {
-    if (!message.trim()) return
-    setState("sending")
+type ChatExchange = { kind: "user" | "ceo"; seq: number; text: string; handoff?: { observations: string[]; results: string[]; nextSteps: string[]; blocker?: string } }
+type LiveChat = { status: "running" | "done" | "error"; text: string; lines: string[]; handoff: ChatExchange["handoff"] }
+
+function chatHistory(snapshot: ConsoleSnapshot): ChatExchange[] {
+  const items: ChatExchange[] = []
+  for (const event of snapshot.events) {
+    if (event.type === "mail.put") {
+      const mail = record(record(event.data).snapshot)
+      if (mail.to === "ceo" && mail.from === "human") items.push({ kind: "user", seq: event.seq, text: mailBodyText(mail.body) })
+    } else if (event.type === "handoff.recorded" && event.actor === "ceo") {
+      items.push({ kind: "ceo", seq: event.seq, text: "", handoff: handoffOf(event.data) })
+    }
+  }
+  return items.sort((a, b) => a.seq - b.seq)
+}
+
+function ChatView({ snapshot, onRefresh }: { snapshot: ConsoleSnapshot; onRefresh(): void }) {
+  const history = useMemo(() => chatHistory(snapshot), [snapshot])
+  const [draft, setDraft] = useState("")
+  const [live, setLive] = useState<LiveChat | null>(null)
+  const bottom = useRef<HTMLDivElement>(null)
+  useEffect(() => { bottom.current?.scrollIntoView({ behavior: "smooth" }) }, [history.length, live?.text, live?.lines.length])
+
+  const send = async () => {
+    const message = draft.trim()
+    if (!message || live?.status === "running") return
+    setDraft("")
+    setLive({ status: "running", text: "", lines: [`CEO wake queued`], handoff: undefined })
     try {
-      const response = await fetch("/api/ceo", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message }) })
-      if (!response.ok) throw new Error("send failed")
-      setState("sent")
-      window.setTimeout(onClose, 700)
-    } catch { setState("error") }
+      const response = await fetch("/api/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message }) })
+      if (!response.ok || !response.body) throw new Error(`chat request failed (${response.status})`)
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ""
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const chunks = buffer.split("\n\n")
+        buffer = chunks.pop() ?? ""
+        for (const chunk of chunks) {
+          if (!chunk.startsWith("data: ")) continue
+          applyFrame(JSON.parse(chunk.slice(6)) as ChatFrame, setLive)
+        }
+      }
+    } catch {
+      setLive((current) => current && { ...current, status: "error", lines: [...current.lines, "连接中断"] })
+    } finally {
+      setLive((current) => current && current.status === "running" ? { ...current, status: "done" } : current)
+      onRefresh()
+    }
+  }
+
+  return (
+    <section className="chat">
+      <header className="chat-header">
+        <div>
+          <h1>CEO</h1>
+          <p>Messages become durable decision mail. The CEO wake streams here, then lands in the ledger.</p>
+        </div>
+        <span className={`chat-live-pill ${live?.status === "running" ? "busy" : ""}`}>{live?.status === "running" ? "Working…" : "Ready"}</span>
+      </header>
+      <div className="chat-scroll">
+        {history.length === 0 && !live && <p className="chat-empty">还没有对话。说一句话开始——它会成为 CEO 的 decision mail。</p>}
+        {history.map((item) => item.kind === "user"
+          ? <article key={item.seq} className="chat-entry user"><p>{item.text}</p><small>You · #{item.seq}</small></article>
+          : <article key={item.seq} className="chat-entry ceo">{item.handoff && <HandoffBlock handoff={item.handoff} seq={item.seq} />}</article>)}
+        {live && <article className="chat-entry ceo live">
+          {live.lines.length > 0 && <div className="chat-activity">{live.lines.map((line) => <span key={line}>{line}</span>)}</div>}
+          {live.text && <p className="chat-stream">{live.text}</p>}
+          {live.handoff && <HandoffBlock handoff={live.handoff} seq={0} />}
+          {live.status === "error" && <p className="chat-error">连接中断，wake 结果以账本为准。</p>}
+        </article>}
+        <div ref={bottom} />
+      </div>
+      <footer className="chat-input-bar">
+        <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void send() }} placeholder="改变目标、报告约束、或问下一步会发生什么…" disabled={live?.status === "running"} />
+        <div>
+          <span>⌘↩ 发送 · 成为 durable decision mail</span>
+          <button className="primary" disabled={!draft.trim() || live?.status === "running"} onClick={() => void send()}><Send /> 发送</button>
+        </div>
+      </footer>
+    </section>
+  )
+}
+
+type ChatFrame = { type: "accepted" | "result" | "error" | "event"; wakeId?: string; value?: unknown; event?: EventView; error?: string }
+
+function applyFrame(frame: ChatFrame, setLive: Dispatch<SetStateAction<LiveChat | null>>): void {
+  if (frame.type === "accepted") return
+  if (frame.type === "error") { setLive((current) => current && { ...current, status: "error", lines: [...current.lines, frame.error ?? "error"] }); return }
+  if (frame.type === "result") {
+    const value = record(frame.value)
+    const wake = record(value.wake) as { status?: unknown }
+    setLive((current) => current && { ...current, status: "done", lines: [...current.lines, wake.status === "done" ? "Wake completed" : `Wake ${String(wake.status ?? "finished")}`] })
+    return
+  }
+  const event = frame.event
+  if (!event) return
+  if (event.type === "message.assistant.completed") {
+    const text = messageContent(record(event.data).message)
+    if (text) setLive((current) => current && { ...current, text })
+  } else if (event.type === "message.assistant.delta") {
+    const delta = record(record(event.data).delta)
+    const text = typeof delta.delta === "string" ? delta.delta : null
+    if (text) setLive((current) => current && { ...current, text: current.text + text })
+  } else if (event.type === "tool.called") {
+    const data = record(event.data)
+    setLive((current) => current && { ...current, lines: [...current.lines, `→ ${String(data.name ?? "tool")}`] })
+  } else if (event.type === "handoff.recorded") {
+    setLive((current) => current && { ...current, handoff: handoffOf(event.data) })
+  } else if (event.type === "wake.abnormal_reason") {
+    setLive((current) => current && { ...current, lines: [...current.lines, `! ${JSON.stringify(event.data)}`] })
+  }
+}
+
+function HandoffBlock({ handoff, seq }: { handoff: NonNullable<ChatExchange["handoff"]>; seq: number }) {
+  return (
+    <div className="chat-handoff">
+      {handoff.observations.length > 0 && <section><h3>Observed</h3>{handoff.observations.map((value) => <p key={value}>{value}</p>)}</section>}
+      {handoff.results.length > 0 && <section><h3>Completed</h3>{handoff.results.map((value) => <p key={value}>{value}</p>)}</section>}
+      {handoff.nextSteps.length > 0 && <section><h3>Next</h3>{handoff.nextSteps.map((value) => <p key={value}>{value}</p>)}</section>}
+      {handoff.blocker && <section className="danger"><h3>Blocked</h3><p>{handoff.blocker}</p></section>}
+      {seq > 0 && <small>Handoff · #{seq}</small>}
+    </div>
+  )
+}
+
+function ApprovalDialog({ snapshot, onRefresh, onClose }: { snapshot: ConsoleSnapshot; onRefresh(): void; onClose(): void }) {
+  const pending = snapshot.actions.filter((action) => ["requested", "unknown"].includes(action.status))
+  const [reasons, setReasons] = useState<Record<string, string>>({})
+  const [busy, setBusy] = useState<string | null>(null)
+  const decide = async (id: string, decision: "approve" | "reject") => {
+    const action = pending.find((item) => item.id === id)
+    if (!action) return
+    const reason = (reasons[id] ?? "").trim() || (decision === "approve" ? "Approved from Console" : "Rejected from Console")
+    setBusy(id)
+    try {
+      const response = await fetch("/api/action", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, decision, reason, evidence: action.evidence }) })
+      if (!response.ok) throw new Error("decision failed")
+      onRefresh()
+    } catch { window.alert("提交失败，请重试") } finally { setBusy(null) }
   }
   return (
-    <Dialog.Root open onOpenChange={(open) => { if (!open) onClose() }}><Dialog.Portal><Dialog.Overlay className="modal-backdrop" /><Dialog.Content className="composer"><Dialog.Close className="close" aria-label="Close"><X /></Dialog.Close><p>CEO</p><Dialog.Title id="composer-title">Give the organization new context</Dialog.Title><Dialog.Description className="sr-only">Send durable context or a goal change to the CEO agent.</Dialog.Description><textarea autoFocus value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Change the goal, report a constraint, or ask what happens next…" /><div><span>{state === "error" ? "Could not reach the Supervisor." : state === "sent" ? "Delivered to CEO." : "This becomes durable decision mail."}</span><button className="primary" disabled={!message.trim() || state === "sending"} onClick={submit}><Send /> {state === "sending" ? "Sending…" : "Send to CEO"}</button></div></Dialog.Content></Dialog.Portal></Dialog.Root>
+    <Dialog.Root open onOpenChange={(open) => { if (!open) onClose() }}>
+      <Dialog.Portal><Dialog.Overlay className="modal-backdrop" /><Dialog.Content className="approval-dialog">
+        <Dialog.Close className="close" aria-label="Close"><X /></Dialog.Close>
+        <Dialog.Title>需要决策的动作</Dialog.Title>
+        <Dialog.Description className="sr-only">审查外部动作的理由和证据，然后批准或拒绝。</Dialog.Description>
+        {pending.length === 0 && <p className="chat-empty">没有待决策动作。</p>}
+        {pending.map((action) => (
+          <article key={action.id} className="approval-card">
+            <header><strong>{action.kind}</strong><span className={`status ${action.status === "unknown" ? "status-blocked" : ""}`}><i />{action.status}</span></header>
+            <dl>
+              <div><dt>Agent</dt><dd>{displayAgent(action.agent)}</dd></div>
+              <div><dt>Connector</dt><dd>{action.connector}</dd></div>
+              <div><dt>Evidence</dt><dd>{action.evidence.join(", ") || "none"}</dd></div>
+            </dl>
+            <p className="approval-reason">{action.reason}</p>
+            <textarea value={reasons[action.id] ?? ""} onChange={(event) => setReasons((current) => ({ ...current, [action.id]: event.target.value }))} placeholder="你的决定理由（默认提供一条）" />
+            <footer>
+              <button className="primary" disabled={busy === action.id} onClick={() => void decide(action.id, "approve")}><Check /> 批准</button>
+              <button className="reject" disabled={busy === action.id} onClick={() => void decide(action.id, "reject")}>拒绝</button>
+            </footer>
+          </article>
+        ))}
+      </Dialog.Content></Dialog.Portal>
+    </Dialog.Root>
   )
 }
 
@@ -404,6 +566,24 @@ function formatTime(value: string): string { const date = new Date(value); retur
 function formatDateTime(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) }
 function relativeTime(value: string, from = new Date().toISOString()): string { const minutes = Math.round((new Date(value).getTime() - new Date(from).getTime()) / 60_000); return minutes > 0 ? `in ${minutes}m` : minutes === 0 ? "now" : `${Math.abs(minutes)}m ago` }
 function record(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {} }
+
+function mailBodyText(value: unknown): string {
+  const body = record(value)
+  if (typeof body.message === "string" && body.message.trim()) return body.message
+  return JSON.stringify(value)
+}
+
+function handoffOf(value: unknown): NonNullable<ChatExchange["handoff"]> {
+  const handoff = record(value)
+  return {
+    observations: stringList(handoff.observations),
+    results: stringList(handoff.results),
+    nextSteps: stringList(handoff.nextSteps),
+    ...(typeof handoff.blocker === "string" && handoff.blocker ? { blocker: handoff.blocker } : {}),
+  }
+}
+
+function stringList(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [] }
 function firstString(value: unknown): string { return Array.isArray(value) && typeof value[0] === "string" ? value[0] : "" }
 function stringArray(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [] }
 function isTraceEvent(event: EventView): boolean { return ["session.started", "request.prepared", "turn.started", "message.user", "message.assistant.completed", "tool.called", "tool.completed", "context.compacted", "turn.completed", "handoff.recorded", "session.completed", "session.interrupted"].includes(event.type) }
