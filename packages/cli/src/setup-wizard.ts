@@ -62,15 +62,14 @@ export async function runSetupWizard(): Promise<WizardResult> {
     setSlot(list);
     return promise;
   };
-  /** Free-text entry on one Input line. */
+  /** Free-text entry on one Input line; the prompt lives in the header so the TUI owns every glyph on screen. */
   const askText = (title: string, subtitle: string, prompt: string): Promise<string> => {
-    setHeader(title, subtitle);
+    setHeader(title, `${subtitle}\n ${prompt}`);
     const input = new Input();
     const { promise, resolve } = Promise.withResolvers<string>();
     let answerLine: ((value: string) => void) | null = resolve;
     input.onSubmit = (line) => { input.setValue(""); const deliver = answerLine; answerLine = null; deliver?.(line.trim()); };
     setSlot(input);
-    process.stdout.write(`${prompt} `);
     return promise;
   };
 

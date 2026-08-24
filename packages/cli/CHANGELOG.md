@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.2
+
+- Wizard text prompts render inside the TUI header; the raw stdout prompt was erased by differential rendering.
+
+
 ## 0.9.1
 
 - Setup wizard uses arrow-key SelectList navigation with per-scene headers; piped fallback unchanged.

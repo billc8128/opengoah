@@ -1,9 +1,13 @@
 # Changelog
 
+## 0.9.2
+
+- Fixed wizard text prompts: the prompt line now renders inside the TUI header instead of a raw stdout write that the differential renderer erased, leaving the Model/API-key scenes visibly waiting with no question.
+
+
 ## 0.9.1
 
 - `goah setup` scenes now use arrow-key SelectList navigation (↑/↓ + Enter, Esc cancels) with a persistent header per scene, matching the pi/omp selection pattern; number-typing remains only in the non-TTY fallback.
-
 
 ## 0.9.0
 
