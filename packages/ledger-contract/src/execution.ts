@@ -63,7 +63,9 @@ export interface TeamMemberView {
 }
 export interface AuditAdvice { by: string; at: string; body: JsonValue; evidence: number[] }
 export interface ActionSnapshot { id: string; agent: string; kind: string; connector: string; payload: JsonValue; reason: string; evidence: number[]; gated: boolean; status: ActionStatus; reconciledAt: string | null; externalRef: string | null; auditAdvice: AuditAdvice | null; adviceAcked: boolean }
-export interface Handoff { observations: string[]; results: string[]; nextSteps: string[]; blocker?: string; material?: boolean }
+export interface LegacyHandoff { observations: string[]; results: string[]; nextSteps: string[]; blocker?: string; material?: boolean }
+export interface GoalHandoff { goalId: string; goalRevision: number; recordRevision: number; outcome: "progress" | "waiting" | "blocked" | "completion_proposed"; evidence: number[] }
+export type Handoff = LegacyHandoff | GoalHandoff;
 export interface MailDraft { to: string; level: MailLevel; body: JsonValue }
 export interface WakeOutput { handoff: Handoff; mail: MailDraft[]; nextWakeAt: string | null }
 export interface RunnerTraceEvent { type: string; data: JsonValue }
@@ -172,7 +174,13 @@ const goalTransitions: Record<GoalPhase, readonly GoalPhase[]> = { active: ["pau
 export function assertWakeTransition(from: WakeStatus, to: WakeStatus): void { if (!wakeTransitions[from].includes(to)) throw new Error(`invalid wake transition: ${from} -> ${to}`); }
 export function assertActionTransition(from: ActionStatus, to: ActionStatus): void { if (!actionTransitions[from].includes(to)) throw new Error(`invalid action transition: ${from} -> ${to}`); }
 export function assertGoalTransition(from: GoalPhase, to: GoalPhase): void { if (from !== to && !goalTransitions[from].includes(to)) throw new Error(`invalid goal transition: ${from} -> ${to}`); }
-export function assertHandoff(value: Handoff): void { if (!Array.isArray(value.observations) || !Array.isArray(value.results) || !Array.isArray(value.nextSteps)) throw new Error("invalid handoff: observations, results and nextSteps are required arrays"); }
+export function assertHandoff(value: Handoff): void {
+  if ("goalId" in value) {
+    if (!value.goalId.trim() || !Number.isInteger(value.goalRevision) || !Number.isInteger(value.recordRevision) || !["progress", "waiting", "blocked", "completion_proposed"].includes(value.outcome) || !Array.isArray(value.evidence)) throw new Error("invalid Goal handoff");
+    return;
+  }
+  if (!Array.isArray(value.observations) || !Array.isArray(value.results) || !Array.isArray(value.nextSteps)) throw new Error("invalid handoff: observations, results and nextSteps are required arrays");
+}
 export function assertActionRequest(value: ActionSnapshot): void { if (!value.reason.trim()) throw new Error("action reason is required"); if (value.evidence.length === 0) throw new Error("action evidence is required"); if (value.status !== "requested") throw new Error("new action must be requested"); if (!value.connector.trim()) throw new Error("action connector is required"); if (value.reconciledAt !== null) throw new Error("requested action cannot be reconciled"); }
 export function assertGoalSnapshot(value: GoalSnapshot): void {
   if (!value.objective.trim() || !value.owner.trim()) throw new Error("goal objective and owner are required");

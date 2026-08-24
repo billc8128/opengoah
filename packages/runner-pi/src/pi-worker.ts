@@ -23,7 +23,7 @@ export function compactMessages(messages: AgentMessage[], maxRecent = 8): AgentM
 export async function runPiWorker(): Promise<void> {
   await runProcessWorker(async (request, emit, rpc): Promise<RunnerResult> => {
     const contextRecord = typeof request.context === "object" && request.context !== null && !Array.isArray(request.context) ? request.context : {};
-    const goalState = { bound: request.turn.goalBinding !== undefined };
+    const goalState: { bound: boolean; binding?: { goalId: string; goalRevision: number }; recordRevision?: number } = { bound: request.turn.goalBinding !== undefined, ...(request.turn.goalBinding ? { binding: request.turn.goalBinding } : {}) };
     const profile = contextRecord.runnerProfile && typeof contextRecord.runnerProfile === "object" && !Array.isArray(contextRecord.runnerProfile) ? contextRecord.runnerProfile as Record<string, unknown> : {};
     const runnerConfig = profile.config && typeof profile.config === "object" && !Array.isArray(profile.config) ? profile.config as Record<string, unknown> : {};
     const provider = typeof runnerConfig.provider === "string" ? runnerConfig.provider : process.env.GOAH_PI_PROVIDER ?? "anthropic";
@@ -67,6 +67,7 @@ export async function runPiWorker(): Promise<void> {
     const capabilities = Array.isArray(contextRecord.capabilities)
       ? new Set(contextRecord.capabilities.filter((value): value is AgentCapability => typeof value === "string"))
       : undefined;
+    if (contextRecord.workRecord && typeof contextRecord.workRecord === "object" && !Array.isArray(contextRecord.workRecord) && typeof contextRecord.workRecord.recordRevision === "number") goalState.recordRevision = contextRecord.workRecord.recordRevision;
     const tools = createTools(root, (value) => { output = value; }, rpc, request.wake.startedAt, capabilities, goalState);
     const contextPolicy = resolveContextPolicy(model.contextWindow, process.env);
     emit({ type: "session.started", data: { formatVersion: SESSION_FORMAT_VERSION, provider, model: modelId, runner: "pi", contextWindowTokens: model.contextWindow, maxOutputTokensPerTurn: model.maxTokens } });
@@ -159,27 +160,38 @@ function sessionMessage(message: AgentMessage, id: string): SessionMessage {
   return { id, role, content: (value.content ?? value) as JsonValue, ...(value.usage !== undefined ? { usage: value.usage as JsonValue } : {}) };
 }
 
-function createTools(root: string, handoff: (output: WakeOutput) => void, rpc: WorkerRpc, wakeStartedAt: string | null, capabilities: ReadonlySet<AgentCapability> | undefined, goalState: { bound: boolean }): AgentTool<any>[] {
+function createTools(root: string, handoff: (output: WakeOutput) => void, rpc: WorkerRpc, wakeStartedAt: string | null, capabilities: ReadonlySet<AgentCapability> | undefined, goalState: { bound: boolean; binding?: { goalId: string; goalRevision: number }; recordRevision?: number }): AgentTool<any>[] {
   const handoffTool: AgentTool<any> = {
     name: "handoff",
     label: "Handoff",
     description: "Record a structured handoff and end the wake.",
     parameters: Type.Object({
-      observations: Type.Array(Type.String()),
-      results: Type.Array(Type.String()),
-      nextSteps: Type.Array(Type.String()),
+      observations: Type.Optional(Type.Array(Type.String())),
+      results: Type.Optional(Type.Array(Type.String())),
+      nextSteps: Type.Optional(Type.Array(Type.String())),
       blocker: Type.Optional(Type.String()),
       material: Type.Optional(Type.Boolean()),
+      outcome: Type.Optional(Type.Union([Type.Literal("progress"), Type.Literal("waiting"), Type.Literal("blocked"), Type.Literal("completion_proposed")])),
+      evidence: Type.Optional(Type.Array(Type.Number())),
       nextWakeAt: Type.Optional(Type.String()),
     }),
     execute: async (_id, params) => {
-      const input = params as { observations: string[]; results: string[]; nextSteps: string[]; blocker?: string; material?: boolean; nextWakeAt?: string };
-      const value: WakeOutput = { handoff: { observations: input.observations, results: input.results, nextSteps: input.nextSteps, ...(input.blocker ? { blocker: input.blocker } : {}), ...(input.material === true ? { material: true } : {}) }, mail: [], nextWakeAt: validateNextWakeAt(input.nextWakeAt, wakeStartedAt) };
+      const input = params as { observations?: string[]; results?: string[]; nextSteps?: string[]; blocker?: string; material?: boolean; outcome?: "progress" | "waiting" | "blocked" | "completion_proposed"; evidence?: number[]; nextWakeAt?: string };
+      const compact = goalState.binding && goalState.recordRevision !== undefined
+        ? { goalId: goalState.binding.goalId, goalRevision: goalState.binding.goalRevision, recordRevision: goalState.recordRevision, outcome: input.outcome ?? (input.blocker ? "blocked" : input.material ? "completion_proposed" : "progress"), evidence: input.evidence ?? [] }
+        : null;
+      const value: WakeOutput = { handoff: compact ?? { observations: input.observations ?? [], results: input.results ?? [], nextSteps: input.nextSteps ?? [], ...(input.blocker ? { blocker: input.blocker } : {}), ...(input.material === true ? { material: true } : {}) }, mail: [], nextWakeAt: validateNextWakeAt(input.nextWakeAt, wakeStartedAt) };
       handoff(value);
       return { content: [{ type: "text", text: "handoff recorded" }], details: value, terminate: true };
     },
   };
-  const rpcTools = createRpcTools(rpc, capabilities, () => { goalState.bound = true; });
+  const rpcTools = createRpcTools(rpc, capabilities, (method, result) => {
+    if ((method === "goal.create" || method === "goal.work") && result && typeof result === "object" && !Array.isArray(result) && result.goalBinding && typeof result.goalBinding === "object" && !Array.isArray(result.goalBinding)) {
+      const binding = result.goalBinding as Record<string, JsonValue>;
+      if (typeof binding.goalId === "string" && typeof binding.goalRevision === "number") { goalState.bound = true; goalState.binding = { goalId: binding.goalId, goalRevision: binding.goalRevision }; }
+    }
+    if (method === "work_record.update" && result && typeof result === "object" && !Array.isArray(result) && typeof result.recordRevision === "number") goalState.recordRevision = result.recordRevision;
+  });
   const readTool: AgentTool<any> = {
     name: "read", label: "Read", description: "Read a UTF-8 file inside the current working directory.",
     parameters: Type.Object({ path: Type.String() }),
@@ -295,10 +307,10 @@ export function compactMessagesToTokenBudget(messages: AgentMessage[], retainTok
   ];
 }
 
-function createRpcTools(rpc: WorkerRpc, allowed?: ReadonlySet<AgentCapability>, onGoalBound?: () => void): AgentTool<any>[] {
+function createRpcTools(rpc: WorkerRpc, allowed?: ReadonlySet<AgentCapability>, onResult?: (method: AgentCapability, result: JsonValue) => void): AgentTool<any>[] {
   const tool = (name: string, description: string, method: AgentCapability, parameters: ReturnType<typeof Type.Object>): AgentTool<any> => ({
     name, label: name, description, parameters,
-    execute: async (_id, params) => { const result = await rpc(method, params as JsonValue); if (method === "goal.create" || method === "goal.work") onGoalBound?.(); return { content: [{ type: "text", text: JSON.stringify(result) }], details: result }; },
+    execute: async (_id, params) => { const result = await rpc(method, params as JsonValue); onResult?.(method, result); return { content: [{ type: "text", text: JSON.stringify(result) }], details: result }; },
   });
   const definitions: Array<[AgentCapability, AgentTool<any>]> = [
     ["ledger.search", tool("ledger_search", "Search durable ledger facts.", "ledger.search", Type.Object({ query: Type.String(), limit: Type.Optional(Type.Number()) }))],

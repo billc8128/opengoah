@@ -323,7 +323,7 @@ test("official Pi agent core worker completes a structured handoff through the p
   assert.equal(prepared.tools?.some((tool) => tool.name === "team_list"), false);
   assert.equal(prepared.tools?.some((tool) => tool.name === "ledger_search"), true);
   for (const name of ["read", "write", "edit", "bash", "handoff", "memory_append"]) assert.equal(prepared.tools?.some((tool) => tool.name === name), true, name);
-  assert.deepEqual(ledger.lastEvent("worker", "handoff.recorded")?.data, { observations: ["pi core ran"], results: ["ok"], nextSteps: [] });
+  assert.deepEqual(ledger.lastEvent("worker", "handoff.recorded")?.data, { goalId: "root", goalRevision: 0, recordRevision: 1, outcome: "progress", evidence: [2] });
   ledger.close();
 });
 

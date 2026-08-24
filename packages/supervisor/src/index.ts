@@ -19,8 +19,10 @@ import {
   type DelegationResult,
   type GoalSnapshot,
   type GoalCompletionRequest,
+  type GoalHandoff,
   type GoalPhase,
   type JsonValue,
+  type Handoff,
   type Ledger,
   type MailSnapshot,
   memoryStream,
@@ -284,16 +286,17 @@ export class Supervisor {
       }
 
       if (turn.goalBinding) this.#validateGoalTurnRecord(running, turn, workRecordRevisionAtStart);
+      const output = turn.goalBinding ? this.#goalWakeOutput(result.output, turn.goalBinding) : result.output;
 
-      this.#validateCeoHandoff(running, result.output);
+      this.#validateCeoHandoff(running, output);
 
-      const outgoingMail = result.output.mail.map((draft) => ({ id: randomUUID(), to: draft.to, from: running.agent, level: draft.level, body: draft.body, readAt: null }));
-      const schedule = result.output.nextWakeAt
-        ? { id: `schedule:${running.agent}`, agent: running.agent, nextWakeAt: result.output.nextWakeAt, reason: "handoff.next_steps", setBy: running.agent }
+      const outgoingMail = output.mail.map((draft) => ({ id: randomUUID(), to: draft.to, from: running.agent, level: draft.level, body: draft.body, readAt: null }));
+      const schedule = output.nextWakeAt
+        ? { id: `schedule:${running.agent}`, agent: running.agent, nextWakeAt: output.nextWakeAt, reason: "handoff.next_steps", setBy: running.agent }
         : null;
-      const handoffEvent = this.ledger.commitHandoff({ agent: running.agent, wakeId: running.id, ts: this.#now(), output: result.output, outgoingMail, schedule });
+      const handoffEvent = this.ledger.commitHandoff({ agent: running.agent, wakeId: running.id, ts: this.#now(), output, outgoingMail, schedule });
       this.ledger.finishWake(running.id, "done", this.#now());
-      if (this.#role(running.agent) !== "ceo" && (result.output.handoff.material || result.output.handoff.blocker) && this.#hasActiveRoot()) {
+      if (this.#role(running.agent) !== "ceo" && handoffTriggersCeo(output.handoff) && this.#hasActiveRoot()) {
         this.#enqueueTrigger("ceo", `child-handoff:${handoffEvent.seq}`);
       }
       if (this.#verifyMetricsAfterWake) {
@@ -478,7 +481,7 @@ export class Supervisor {
     const activeRoot = this.#hasActiveRoot();
     const hasChildMotion = this.teamList().some((member) => member.agent !== "ceo" && !["idle_unplanned", "retired"].includes(member.status));
     const hasReview = Boolean(output.nextWakeAt);
-    const hasBlocker = Boolean(output.handoff.blocker);
+    const hasBlocker = handoffBlocked(output.handoff);
     const asksHuman = output.mail.some((mail) => mail.to === "human" && (mail.level === "decision" || mail.level === "emergency"))
       || this.ledger.unreadMail("human").some((mail) => mail.from === "ceo" && (mail.level === "decision" || mail.level === "emergency"));
     if (idle.length === 0 && missingObservationGoalIds.length === 0 && (!activeRoot || hasChildMotion || hasReview || hasBlocker || asksHuman)) return;
@@ -497,6 +500,20 @@ export class Supervisor {
     if (goal.revision !== binding.goalRevision) throw new Error("Goal revision changed during the Turn");
     const record = this.ledger.workRecord(goal.id);
     if (!record || record.recordRevision <= revisionAtStart || record.updatedInTurn !== wake.id || record.goalRevision !== goal.revision) throw new Error("Goal-bound Turn must update its Work Record before handoff");
+  }
+
+  #goalWakeOutput(output: WakeOutput, binding: NonNullable<TurnContext["goalBinding"]>): WakeOutput {
+    const record = this.ledger.workRecord(binding.goalId);
+    if (!record) throw new Error("Goal Work Record is missing");
+    const legacy = "goalId" in output.handoff ? null : output.handoff;
+    const handoff: GoalHandoff = {
+      goalId: binding.goalId,
+      goalRevision: binding.goalRevision,
+      recordRevision: record.recordRevision,
+      outcome: "goalId" in output.handoff ? output.handoff.outcome : legacy?.blocker ? "blocked" : legacy?.material ? "completion_proposed" : "progress",
+      evidence: "goalId" in output.handoff && output.handoff.evidence.length ? output.handoff.evidence : record.evidence,
+    };
+    return { ...output, handoff };
   }
 
   #turnContext(wake: WakeSnapshot): TurnContext {
@@ -715,7 +732,7 @@ export function deriveTeam(ledger: Ledger, now = new Date().toISOString()): Team
     const nextWakeAt = schedules.filter((schedule) => schedule.agent === agent && schedule.nextWakeAt > now).map((schedule) => schedule.nextWakeAt).sort()[0] ?? null;
     const lastHandoff = [...handoffs].reverse().find((event) => event.actor === agent) ?? null;
     const blocker = lastHandoff && typeof lastHandoff.data === "object" && lastHandoff.data !== null && !Array.isArray(lastHandoff.data)
-      ? (lastHandoff.data as Record<string, JsonValue>).blocker
+      ? ((lastHandoff.data as Record<string, JsonValue>).blocker ?? ((lastHandoff.data as Record<string, JsonValue>).outcome === "blocked" ? "blocked" : null))
       : null;
     let status: TeamMemberView["status"];
     if (live.length === 0) status = "retired";
@@ -772,6 +789,8 @@ function minimalEnvironment(explicit: Record<string, string> = {}): NodeJS.Proce
 }
 function escapeHtml(value: string): string { return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"); }
 function interactionMailId(wake: WakeSnapshot): string | null { return wake.triggerRef.startsWith("interaction:") ? wake.triggerRef.slice("interaction:".length) : null; }
+function handoffBlocked(handoff: Handoff): boolean { return "goalId" in handoff ? handoff.outcome === "blocked" : Boolean(handoff.blocker); }
+function handoffTriggersCeo(handoff: Handoff): boolean { return "goalId" in handoff ? handoff.outcome === "blocked" || handoff.outcome === "completion_proposed" : Boolean(handoff.material || handoff.blocker); }
 function asRecord(value: JsonValue): Record<string, JsonValue> { if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("RPC params must be an object"); return value; }
 function numberArray(value: JsonValue | undefined): number[] { if (!Array.isArray(value) || value.some((item) => typeof item !== "number")) throw new Error("RPC evidence must be a number array"); return value as number[]; }
 function asChildGoal(value: JsonValue | undefined): { id: string; objective: string; observationMethod: string; verificationMethod: string; owner: string } {
