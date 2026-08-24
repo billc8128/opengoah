@@ -5,11 +5,11 @@ import { join } from "node:path";
 import test from "node:test";
 import type { RunnerSetupInteraction } from "goah-ledger-contract";
 import { JsonCredentialStore } from "./credential-store.js";
-import { createPiProcessRunner, piRunnerConfigurator } from "./configurator.js";
+import { createPiProcessRunner, piConfig, piEnvironment, piRunnerConfigurator } from "./configurator.js";
 import { createPiModel } from "./model-provider.js";
 
 test("Pi configurator owns provider, model, and auth choices", async () => {
-  const choices = ["openai", "gpt-5.5", "existing"];
+  const choices = ["openai", "gpt-5.5", "later"];
   const interaction: RunnerSetupInteraction = {
     select: async () => choices.shift() ?? null,
     input: async () => null,
@@ -18,6 +18,36 @@ test("Pi configurator owns provider, model, and auth choices", async () => {
   const config = await piRunnerConfigurator().setup(null, interaction) as { provider: string; model: string };
   assert.equal(config.provider, "openai");
   assert.equal(config.model, "gpt-5.5");
+});
+
+test("legacy pasted credentials are removed from environment-variable config without being echoed", () => {
+  const config = piConfig({ provider: "zai", model: "glm", apiKeyEnv: "secret-value-ZAI_API_KEY" });
+  assert.equal(config.apiKeyEnv, undefined);
+  const serialized = JSON.stringify(piEnvironment(config));
+  assert.doesNotMatch(serialized, /secret-value/);
+  assert.match(serialized, /ZAI_API_KEY/);
+});
+
+test("setup stores a pasted API key privately through a masked interaction", async () => {
+  const previous = process.env.GOAH_STATE_HOME;
+  const state = mkdtempSync(join(tmpdir(), "goah-setup-auth-"));
+  process.env.GOAH_STATE_HOME = state;
+  let secretPrompt = false;
+  try {
+    const interaction: RunnerSetupInteraction = {
+      select: async ({ title, choices }) => title.includes("provider") ? "zai" : title.includes("model") ? choices[0]!.value : title === "Authentication" ? "key" : null,
+      input: async ({ secret }) => { secretPrompt = Boolean(secret); return secret ? "private-test-key" : null; },
+      notify: () => undefined,
+    };
+    const config = await piRunnerConfigurator().setup(null, interaction) as { authMode: string; apiKeyEnv?: string };
+    assert.equal(secretPrompt, true);
+    assert.equal(config.authMode, "stored-key");
+    assert.equal(config.apiKeyEnv, undefined);
+    const stored = await new JsonCredentialStore(join(state, "auth.json")).read("zai") as { type: string; key?: string };
+    assert.deepEqual(stored, { type: "api_key", key: "private-test-key" });
+  } finally {
+    if (previous === undefined) delete process.env.GOAH_STATE_HOME; else process.env.GOAH_STATE_HOME = previous;
+  }
 });
 
 test("Pi ProcessRunner keeps the full credential store outside the worker environment", () => {

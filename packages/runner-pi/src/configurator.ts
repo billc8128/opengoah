@@ -16,6 +16,7 @@ export interface PiRunnerConfig {
   authFile?: string;
   fauxHandoff?: JsonValue;
   api?: "openai-completions" | "openai-responses" | "anthropic-messages";
+  authMode?: "oauth" | "stored-key" | "environment" | "local" | "unconfigured";
 }
 
 export function piRunnerConfigurator(): RunnerConfigurator {
@@ -23,6 +24,7 @@ export function piRunnerConfigurator(): RunnerConfigurator {
     describe: () => ({ id: "pi", name: "Pi", description: "Direct multi-provider model runner", commands: [{ name: "model", description: "List or switch provider/model" }, { name: "auth", description: "Inspect, login, or logout provider credentials" }] }),
     setup: setupPi,
     doctor: doctorPi,
+    summarize: summarizePi,
     runCommand: runPiCommand,
   };
 }
@@ -47,42 +49,72 @@ export function createPiProcessRunner(configValue: JsonValue, root: string): Pro
 }
 
 async function setupPi(current: JsonValue | null, interaction: RunnerSetupInteraction): Promise<JsonValue | null> {
+  const legacyCredential = Boolean(current && typeof current === "object" && !Array.isArray(current) && typeof current.apiKeyEnv === "string" && !isShellIdentifier(current.apiKeyEnv));
   const before = current ? piConfig(current) : null;
   const providers = [...providerCatalog(), { id: "custom", name: "Custom endpoint", modelCount: 0, oauth: false, apiKey: true, local: false }, { id: "faux", name: "Offline demo", modelCount: 1, oauth: false, apiKey: false, local: true }];
-  const provider = await interaction.select({ title: "Pi provider", description: "Type to filter. Authentication and models are owned by the Pi runner.", choices: providers.map((entry) => ({ value: entry.id, label: entry.name, description: `${entry.id}${entry.oauth ? " · OAuth" : ""}${entry.local ? " · local" : ` · ${entry.modelCount} models`}` })) });
+  const provider = await interaction.select({ title: "Choose a provider", description: "Search by company, provider ID, or capability.", progress: { current: 2, total: 5 }, choices: providers.map((entry) => ({ value: entry.id, label: entry.name, description: `${entry.id}${entry.oauth ? " · OAuth" : ""}${entry.local ? " · local" : ` · ${entry.modelCount} models`}` })) });
   if (!provider) return null;
-  const providerId = provider === "custom" ? await interaction.input({ title: "Custom provider", prompt: "Provider ID", initial: before?.provider ?? "custom" }) : provider;
+  const providerId = provider === "custom" ? await interaction.input({ title: "Custom provider", description: "A stable ID used only inside this Runner Profile.", prompt: "Provider ID", initial: before?.provider ?? "custom", progress: { current: 2, total: 5 } }) : provider;
   if (!providerId) return null;
   const catalog = ["ollama", "lm-studio", "llama.cpp"].includes(providerId) ? await discoverLocalModels(providerId) : modelCatalog(providerId);
-  const selected = catalog.length ? await interaction.select({ title: "Pi model", description: `${provider} · type to filter`, choices: [...catalog.map((model) => ({ value: model.id, label: model.name, description: `${model.id} · ${Math.round(model.contextWindow / 1000)}k${model.reasoning ? " · reasoning" : ""}` })), { value: "__custom__", label: "Custom model…" }] }) : "__custom__";
+  const selected = catalog.length ? await interaction.select({ title: "Choose a model", description: `${providerId} · search by model name or ID.`, progress: { current: 3, total: 5 }, choices: [...catalog.map((model) => ({ value: model.id, label: model.name, description: `${model.id} · ${Math.round(model.contextWindow / 1000)}k${model.reasoning ? " · reasoning" : ""}` })), { value: "__custom__", label: "Custom model…" }, { value: "__back__", label: "Back to providers" }] }) : "__custom__";
   if (!selected) return null;
-  const model = selected === "__custom__" ? await interaction.input({ title: "Pi model", prompt: "Model ID", ...(before?.provider === provider ? { initial: before.model } : {}) }) : selected;
+  if (selected === "__back__") return setupPi(current, interaction);
+  const model = selected === "__custom__" ? await interaction.input({ title: "Model ID", description: `Enter the model identifier accepted by ${providerId}.`, prompt: "Model", progress: { current: 3, total: 5 }, ...(before?.provider === providerId ? { initial: before.model } : {}) }) : selected;
   if (!model) return null;
-  const config: PiRunnerConfig = { provider: providerId, model, thinking: before?.thinking ?? (providerId === "faux" ? "off" : "medium"), authFile: defaultAuthFile() };
+  const config: PiRunnerConfig = { provider: providerId, model, thinking: before?.thinking ?? (providerId === "faux" ? "off" : "medium"), authFile: defaultAuthFile(), authMode: providerId === "faux" || ["ollama", "lm-studio", "llama.cpp"].includes(providerId) ? "local" : "unconfigured" };
 
   const descriptor = providers.find((entry) => entry.id === provider)!;
-  if (descriptor.oauth) {
-    const auth = await interaction.select({ title: "Authentication", description: "Stored OAuth is preferred; API keys may remain in environment variables.", choices: [{ value: "existing", label: "Use existing credentials" }, { value: "login", label: "Sign in with OAuth" }, { value: "env", label: "Use API key environment variable" }] });
-    if (!auth) return null;
-    if (auth === "login") await oauthLogin(provider, config.authFile!, interaction);
-    if (auth === "env") { const value = await interaction.input({ title: "API key", description: "Only the variable name is stored.", prompt: "Environment variable", initial: defaultApiKeyEnv(provider) }); if (value) config.apiKeyEnv = value; }
-  } else if (!descriptor.local && provider !== "faux") {
-    const value = await interaction.input({ title: "API key", description: "Only the variable name is stored.", prompt: "Environment variable", initial: defaultApiKeyEnv(provider) }); if (value) config.apiKeyEnv = value;
+  if (!descriptor.local && provider !== "faux") {
+    const auth = await configureAuthentication(providerId, descriptor, config.authFile!, interaction, legacyCredential);
+    if (auth === "back") return setupPi(current, interaction);
+    Object.assign(config, auth);
   }
 
   if (["ollama", "lm-studio", "llama.cpp"].includes(provider)) {
-    const baseUrl = await interaction.input({ title: "Local endpoint", prompt: "OpenAI-compatible base URL", initial: localBaseUrl(provider) }); if (baseUrl) config.baseUrl = baseUrl;
-    config.contextWindowTokens = positive(await interaction.input({ title: "Context window", prompt: "Tokens", initial: "128000" }), 128_000);
-    config.maxOutputTokens = positive(await interaction.input({ title: "Max output", prompt: "Tokens", initial: "16384" }), 16_384);
+    const baseUrl = await interaction.input({ title: "Local endpoint", prompt: "OpenAI-compatible base URL", initial: localBaseUrl(provider), progress: { current: 4, total: 5 } }); if (baseUrl) config.baseUrl = baseUrl;
+    config.contextWindowTokens = positive(await interaction.input({ title: "Context window", prompt: "Tokens", initial: "128000", progress: { current: 4, total: 5 } }), 128_000);
+    config.maxOutputTokens = positive(await interaction.input({ title: "Max output", prompt: "Tokens", initial: "16384", progress: { current: 4, total: 5 } }), 16_384);
   }
   if (provider === "custom") {
-    const baseUrl = await interaction.input({ title: "Custom endpoint", prompt: "Base URL" }); if (!baseUrl) return null; config.baseUrl = baseUrl;
-    const api = await interaction.select({ title: "Wire API", choices: [{ value: "openai-completions", label: "OpenAI Chat Completions" }, { value: "openai-responses", label: "OpenAI Responses" }, { value: "anthropic-messages", label: "Anthropic Messages" }] });
+    const baseUrl = await interaction.input({ title: "Custom endpoint", prompt: "Base URL", progress: { current: 4, total: 5 } }); if (!baseUrl) return null; config.baseUrl = baseUrl;
+    const api = await interaction.select({ title: "Wire API", progress: { current: 4, total: 5 }, choices: [{ value: "openai-completions", label: "OpenAI Chat Completions" }, { value: "openai-responses", label: "OpenAI Responses" }, { value: "anthropic-messages", label: "Anthropic Messages" }] });
     if (!api) return null; config.api = api as NonNullable<PiRunnerConfig["api"]>;
-    config.contextWindowTokens = positive(await interaction.input({ title: "Context window", prompt: "Tokens", initial: "128000" }), 128_000);
-    config.maxOutputTokens = positive(await interaction.input({ title: "Max output", prompt: "Tokens", initial: "16384" }), 16_384);
+    config.contextWindowTokens = positive(await interaction.input({ title: "Context window", prompt: "Tokens", initial: "128000", progress: { current: 4, total: 5 } }), 128_000);
+    config.maxOutputTokens = positive(await interaction.input({ title: "Max output", prompt: "Tokens", initial: "16384", progress: { current: 4, total: 5 } }), 16_384);
   }
   return config as unknown as JsonValue;
+}
+
+async function configureAuthentication(provider: string, descriptor: { oauth: boolean; apiKey: boolean }, authFile: string, interaction: RunnerSetupInteraction, legacyCredential: boolean): Promise<Partial<PiRunnerConfig> | "back"> {
+  const store = new JsonCredentialStore(authFile);
+  const existing = await store.read(provider);
+  const choices = [
+    ...(existing ? [{ value: "existing", label: "Use saved credentials", description: existing.type === "oauth" ? "OAuth session" : "Stored API key" }] : []),
+    ...(descriptor.oauth ? [{ value: "oauth", label: "Sign in with OAuth", description: "Opens the provider login flow" }] : []),
+    ...(descriptor.apiKey ? [{ value: "key", label: "Paste an API key", description: "Stored privately and masked while typing" }] : []),
+    { value: "env", label: "Use an environment variable", description: `Default: ${defaultApiKeyEnv(provider)}` },
+    { value: "later", label: "Configure later", description: "Save now; runs will remain blocked" },
+    { value: "back", label: "Back to providers" },
+  ];
+  const description = legacyCredential ? "A pasted key was found in the old environment-variable field. It will be removed from config; rotate that key, then authenticate again here." : "Choose how this runner should authenticate. Secrets never enter goah.config.json.";
+  const choice = await interaction.select({ title: "Authentication", description, progress: { current: 4, total: 5 }, choices });
+  if (!choice || choice === "back") return "back";
+  if (choice === "existing") return { authMode: existing?.type === "oauth" ? "oauth" : "stored-key" };
+  if (choice === "oauth") { await oauthLogin(provider, authFile, interaction); return { authMode: "oauth" }; }
+  if (choice === "key") {
+    const key = await interaction.input({ title: "API key", description: "The value is masked and saved only in the Runner credential store.", prompt: "Paste key", secret: true, progress: { current: 4, total: 5 } });
+    if (!key) return "back";
+    await store.modify(provider, async () => ({ type: "api_key", key }));
+    return { authMode: "stored-key" };
+  }
+  if (choice === "env") {
+    const name = await interaction.input({ title: "Environment variable", description: "Enter a variable name, not the key itself.", prompt: "Variable", initial: defaultApiKeyEnv(provider), progress: { current: 4, total: 5 } });
+    if (!name) return "back";
+    if (!isShellIdentifier(name)) throw new Error("Environment variable names use letters, numbers, and underscores, and cannot contain an API key. Choose “Paste an API key” for a secret value.");
+    return { authMode: "environment", apiKeyEnv: name };
+  }
+  return { authMode: "unconfigured" };
 }
 
 async function doctorPi(value: JsonValue, context?: { root: string }): Promise<RunnerDiagnostic[]> {
@@ -93,6 +125,19 @@ async function doctorPi(value: JsonValue, context?: { root: string }): Promise<R
   return [
     { ok: true, name: "model", detail: `${config.provider}/${config.model} · context ${configured.model.contextWindow} · output ${configured.model.maxTokens}` },
     { ok: Boolean(auth), name: "auth", detail: auth?.source ?? `No credentials for ${config.provider}; use runner auth login or configure ${config.apiKeyEnv ?? defaultApiKeyEnv(config.provider)}` },
+  ];
+}
+
+function summarizePi(value: JsonValue): Array<{ label: string; value: string }> {
+  const config = piConfig(value);
+  const auth = config.authMode === "oauth" ? "OAuth" : config.authMode === "stored-key" ? "Stored API key" : config.authMode === "environment" ? `Environment · ${config.apiKeyEnv ?? defaultApiKeyEnv(config.provider)}` : config.authMode === "local" ? "Local · no credentials" : "Not configured";
+  return [
+    { label: "Runner", value: "Pi" },
+    { label: "Provider", value: config.provider },
+    { label: "Model", value: config.model },
+    { label: "Thinking", value: config.thinking ?? "off" },
+    { label: "Authentication", value: auth },
+    ...(config.baseUrl ? [{ label: "Endpoint", value: config.baseUrl }] : []),
   ];
 }
 
@@ -154,8 +199,10 @@ function authEvent(event: AuthEvent, interaction: RunnerSetupInteraction): void 
 
 export function piConfig(value: JsonValue): PiRunnerConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Pi runner configuration is missing.");
-  const config = value as unknown as Partial<PiRunnerConfig>;
+  const config = { ...(value as unknown as Partial<PiRunnerConfig>) };
   if (!config.provider || !config.model) throw new Error("Pi runner requires provider and model. Run `goah runner setup`.");
+  if (config.apiKeyEnv && !isShellIdentifier(config.apiKeyEnv)) delete config.apiKeyEnv;
+  if (!config.authMode) config.authMode = ["faux", "ollama", "lm-studio", "llama.cpp"].includes(config.provider) ? "local" : config.apiKeyEnv ? "environment" : "unconfigured";
   return config as PiRunnerConfig;
 }
 export function piEnvironment(config: PiRunnerConfig): Record<string, string> {
@@ -178,6 +225,7 @@ function workerEnvironment(config: PiRunnerConfig): Record<string, string> {
   return env;
 }
 function defaultApiKeyEnv(provider: string): string { const map: Record<string, string> = { anthropic: "ANTHROPIC_API_KEY", openai: "OPENAI_API_KEY", google: "GEMINI_API_KEY", openrouter: "OPENROUTER_API_KEY", xai: "XAI_API_KEY", groq: "GROQ_API_KEY", mistral: "MISTRAL_API_KEY", deepseek: "DEEPSEEK_API_KEY", nvidia: "NVIDIA_API_KEY", "github-copilot": "COPILOT_GITHUB_TOKEN", "kimi-coding": "KIMI_API_KEY" }; return map[provider] ?? `${provider.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`; }
+function isShellIdentifier(value: string): boolean { return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value); }
 function localBaseUrl(provider: string): string { return provider === "ollama" ? "http://127.0.0.1:11434/v1" : provider === "lm-studio" ? "http://127.0.0.1:1234/v1" : "http://127.0.0.1:8080/v1"; }
 function positive(value: string | null, fallback: number): number { const parsed = Number(value); return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback; }
 async function discoverLocalModels(provider: string): Promise<ReturnType<typeof modelCatalog>> {

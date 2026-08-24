@@ -53,32 +53,16 @@ export function welcomeSnapshot(stateDir: string, runner: RunnerDisplay): Welcom
   } finally { db.close(); }
 }
 
-/** Render the snapshot into a fixed-height block of plain lines (fixed slots keep layout stable). */
+/** Render only meaningful state; empty workspaces stay compact. */
 export function renderWelcome(snapshot: WelcomeSnapshot, hasHistory: boolean): string[] {
   const lines: string[] = [];
   lines.push(`Goah — ${hasHistory ? "Welcome back!" : "Welcome!"}  ${snapshot.runner ? `${snapshot.runner} · ${snapshot.target}` : "(unconfigured)"}`);
   lines.push("");
-  lines.push(snapshot.root ? `Goal: ${snapshot.root.objective} [${snapshot.root.phase}]` : "Goal: none yet — type one to start");
-  lines.push("");
-  lines.push("Agents:");
-  for (let index = 0; index < WELCOME_TEAM_SLOTS; index += 1) {
-    const member = snapshot.team[index];
-    lines.push(member ? `  ${member.agent} — ${member.status}` : "  ·");
-  }
-  lines.push("");
-  lines.push("Recent work:");
-  for (let index = 0; index < WELCOME_HANDOFF_SLOTS; index += 1) {
-    const handoff = snapshot.handoffs[index];
-    lines.push(handoff ? `  ${handoff.agent}: ${handoff.result || "(handed off)"}` : "  ·");
-  }
-  lines.push("");
-  lines.push("Conversation:");
-  for (let index = 0; index < WELCOME_CONVERSATION_SLOTS; index += 1) {
-    const item = snapshot.conversation[index];
-    lines.push(item ? `  ${item.speaker}: ${item.text}` : "  ·");
-  }
-  lines.push("");
-  lines.push("Tips: type a goal · /model ID switches · /setup re-runs onboarding · /status inspects · /quit exits");
+  lines.push(snapshot.root ? `Goal  ${snapshot.root.objective}  [${snapshot.root.phase}]` : "Ready for your first goal. Type it below and press Enter.");
+  if (snapshot.team.length) { lines.push("", "Agents", ...snapshot.team.map((member) => `  ${member.agent}  ${member.status}`)); }
+  if (snapshot.handoffs.length) { lines.push("", "Recent work", ...snapshot.handoffs.map((handoff) => `  ${handoff.agent}: ${handoff.result || "handed off"}`)); }
+  if (snapshot.conversation.length) { lines.push("", "Conversation", ...snapshot.conversation.map((item) => `  ${item.speaker}: ${item.text}`)); }
+  lines.push("", "Commands  /model picker · /setup · /status · /stop · /quit");
   return lines;
 }
 

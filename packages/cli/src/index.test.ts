@@ -184,7 +184,7 @@ test("CLI revises and confirms a root through the resident Supervisor control so
     const revised = JSON.parse(invoke(directory, "goal-update", "live", "--objective", "Grow retained net revenue"));
     assert.equal(revised.observationMethod, null);
     assert.equal(JSON.parse(invoke(directory, "ceo", "status")).roots[0].objective, "Grow retained net revenue");
-    assert.match(invoke(directory, "Review the revised goal and propose a new observation method"), /ceo wake/);
+    assert.match(invoke(directory, "Review the revised goal and propose a new observation method"), /CEO started/);
   } finally {
     daemon.kill("SIGTERM");
     if (daemon.exitCode === null) await once(daemon, "close");

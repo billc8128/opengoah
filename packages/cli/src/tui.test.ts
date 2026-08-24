@@ -7,6 +7,7 @@ test("TUI routes ordinary text, queued follow-ups, and approvals", () => {
   assert.deepEqual(classifyTuiInput("correct the budget", true), { action: "queue", text: "correct the budget" });
   assert.equal(classifyTuiInput("/approve a --reason ok --evidence 1", false).action, "approval");
   assert.equal(classifyTuiInput("/stop", true).action, "stop");
+  assert.equal(classifyTuiInput("/model", false).action, "model");
   assert.equal(classifyTuiInput("/help", false).action, "help");
 });
 
@@ -18,4 +19,11 @@ test("TUI renders streamed assistant text and tool completion", () => {
   assert.equal(live, "working");
   assert.equal(completed, "done");
   assert.deepEqual(lines, ["✓ read completed"]);
+});
+
+test("TUI hides internal wake ids and credential-shaped environment errors", () => {
+  const lines: string[] = [];
+  renderFrame({ type: "accepted", wakeId: "private-wake-id", value: {} }, (line) => lines.push(line));
+  renderFrame({ type: "event", event: { type: "wake.abnormal_reason", data: { reason: "environment variable is missing: pasted-secret-ZAI_API_KEY (set it)" } } }, (line) => lines.push(line));
+  assert.deepEqual(lines, ["CEO started", "! environment variable is missing: [REDACTED] (set it)"]);
 });

@@ -51,9 +51,10 @@ export type AgentCapability = "ledger.search" | "mail.send" | "schedule.set" | "
 export interface RunnerProfile { id: string; runner: string; config: JsonValue; credentialRefs?: string[] }
 export interface AgentProfile { agent: string; role: AgentRole; capabilities?: AgentCapability[]; systemPrompt?: string; runnerProfile?: string }
 export interface RunnerChoice { value: string; label: string; description?: string }
+export interface RunnerSetupProgress { current: number; total: number }
 export interface RunnerSetupInteraction {
-  select(input: { title: string; description?: string; choices: RunnerChoice[] }): Promise<string | null>;
-  input(input: { title: string; description?: string; prompt: string; initial?: string }): Promise<string | null>;
+  select(input: { title: string; description?: string; choices: RunnerChoice[]; progress?: RunnerSetupProgress }): Promise<string | null>;
+  input(input: { title: string; description?: string; prompt: string; initial?: string; secret?: boolean; progress?: RunnerSetupProgress }): Promise<string | null>;
   notify(message: string): void;
   openUrl?(url: string): void;
 }
@@ -64,6 +65,7 @@ export interface RunnerConfigurator {
   describe(): RunnerManifest;
   setup(current: JsonValue | null, interaction: RunnerSetupInteraction): Promise<JsonValue | null>;
   doctor(config: JsonValue, context?: { root: string }): Promise<RunnerDiagnostic[]>;
+  summarize?(config: JsonValue): Array<{ label: string; value: string }>;
   runCommand?(command: string, args: string[], config: JsonValue, interaction: RunnerSetupInteraction): Promise<RunnerCommandResult>;
 }
 export interface RunRequest { wake: WakeSnapshot; context: JsonValue; now(): string; emit(event: RunnerTraceEvent): void; rpc?(method: AgentCapability, params: JsonValue): Promise<JsonValue> }

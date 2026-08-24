@@ -5,8 +5,15 @@ import type { JsonValue, RunnerProfile, RunnerSetupInteraction } from "goah-ledg
 import { readDefaultRunnerProfile, updateWorkspaceRunnerProfile, writeDefaultRunnerProfile } from "./index.js";
 import { stdioQueue } from "./prompt-queue.js";
 import { runnerManifests, runnerPlugin } from "./runner-registry.js";
+import { SearchableSelect } from "./searchable-select.js";
+import { SecretInput, setInitialValue } from "./secret-input.js";
 
 export interface WizardResult { profile: RunnerProfile | null }
+
+export function renderSetupHeader(title: string, description = "", progress?: { current: number; total: number }): string {
+  const meter = progress ? `${"━".repeat(progress.current)}${"─".repeat(Math.max(0, progress.total - progress.current))}  ${progress.current}/${progress.total}` : "";
+  return ["", `\x1b[1m GOAH SETUP\x1b[22m${meter ? `  \x1b[36m${meter}\x1b[0m` : ""}`, `\x1b[1m ${title}\x1b[22m`, description ? `\x1b[2m ${description}\x1b[22m` : "", ""].join("\n");
+}
 
 const theme: SelectListTheme = {
   selectedPrefix: (text) => `\x1b[36m❯\x1b[0m ${text}`,
@@ -25,19 +32,21 @@ async function runTui(current: RunnerProfile | null): Promise<WizardResult> {
   const header = new Text("");
   let slot: Component | null = null;
   const replace = (component: Component): void => { if (slot) tui.removeChild(slot); slot = component; tui.addChild(component); tui.setFocus(component); tui.requestRender(); };
-  const setHeader = (title: string, description = ""): void => { header.setText(["", `\x1b[1m Goah setup — ${title}\x1b[22m`, description ? `\x1b[2m ${description}\x1b[22m` : "", ""].join("\n")); };
+  const setHeader = (title: string, description = "", progress?: { current: number; total: number }): void => { header.setText(renderSetupHeader(title, description, progress)); };
   const interaction: RunnerSetupInteraction = {
-    select: ({ title, description, choices }) => new Promise((resolve) => {
-      setHeader(title, description);
-      const list = new SelectList(choices as SelectItem[], 10, theme);
+    select: ({ title, description, choices, progress }) => new Promise((resolve) => {
+      setHeader(title, description, progress);
+      const list = choices.length >= 8
+        ? new SearchableSelect(choices as SelectItem[], 9, theme, { searchLabel: `Search ${title.toLowerCase()}`, emptyLabel: `No matching ${title.toLowerCase()}` })
+        : new SelectList(choices as SelectItem[], 10, theme);
       list.onSelect = (item) => resolve(item.value);
       list.onCancel = () => resolve(null);
       replace(list);
     }),
-    input: ({ title, description, prompt, initial }) => new Promise((resolve) => {
-      setHeader(title, `${description ?? ""}\n ${prompt}`.trim());
-      const input = new Input();
-      if (initial) input.setValue(initial);
+    input: ({ title, description, prompt, initial, secret, progress }) => new Promise((resolve) => {
+      setHeader(title, `${description ?? ""}\n ${prompt}`.trim(), progress);
+      const input = secret ? new SecretInput() : new Input();
+      if (initial) setInitialValue(input, initial);
       input.onSubmit = (line) => resolve(line.trim());
       input.onEscape = () => resolve(null);
       replace(input);
@@ -52,11 +61,13 @@ async function runTui(current: RunnerProfile | null): Promise<WizardResult> {
     while (true) {
       try {
         const manifests = runnerManifests();
-        const runner = await interaction.select({ title: "Runner", description: "The Runner owns its model, provider, authentication, and execution semantics.", choices: manifests.map((item) => ({ value: item.id, label: item.name, description: item.description })) });
+        const runner = await interaction.select({ title: "Choose a runner", description: "A runner owns execution, models, and authentication.", progress: { current: 1, total: 5 }, choices: manifests.map((item) => ({ value: item.id, label: item.name, description: item.description })) });
         if (!runner) { resolve({ profile: null }); return; }
         const config = await runnerPlugin(runner).configurator.setup(current?.runner === runner ? current.config : null, interaction);
         if (config === null) { resolve({ profile: null }); return; }
-        const confirmation = await interaction.select({ title: "Confirm", description: `${runner} runner\n ${summarize(config)}`, choices: [{ value: "save", label: "Save runner profile" }, { value: "cancel", label: "Cancel" }] });
+        const summary = runnerPlugin(runner).configurator.summarize?.(config) ?? summarize(config);
+        const confirmation = await interaction.select({ title: "Review", description: summary.map((item) => `${item.label.padEnd(12)} ${item.value}`).join("\n "), progress: { current: 5, total: 5 }, choices: [{ value: "save", label: "Save and continue" }, { value: "back", label: "Back" }, { value: "cancel", label: "Cancel without saving" }] });
+        if (confirmation === "back") continue;
         resolve({ profile: confirmation === "save" ? { id: current?.id ?? "default", runner, config } : null });
         return;
       } catch (error) {
@@ -68,6 +79,7 @@ async function runTui(current: RunnerProfile | null): Promise<WizardResult> {
   tui.start();
   const result = await promise;
   tui.stop();
+  process.stdout.write("\x1b[2J\x1b[H");
   return result;
 }
 
@@ -96,9 +108,9 @@ export function applyWizardResult(result: WizardResult, configPath: string | nul
   if (configPath) updateWorkspaceRunnerProfile(configPath, result.profile);
 }
 
-function summarize(config: JsonValue): string {
-  if (!config || typeof config !== "object" || Array.isArray(config)) return String(config);
-  return Object.entries(config).filter(([key]) => !/key|token|secret|password/i.test(key)).map(([key, value]) => `${key}: ${String(value)}`).join("\n ");
+function summarize(config: JsonValue): Array<{ label: string; value: string }> {
+  if (!config || typeof config !== "object" || Array.isArray(config)) return [{ label: "Configuration", value: String(config) }];
+  return Object.entries(config).filter(([key]) => !/key|token|secret|password|authFile/i.test(key)).map(([label, value]) => ({ label, value: String(value) }));
 }
 function openUrl(url: string): void {
   const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";

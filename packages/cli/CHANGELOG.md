@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.2
+
+- Added visible fuzzy search to long Runner setup selectors instead of relying on the non-functional “type to filter” hint.
+- Added staged setup headers, masked secret input, meaningful confirmation summaries, compact first-run empty state, safe `/model` routing, and credential-safe error rendering.
+
 ## 0.10.1
 
 - Added installation-aware `goah update` so global and `~/.goah-tool`-style prefix installs can update themselves safely.

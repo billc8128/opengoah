@@ -18,7 +18,7 @@ export function classifyTuiInput(value: string, busy: boolean): { action: TuiInp
   if (text === "/help") return { action: "help", text };
   if (text === "/status") return { action: "status", text };
   if (text === "/stop") return { action: "stop", text };
-  if (text.startsWith("/model ")) return { action: "model", text };
+  if (text === "/model" || text.startsWith("/model ")) return { action: "model", text };
   if (text === "/setup") return { action: "setup", text };
   if (text.startsWith("/goal ") || text.startsWith("/observe ")) return { action: "goal", text };
   if (text.startsWith("/approve ") || text.startsWith("/reject ")) return { action: "approval", text };
@@ -74,16 +74,23 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
       if (next) void send(next);
     }
   };
+  const launchSetup = async (): Promise<void> => {
+    if (busy.active) { push("Wait for the current wake or use /stop before changing Runner configuration."); return; }
+    statusView.setText("Opening setup…");
+    tui.stop();
+    try { await runSetupReload(configPath, stateDir, push); }
+    finally { if (!exiting) { tui.start(); tui.requestRender(true); statusView.setText("Ready · Enter sends · Ctrl+C detaches · /help lists commands"); } }
+  };
 
   input.onSubmit = (line) => {
     const { action, text } = classifyTuiInput(line, busy.active);
     input.setValue("");
     if (action === "quit") { exiting = true; activeStream?.abort(); tui.stop(); resolveExit(); return; }
-    if (action === "help") { push("Commands: /status · /stop · /model TARGET · /setup · /goal TEXT · /observe TEXT · /approve ID --reason TEXT --evidence SEQ · /reject … · /quit"); return; }
+    if (action === "help") { push("Commands: /status · /stop · /model opens picker · /model PROVIDER/MODEL switches directly · /setup · /goal TEXT · /observe TEXT · /approve · /reject · /quit"); return; }
     if (action === "status") { void printStatus(stateDir, push); return; }
     if (action === "stop") { void stopCeoWake(stateDir, push); return; }
-    if (action === "model") { void switchModelCommand(text, configPath, stateDir, push); return; }
-    if (action === "setup") { void runSetupReload(configPath, stateDir, push); return; }
+    if (action === "model") { if (text === "/model") void launchSetup(); else void switchModelCommand(text, configPath, stateDir, push); return; }
+    if (action === "setup") { void launchSetup(); return; }
     if (action === "goal") { void slashGoal(text, stateDir, push); return; }
     if (action === "approval") { void slashApprove(text, stateDir, push); return; }
     if (action === "queue") { queued.push(text); push(`↳ queued follow-up: ${text}`); statusView.setText(`Working · ${queued.length} queued`); return; }
@@ -141,8 +148,8 @@ function frameToLine(frame: ControlFrame): string | null {
 }
 /** Render one control-protocol frame into a transcript line. */
 export function renderFrame(frame: ControlFrame, push: (line: string) => void, appendLive: (text: string) => void = push, commitLive: (text: string) => void = push): void {
-  if (frame.type === "error") { push(`! ${frame.error}`); return; }
-  if (frame.type === "accepted") { push(`[ceo wake ${frame.wakeId}]`); return; }
+  if (frame.type === "error") { push(`! ${safeError(frame.error)}`); return; }
+  if (frame.type === "accepted") { push("CEO started"); return; }
   if (frame.type !== "event") return;
   const event = frame.event;
   if (!event || typeof event !== "object" || Array.isArray(event)) return;
@@ -163,9 +170,9 @@ export function renderFrame(frame: ControlFrame, push: (line: string) => void, a
     const results = Array.isArray(data.results) ? data.results : [];
     for (const result of results) if (typeof result === "string") push(`✓ ${result}`);
   } else if (record.type === "ceo.human_requested") {
-    push(`? human decision requested: ${compact(record.data ?? {})}`);
+    push(`? human decision requested: ${safeError(compact(record.data ?? {}))}`);
   } else if (record.type === "wake.abnormal_reason") {
-    push(`! ${JSON.stringify(record.data)}`);
+    push(`! ${safeError(typeof data.reason === "string" ? data.reason : "Wake failed")}`);
   }
 }
 
@@ -235,6 +242,11 @@ function compact(value: unknown): string {
   const json = JSON.stringify(value) ?? "";
   return json.length > 160 ? `${json.slice(0, 157)}…` : json;
 }
+function safeError(value: string): string {
+  return value
+    .replace(/environment variable is missing:\s*[^\s(]+/gi, "environment variable is missing: [REDACTED]")
+    .replace(/(?:sk|key|token)[-_][A-Za-z0-9._-]{12,}/gi, "[REDACTED]");
+}
 
 function messageText(value: unknown): string {
   if (typeof value === "string") return value;
@@ -255,7 +267,6 @@ async function switchModelCommand(text: string, configPath: string, stateDir: st
 
 /** /setup — re-enter the wizard, then reload the daemon so changes apply to the next wake. */
 async function runSetupReload(configPath: string, stateDir: string, push: (line: string) => void): Promise<void> {
-  push("Leaving the TUI for setup — it returns after the wizard finishes.");
   const result = await runSetupWizard();
   if (!result.profile) { push("setup cancelled; nothing changed"); return; }
   applyWizardResult(result, configPath);

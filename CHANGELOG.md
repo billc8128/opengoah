@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.2
+
+- Provider and model setup lists now use a visible fuzzy-search field across names, IDs, and descriptions, with live result counts, query-aware empty states, and two-stage Escape behavior (clear, then cancel).
+- Reworked setup into an explicit five-step flow with progress, back/retry paths, concise review output, masked API-key entry, private key storage, and validation that prevents pasted secrets from becoming environment-variable names.
+- Setup now clears its screen before the CEO TUI starts; fresh workspaces omit empty placeholder sections, `/model` opens configuration instead of waking the CEO, and runtime errors hide internal wake IDs and credential-shaped values.
+
 ## 0.10.1
 
 - Added `goah update`, with `--check`, `--dry-run`, and explicit `--version`; it detects global npm versus custom-prefix installations, refuses to mutate source checkouts, and verifies the installed version after npm completes.
