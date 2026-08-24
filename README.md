@@ -89,6 +89,15 @@ goah "Launch a profitable store"
 goah --continue
 ```
 
+After the first install, update in place without remembering how npm was prefixed:
+
+```bash
+goah update --check
+goah update
+```
+
+`goah update` preserves global npm installs and custom-prefix installs such as `~/.goah-tool`. It never invokes `sudo`; permission failures are reported with the exact npm command. Use `--dry-run` to inspect the command or `--version X.Y.Z` to install an explicit version.
+
 The global CLI is the default product path: after installation, `goah` works from any directory and initializes that directory as its local workspace. For TypeScript library integration instead, install `@goah/cli` in the project and use its documented subpath exports.
 
 The normal product flow is one human objective through CEO. Lower-level Goal controls remain available for inspection, extensions, and human root authority:

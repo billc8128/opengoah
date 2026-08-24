@@ -9,6 +9,7 @@ import { memoryStream, type JsonValue, type RunnerCommandResult, type RunnerProf
 import { controlAvailable, createRuntime, diagnoseConfig, exportSession, listSessions, loadConfig, readConsoleMetadata, readDefaultRunnerProfile, replayWakeSession, requestControl, runControlServer, runWebConsole, showSession, showSessionContext, statusSnapshot, streamControl, streamEvents, SupervisorLock, updateWorkspaceRunnerProfile, writeDefaultConfig, writeDefaultRunnerProfile, type ConsoleMetadata, type ControlFrame, type ControlRequest, type GoahConfig } from "./index.js";
 import { runnerPlugin } from "./runner-registry.js";
 import { stdioQueue } from "./prompt-queue.js";
+import { runUpdate } from "./update.js";
 const args = normalizeArgs(process.argv.slice(2));
 
 try {
@@ -22,6 +23,7 @@ async function main(): Promise<void> {
   const rawCommand = args[0];
   if (["help", "--help", "-h"].includes(rawCommand ?? "")) { printHelp(); return; }
   if (["version", "--version", "-V"].includes(rawCommand ?? "")) { console.log(packageVersion()); return; }
+  if (rawCommand === "update") { await runUpdate({ check: flag("--check"), dryRun: flag("--dry-run"), ...(option("--version") ? { target: option("--version")! } : {}) }); return; }
   const typo = rawCommand && !rawCommand.startsWith("-") && !knownCommand(rawCommand) ? closestCommand(rawCommand) : null;
   if (typo && args.length === 1 && !rawCommand!.includes(" ")) throw new Error(`Unknown command "${rawCommand}". Did you mean "goah ${typo}"? Use "goah goal start --objective …" to start a goal explicitly.`);
   const interactive = rawCommand === undefined || rawCommand === "--continue" || Boolean(rawCommand && !rawCommand.startsWith("-") && !knownCommand(rawCommand));
@@ -244,6 +246,7 @@ function remoteRequest(command: string): ControlRequest | null {
 function printHelp(): void {
   console.log(`goah ["OBJECTIVE"] | goah --continue
 goah setup
+goah update [--check] [--dry-run] [--version VERSION]
 goah runner list|setup|status|doctor|profile
 goah auth list|status|login PROVIDER|logout PROVIDER
 goah model list [PROVIDER]
@@ -295,7 +298,7 @@ function normalizeArgs(values: string[]): string[] {
   if ((values[0] === "goal" || values[0] === "ceo") && values[1] && !values[1].startsWith("--")) return [`${values[0]}-${values[1]}`, ...values.slice(2)];
   return values;
 }
-function knownCommand(value: string): boolean { return ["setup", "help", "version", "runner", "daemon", "auth", "model", "init", "doctor", "web", "start", "run-once", "wake", "status", "session", "context", "events", "memory", "goal-list", "goal-show", "goal-create", "goal-update", "goal-pause", "goal-resume", "goal-complete", "goal-start", "ceo-send", "ceo-status", "ceo-inbox", "ceo-approve", "action-list", "approve", "reject", "dashboard"].includes(value); }
+function knownCommand(value: string): boolean { return ["setup", "help", "version", "update", "runner", "daemon", "auth", "model", "init", "doctor", "web", "start", "run-once", "wake", "status", "session", "context", "events", "memory", "goal-list", "goal-show", "goal-create", "goal-update", "goal-pause", "goal-resume", "goal-complete", "goal-start", "ceo-send", "ceo-status", "ceo-inbox", "ceo-approve", "action-list", "approve", "reject", "dashboard"].includes(value); }
 function asRecord(value: JsonValue): Record<string, JsonValue> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("expected an object"); return value; }
 function firstRecord(value: JsonValue | undefined): Record<string, JsonValue> | null { return Array.isArray(value) && value[0] && typeof value[0] === "object" && !Array.isArray(value[0]) ? value[0] : null; }
 function messageText(value: JsonValue | undefined): string {

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.1
+
+- Added `goah update`, with `--check`, `--dry-run`, and explicit `--version`; it detects global npm versus custom-prefix installations, refuses to mutate source checkouts, and verifies the installed version after npm completes.
+
 ## 0.10.0
 
 - Replaced model/provider fields in Goah Core with opaque Runner Profiles and a generic `RunnerConfigurator`; `RunnerRouter` selects a Runner per Agent without understanding its provider or model.

@@ -32,6 +32,8 @@ execFileSync("git", ["commit", "-m", "initial"], { cwd: app });
 
 const bin = join(app, "node_modules", ".bin", process.platform === "win32" ? "goah.cmd" : "goah");
 const run = (...args) => execFileSync(bin, args, { cwd: app, encoding: "utf8" });
+const updateDryRun = run("update", "--dry-run", "--version", "99.0.0");
+if (!updateDryRun.includes("npm install --prefix") || !updateDryRun.includes("@goah/cli@99.0.0")) throw new Error("packed CLI self-update did not preserve its prefix installation");
 run("init", "--provider", "faux", "--agent", "worker");
 const doctor = JSON.parse(run("doctor", "--json"));
 if (!doctor.ok) throw new Error(`packed CLI doctor failed: ${JSON.stringify(doctor)}`);

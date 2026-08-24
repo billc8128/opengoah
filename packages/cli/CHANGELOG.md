@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.1
+
+- Added installation-aware `goah update` so global and `~/.goah-tool`-style prefix installs can update themselves safely.
+
 ## 0.10.0
 
 - Added generic Runner Profile setup/management, Runner-owned auth/model commands, daemon lifecycle commands, human-readable doctor output, safe onboarding recovery, and complete TUI prompt routing/stream feedback.
