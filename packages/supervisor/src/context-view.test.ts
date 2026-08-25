@@ -15,14 +15,14 @@ test("recovery context selects semantic failure facts instead of raw transcript 
     event(203, "tool.called", { callId: "read", name: "read_file", arguments: {} }),
     event(204, "tool.completed", { callId: "read", result: { text: "ok" } }),
     event(205, "tool.called", { callId: "publish", name: "publish", arguments: { id: 1 } }),
-    event(206, "wake.abnormal_reason", { reason: "SIGKILL" }),
+    event(206, "turn.retry_started", { reason: "SIGKILL" }),
     event(207, "tool.completed", { callId: "publish", result: { outcome: "unknown", synthetic: true } }),
-    event(208, "transcript.interrupted", { reason: "runner interrupted" }),
+    event(208, "transcript.interrupted", { reason: "SIGKILL" }),
   ];
   const selected = selectRecoveryEvents(events);
-  assert.deepEqual(selected.map((item) => item.type), ["tool.called", "wake.abnormal_reason", "tool.completed", "transcript.interrupted"]);
+  assert.deepEqual(selected.map((item) => item.type), ["tool.called", "tool.completed", "transcript.interrupted"]);
   const view = composeActiveContext({
-    role: "child", capabilities: ["ledger.search"], systemPrompt: "worker", wake: { id: "retry", agent: "worker", triggerRef: "retry:failed", status: "running", leaseUntil: "2030-01-01T00:01:00.000Z", attempt: 1, startedAt: "2030-01-01T00:00:00.000Z", endedAt: null, enqueuedSeq: 1, leaseToken: "lease", runnerPid: 1 },
+    role: "child", capabilities: ["ledger.search"], systemPrompt: "worker", wake: { id: "retry", agent: "worker", triggerRef: "retry:failed", status: "consumed", attempt: 1, enqueuedSeq: 1, claimedAt:"2030-01-01T00:00:00.000Z",consumedAt:"2030-01-01T00:00:00.000Z",turnId:"turn" },
     goals: [], mail: [], actions: [], lastHandoff: null, teamHandoffs: [], team: [], revisionWarnings: [], recoveryEvents: selected,
   });
   assert.ok(view.text.length < 1_000);
@@ -45,7 +45,7 @@ test("working memory keeps the newest notes inside the budget without compacting
 test("active context renders working memory with evidence sequences", () => {
   const note = event(7, "memory.appended", { note: "integration tests fake-fail when the clock is mocked; approach A rejected: metric freshness" });
   const view = composeActiveContext({
-    role: "child", capabilities: ["memory.append"], systemPrompt: "worker", wake: { id: "w2", agent: "worker", triggerRef: "schedule:worker", status: "running", leaseUntil: "2030-01-01T00:01:00.000Z", attempt: 1, startedAt: "2030-01-01T00:00:00.000Z", endedAt: null, enqueuedSeq: 1, leaseToken: "lease", runnerPid: 1 },
+    role: "child", capabilities: ["memory.append"], systemPrompt: "worker", wake: { id: "w2", agent: "worker", triggerRef: "schedule:worker", status: "consumed", attempt: 1, enqueuedSeq: 1, claimedAt:"2030-01-01T00:00:00.000Z",consumedAt:"2030-01-01T00:00:00.000Z",turnId:"turn" },
     goals: [], mail: [], actions: [], lastHandoff: null, teamHandoffs: [], team: [], revisionWarnings: [], recoveryEvents: [], workingMemory: [note],
   });
   assert.match(view.text, /# Working memory\n\n- integration tests fake-fail[^\n]*\[event:7\]/);

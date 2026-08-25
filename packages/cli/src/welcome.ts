@@ -43,9 +43,10 @@ export function welcomeSnapshot(stateDir: string, runner: RunnerDisplay): Welcom
     const goals = db.prepare("SELECT id, objective, phase, parent_id, owner FROM goals").all() as unknown as GoalRow[];
     const root = goals.find((goal) => goal.parent_id === null && goal.owner === "ceo" && goal.phase !== "complete") ?? goals.find((goal) => goal.parent_id === null) ?? null;
     const wakeRows = db.prepare("SELECT agent, status FROM wakes ORDER BY enqueued_seq DESC").all() as unknown as Array<{ agent: string; status: string }>;
+    const turnRows=db.prepare("SELECT th.agent,t.status FROM turns t JOIN threads th ON th.id=t.thread_id ORDER BY t.started_at DESC").all() as unknown as Array<{agent:string;status:string}>;
     const childGoals = goals.filter((goal) => goal.parent_id !== null);
     const owners = [...new Set(childGoals.map((goal) => goal.owner))];
-    const team = owners.map((agent) => ({ agent, status: wakeRows.find((wake) => wake.agent === agent && ["running", "leased", "queued"].includes(wake.status))?.status ?? childGoals.find((goal) => goal.owner === agent)?.phase ?? "idle" })).slice(0, WELCOME_TEAM_SLOTS);
+    const team = owners.map((agent) => ({ agent, status: turnRows.some((turn)=>turn.agent===agent&&turn.status==="in_progress")?"running":wakeRows.some((wake)=>wake.agent===agent&&(wake.status==="queued"||wake.status==="claimed"))?"queued":childGoals.find((goal) => goal.owner === agent)?.phase ?? "idle" })).slice(0, WELCOME_TEAM_SLOTS);
     const handoffRows = (db.prepare("SELECT actor, data FROM events WHERE type='handoff.recorded' ORDER BY seq DESC LIMIT ?").all(WELCOME_HANDOFF_SLOTS) as unknown as HandoffRow[]).reverse();
     const handoffs = handoffRows.flatMap((row) => {
       try {
@@ -54,7 +55,7 @@ export function welcomeSnapshot(stateDir: string, runner: RunnerDisplay): Welcom
         return [{ agent: row.actor, result }];
       } catch { return [{ agent: row.actor, result: "" }]; }
     });
-    const itemRows = db.prepare("SELECT type,data FROM turn_items WHERE type IN ('user_message','assistant_message') ORDER BY rowid DESC LIMIT ?").all(WELCOME_CONVERSATION_SLOTS) as unknown as Array<{ type: string; data: string }>;
+    const itemRows = db.prepare("SELECT i.type,i.data FROM turn_items i JOIN turns t ON t.id=i.turn_id JOIN threads th ON th.id=t.thread_id WHERE th.agent='ceo' AND t.source='human' AND t.status<>'in_progress' AND i.type IN ('user_message','assistant_message') ORDER BY i.rowid DESC LIMIT ?").all(WELCOME_CONVERSATION_SLOTS) as unknown as Array<{ type: string; data: string }>;
     const conversation = itemRows.reverse().flatMap((row) => { try { const data = JSON.parse(row.data) as { text?: unknown }; return typeof data.text === "string" ? [{ speaker: row.type === "user_message" ? "You" : "Goah", text: data.text }] : []; } catch { return []; } });
     return { root: root ? { id: root.id, objective: root.objective, phase: root.phase } : null, team, handoffs, conversation, runner: runner.runner, target: runner.target };
   } finally { db.close(); }

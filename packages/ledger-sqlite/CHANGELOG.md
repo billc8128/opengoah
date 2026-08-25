@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Renamed Goah conversation storage to Thread/Turn/Item under schema v11. Schema v10 development ledgers are intentionally rejected instead of partially opened.
+- Schema v12 makes Turn the sole execution owner, reduces Wake to scheduling state, requires Turn provenance for Actions, and rejects all earlier development schemas.
 - Added schema v9 with event-sourced Work Records, history/diff/search, verification methods, Human interaction commits, legacy Handoff/memory seeding, and Human Wake priority.
 
 ## 0.6.0

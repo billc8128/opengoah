@@ -24,17 +24,18 @@ export interface WakeView {
   id: string
   agent: string
   triggerRef: string
-  status: string
-  leaseUntil: string | null
-  startedAt: string | null
-  endedAt: string | null
-  runnerPid: number | null
+  status: "queued" | "claimed" | "consumed" | "cancelled"
+  attempt: number
   enqueuedSeq: number
+  claimedAt: string | null
+  consumedAt: string | null
+  turnId: string | null
 }
 
 export interface ActionView {
   id: string
   agent: string
+  createdInTurn: string
   kind: string
   connector: string
   reason: string
@@ -62,6 +63,7 @@ export interface TurnView {
   goalId: string | null
   goalRevision: number | null
   status: "in_progress" | "completed" | "failed" | "interrupted"
+  attempt: number
   error: JsonValue | null
   startedAt: string
   endedAt: string | null

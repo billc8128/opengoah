@@ -9,7 +9,7 @@ const events: EventView[] = [
   { seq: 12844, streamId: "wake:web-4", streamSeq: 1, ts: "2026-08-20T14:14:18.000+08:00", actor: "web", type: "wake.enqueued", data: { reason: "Launch storefront", nextWakeAt: "2026-08-20T14:30:00.000+08:00" } },
   { seq: 12845, streamId: "action:publish-storefront", streamSeq: 1, ts: "2026-08-20T14:16:21.000+08:00", actor: "web", type: "action.requested", data: { kind: "publish.storefront", reason: "Validated landing page is ready" } },
   { seq: 12846, streamId: "mail:decision-growth", streamSeq: 1, ts: "2026-08-20T14:17:04.000+08:00", actor: "ceo", type: "mail.sent", data: { to: "growth", level: "decision", summary: "Increase paid acquisition carefully" } },
-  { seq: 12847, streamId: "wake:growth-8", streamSeq: 2, ts: "2026-08-20T14:18:02.000+08:00", actor: "growth", type: "wake.running", data: { runnerPid: 21874, triggerRef: "mail:decision-growth" } },
+  { seq: 12847, streamId: "wake:growth-8", streamSeq: 2, ts: "2026-08-20T14:18:02.000+08:00", actor: "supervisor", type: "wake.consumed", data: { turnId:"growth-8",triggerRef: "mail:decision-growth" } },
   { seq: 12848, streamId: "wake:growth-8", streamSeq: 3, ts: "2026-08-20T14:18:03.000+08:00", actor: "growth", type: "request.prepared", data: { activeContext: "Goal: Acquire 500 paying users. Observation method: count paid Stripe users and require 30-day ROAS ≥ 2.0. CEO decision: increase paid acquisition carefully.", provider: "faux", model: "faux-goah" } },
   { seq: 12849, streamId: "wake:growth-8", streamSeq: 4, ts: "2026-08-20T14:18:04.000+08:00", actor: "growth", type: "message.user", data: { message: { id: "growth-u1", role: "user", content: "Continue the paid acquisition goal using the confirmed observation method." } } },
   { seq: 12850, streamId: "wake:growth-8", streamSeq: 5, ts: "2026-08-20T14:18:07.000+08:00", actor: "growth", type: "message.assistant.completed", data: { message: { id: "growth-a1", role: "assistant", content: "I’ll inspect the latest paid-user and channel evidence before changing spend." } } },
@@ -32,9 +32,9 @@ export const demoSnapshot: ConsoleSnapshot = {
     { id: "storefront", parentId: "company", objective: "Launch storefront", observationMethod: "Run storefront checks and require a successful production smoke test.", verificationMethod: "Run storefront checks and require a successful production smoke test.", owner: "web", phase: "active", revision: 1 },
   ],
   team: [
-    { agent: "ceo", goalIds: ["company"], status: "running", lastHandoffSeq: 12841, lastWakeStatus: "done", nextWakeAt: null },
-    { agent: "growth", goalIds: ["growth"], status: "running", lastHandoffSeq: 12857, lastWakeStatus: "running", nextWakeAt: null },
-    { agent: "operations", goalIds: ["orders"], status: "scheduled", lastHandoffSeq: 12835, lastWakeStatus: "done", nextWakeAt: "2026-08-20T14:30:00.000+08:00" },
+    { agent: "ceo", goalIds: ["company"], status: "running", lastHandoffSeq: 12841, lastWakeStatus: "consumed", nextWakeAt: null },
+    { agent: "growth", goalIds: ["growth"], status: "running", lastHandoffSeq: 12857, lastWakeStatus: "consumed", nextWakeAt: null },
+    { agent: "operations", goalIds: ["orders"], status: "scheduled", lastHandoffSeq: 12835, lastWakeStatus: "consumed", nextWakeAt: "2026-08-20T14:30:00.000+08:00" },
     { agent: "web", goalIds: ["storefront"], status: "queued", lastHandoffSeq: 12836, lastWakeStatus: "queued", nextWakeAt: "2026-08-20T14:30:00.000+08:00" },
   ],
   threads: [
@@ -42,14 +42,14 @@ export const demoSnapshot: ConsoleSnapshot = {
     { id: "thread:web", agent: "web", parentThreadId: null, createdAt: "2026-08-20T14:14:18.000+08:00", updatedAt: "2026-08-20T14:14:18.000+08:00" },
   ],
   turns: [
-    { id: "growth-8", threadId: "thread:growth", source: "goal", goalId: "growth", goalRevision: 2, status: "in_progress", error: null, startedAt: "2026-08-20T14:18:02.000+08:00", endedAt: null, leaseUntil: "2026-08-20T14:19:00.000+08:00", leaseToken: "demo", runnerPid: 21874 },
-    { id: "web-4", threadId: "thread:web", source: "goal", goalId: "storefront", goalRevision: 1, status: "in_progress", error: null, startedAt: "2026-08-20T14:14:18.000+08:00", endedAt: null, leaseUntil: null, leaseToken: null, runnerPid: null },
+    { id: "growth-8", threadId: "thread:growth", source: "goal", goalId: "growth", goalRevision: 2, status: "in_progress", attempt:1,error: null, startedAt: "2026-08-20T14:18:02.000+08:00", endedAt: null, leaseUntil: "2026-08-20T14:19:00.000+08:00", leaseToken: "demo", runnerPid: 21874 },
+    { id: "web-4", threadId: "thread:web", source: "goal", goalId: "storefront", goalRevision: 1, status: "in_progress", attempt:1,error: null, startedAt: "2026-08-20T14:14:18.000+08:00", endedAt: null, leaseUntil: "2026-08-20T14:19:00.000+08:00", leaseToken: "demo-web", runnerPid: null },
   ],
   wakes: [
-    { id: "growth-8", agent: "growth", triggerRef: "mail:decision-growth", status: "running", leaseUntil: "2026-08-20T14:19:00.000+08:00", startedAt: "2026-08-20T14:11:00.000+08:00", endedAt: null, runnerPid: 21874, enqueuedSeq: 12846 },
-    { id: "web-4", agent: "web", triggerRef: "goal:storefront", status: "queued", leaseUntil: null, startedAt: null, endedAt: null, runnerPid: null, enqueuedSeq: 12844 },
+    { id: "growth-8", agent: "growth", triggerRef: "mail:decision-growth", status: "consumed", attempt:1,enqueuedSeq: 12846,claimedAt:"2026-08-20T14:18:02.000+08:00",consumedAt:"2026-08-20T14:18:02.000+08:00",turnId:"growth-8" },
+    { id: "web-4", agent: "web", triggerRef: "goal:storefront", status: "queued", attempt:0,enqueuedSeq: 12844,claimedAt:null,consumedAt:null,turnId:null },
   ],
-  actions: [{ id: "publish-storefront", agent: "web", kind: "publish.storefront", connector: "web", reason: "Validated landing page is ready", status: "requested", gated: true, evidence: [12841, 12844] }],
+  actions: [{ id: "publish-storefront", agent: "web", createdInTurn:"web-3",kind: "publish.storefront", connector: "web", reason: "Validated landing page is ready", status: "requested", gated: true, evidence: [12841, 12844] }],
   schedules: [
     { id: "schedule:operations", agent: "operations", nextWakeAt: "2026-08-20T14:30:00.000+08:00", reason: "Check fulfillment window", setBy: "operations" },
     { id: "schedule:web", agent: "web", nextWakeAt: "2026-08-20T14:30:00.000+08:00", reason: "Continue storefront launch", setBy: "ceo" },

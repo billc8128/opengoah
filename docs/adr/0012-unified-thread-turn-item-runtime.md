@@ -29,6 +29,8 @@ Thread
 
 A Thread is a Goah-owned conversation container, not a provider thread. A Turn is the sole execution identity. Items are immutable or lifecycle-updated facts inside a Turn.
 
+The current product model maintains exactly one durable Thread per Agent. Child Agent Threads reference the CEO Thread as parent. New product-level thread creation/archival is deliberately outside this schema version.
+
 Turn source and Goal binding remain independent:
 
 ```ts
@@ -52,7 +54,7 @@ Provider retry remains inside the same Turn and is represented by `turn.retry_st
 
 ### Wake and Mail
 
-Wake is only a durable schedule for future Goal or system motion. Claiming a Wake creates one Turn and links `wake.turnId` to it. Human input starts a Turn directly.
+Wake is only a durable schedule for future Goal or system motion. Its state machine is `queued → claimed → consumed`, with `cancelled` for pending work that is suppressed. Claiming a Wake creates one Turn and links `wake.turnId` to it. Human input starts a Turn directly, and any in-progress Human Turn blocks automatic Wake claims globally.
 
 Mail is only asynchronous Agent-to-Agent or Agent/Human decision communication. Ordinary Human conversation, steering, retry, cancellation, and transcript history do not use Mail.
 
@@ -60,7 +62,7 @@ Mail is only asynchronous Agent-to-Agent or Agent/Human decision communication. 
 
 Turn owns Runner lease, fencing token, process identity, terminal status, cancellation, and recovery. Wake no longer owns Runner execution state.
 
-`turn.interrupt(turnId)` is the sole cancellation operation. It aborts the Runner and retry backoff and writes `interrupted`. `thread.resume(threadId)` rebuilds full Turns and Items and subscribes to any `in_progress` Turn.
+`turn.interrupt(turnId)` is the sole cancellation operation. It revokes the Turn lease, records unknown outcomes for open tools, writes `interrupted`, and terminates the Runner. `goah --continue` rebuilds the CEO Thread and subscribes to its `in_progress` Human Turn.
 
 ### Goal policy
 
@@ -84,7 +86,7 @@ Goal remains durable intent spanning multiple Turns. Work Record remains the sol
 - ADR 0006 consequence that one Wake is one legacy Transcript stream;
 - ADR 0008 legacy Wake-scoped replay identity, replaced by Thread model v1 plus per-Turn transcript format v1;
 - ADR 0011's Human interaction Mail, interaction Wake, and Mail-redelivery design;
-- the response/Handoff/abnormal RunnerResult union as the Turn completion authority;
+- the response/Handoff/abnormal Runner candidate result as the Turn completion authority;
 - any UI or control protocol that infers a Human request from Wake or Mail order.
 
 ## Consequences

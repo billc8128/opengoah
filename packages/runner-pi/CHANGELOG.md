@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Runner results are candidate outcomes; Supervisor alone commits Transcript terminal state. Thinking deltas now materialize as durable reasoning Items, and stderr capture is bounded.
 - Pi now returns normal responses for unbound Turns and exposes Goal/Work Record tools; Goal Turns update their record before compact Handoff.
 - Pi workers accept legacy daemon requests without Turn metadata during an in-place update.
 - Empty assistant failures preserve the provider error instead of collapsing to a missing-response error.

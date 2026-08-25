@@ -4,13 +4,13 @@ import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AssistantResponse, RunRequest, TurnSnapshot, WakeSnapshot, WakeOutput } from "goah-ledger-contract";
+import type { AssistantResponse, RunRequest, TurnSnapshot, WakeSnapshot, TurnOutput } from "goah-ledger-contract";
 import { PiRunnerAdapter, ProcessRunner, piWorkerPath, type PiDriver } from "./index.js";
 import { assistantResponseText, bashTimeoutMs, compactMessages, compactMessagesToTokenBudget, linuxSandboxArgs, resolveContextPolicy, runBashCommand, sandboxWorkspacePaths, scopedRunnerPath, snapshotModelConfig, validateNextWakeAt } from "./pi-worker.js";
 import { createPiModel, modelCatalog, providerCatalog } from "./model-provider.js";
 
-const wake: WakeSnapshot = { id: "w", agent: "a", triggerRef: "t", status: "running", leaseUntil: "2026-08-18T00:01:00.000Z", attempt: 1, startedAt: "2026-08-18T00:00:00.000Z", endedAt: null, enqueuedSeq: 1, leaseToken: "lease", runnerPid: null };
-const execution: TurnSnapshot = { id:"w",threadId:"thread",source:"goal",goalId:"goal",goalRevision:0,status:"in_progress",error:null,startedAt:"2026-08-18T00:00:00.000Z",endedAt:null,leaseUntil:wake.leaseUntil,leaseToken:"lease",runnerPid:null };
+const wake: WakeSnapshot = { id: "w", agent: "a", triggerRef: "t", status: "consumed", attempt: 1, enqueuedSeq: 1, claimedAt:"2026-08-18T00:00:00.000Z",consumedAt:"2026-08-18T00:00:00.000Z",turnId:"turn" };
+const execution: TurnSnapshot = { id:"turn",threadId:"thread",source:"goal",goalId:"goal",goalRevision:0,status:"in_progress",attempt:1,error:null,startedAt:"2026-08-18T00:00:00.000Z",endedAt:null,leaseUntil:"2026-08-18T00:01:00.000Z",leaseToken:"lease",runnerPid:null };
 const requestBase = { agent:wake.agent,execution,sourceWake:wake };
 const goalTurn = { source: { kind: "goal" as const, round: 1 }, goalBinding: { goalId: "goal", goalRevision: 0 } };
 
@@ -26,7 +26,7 @@ test("assistant response excludes thinking and tool blocks", () => {
   assert.equal(assistantResponseText(message), "Visible answer.");
 });
 
-function driver(steps: Array<{ stop?: boolean; response?: AssistantResponse; handoff?: WakeOutput }>): PiDriver {
+function driver(steps: Array<{ stop?: boolean; response?: AssistantResponse; handoff?: TurnOutput }>): PiDriver {
   return {
     createRunnerSession: async () => ({
       step: async () => {

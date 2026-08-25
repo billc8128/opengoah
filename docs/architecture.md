@@ -59,6 +59,8 @@ Handoff remains an event-level control result rather than a current-state projec
 
 The only Ledger writer in the resident process. It validates Turn ownership and terminal state, Goal and Work Record revisions, leases, capabilities, atomic delegation, Action gates, scheduling, recovery, and Human priority. Human input starts or steers a Turn directly. Mail is reserved for asynchronous Agent communication and Human decisions. Wake is reserved for future Goal/system motion.
 
+Wake status is scheduling-only: `queued → claimed → consumed`, with `cancelled` as the pending terminal path. Claiming is blocked while any Human Turn is active. Once the Turn is durably created, Wake records its `turnId` and no longer participates in execution.
+
 ### Runner
 
 Receives a `RunRequest` containing Turn identity, source, optional Goal binding, bounded context, Runner Profile, trace sink, and role-scoped RPC. It emits normalized Turn Items and runner terminal events. Supervisor validates policy and commits the Turn terminal status.

@@ -6,7 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { Agent, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxText, fauxToolCall, Type, type Message } from "@earendil-works/pi-ai";
-import { TRANSCRIPT_FORMAT_VERSION, type AgentCapability, type JsonValue, type RunnerResult, type TranscriptMessage, type WakeOutput } from "goah-ledger-contract";
+import { TRANSCRIPT_FORMAT_VERSION, type AgentCapability, type JsonValue, type RunnerCandidateResult, type TranscriptMessage, type TurnOutput } from "goah-ledger-contract";
 import { runProcessWorker, type WorkerRpc } from "./index.js";
 import { createPiModel } from "./model-provider.js";
 
@@ -23,7 +23,7 @@ export function compactMessages(messages: AgentMessage[], maxRecent = 8): AgentM
 }
 
 export async function runPiWorker(): Promise<void> {
-  await runProcessWorker(async (request, emit, rpc, controls): Promise<RunnerResult> => {
+  await runProcessWorker(async (request, emit, rpc, controls): Promise<RunnerCandidateResult> => {
     const contextRecord = typeof request.context === "object" && request.context !== null && !Array.isArray(request.context) ? request.context : {};
     const legacyRequest = request.turn === undefined;
     const binding = request.turn?.goalBinding;
@@ -59,7 +59,7 @@ export async function runPiWorker(): Promise<void> {
       }
     }
 
-    let output: WakeOutput | null = null;
+    let output: TurnOutput | null = null;
     let response = "";
     let responseFailure = "";
     let compactions = 0;
@@ -149,7 +149,6 @@ export async function runPiWorker(): Promise<void> {
       } else if (event.type === "tool_execution_start") emit({ type: "tool.called", data: { callId: event.toolCallId, name: event.toolName, arguments: JSON.parse(JSON.stringify(event.args)) as JsonValue } });
       else if (event.type === "tool_execution_end") emit({ type: "tool.completed", data: { callId: event.toolCallId, messageId: `tool:${event.toolCallId}`, name: event.toolName, result: JSON.parse(JSON.stringify(event.result)) as JsonValue, isError: event.isError } });
       else if (event.type === "turn_end") emit({ type: "turn.completed", data: {} });
-      else if (event.type === "agent_end") emit({ type: "transcript.completed", data: {} });
     });
     const abortAgent = () => agent.abort();
     process.once("SIGTERM", abortAgent);
@@ -188,11 +187,11 @@ function transcriptMessage(message: AgentMessage, id: string): TranscriptMessage
   return { id, role, content: (value.content ?? value) as JsonValue, ...(value.usage !== undefined ? { usage: value.usage as JsonValue } : {}), ...(typeof value.stopReason === "string" ? { stopReason: value.stopReason } : {}), ...(typeof value.errorMessage === "string" ? { errorMessage: value.errorMessage } : {}) };
 }
 
-function createTools(root: string, handoff: (output: WakeOutput) => void, rpc: WorkerRpc, wakeStartedAt: string | null, capabilities: ReadonlySet<AgentCapability> | undefined, goalState: { bound: boolean; binding?: { goalId: string; goalRevision: number }; recordRevision?: number }, protectedPaths: string[] = []): AgentTool<any>[] {
+function createTools(root: string, handoff: (output: TurnOutput) => void, rpc: WorkerRpc, wakeStartedAt: string | null, capabilities: ReadonlySet<AgentCapability> | undefined, goalState: { bound: boolean; binding?: { goalId: string; goalRevision: number }; recordRevision?: number }, protectedPaths: string[] = []): AgentTool<any>[] {
   const handoffTool: AgentTool<any> = {
     name: "handoff",
     label: "Handoff",
-    description: "Record a structured handoff and end the wake.",
+    description: "Record a structured handoff and end the Goal-bound Turn.",
     parameters: Type.Object({
       observations: Type.Optional(Type.Array(Type.String())),
       results: Type.Optional(Type.Array(Type.String())),
@@ -208,7 +207,7 @@ function createTools(root: string, handoff: (output: WakeOutput) => void, rpc: W
       const compact = goalState.binding && goalState.recordRevision !== undefined
         ? { goalId: goalState.binding.goalId, goalRevision: goalState.binding.goalRevision, recordRevision: goalState.recordRevision, outcome: input.outcome ?? (input.blocker ? "blocked" : input.material ? "completion_proposed" : "progress"), evidence: input.evidence ?? [] }
         : null;
-      const value: WakeOutput = { handoff: compact ?? { observations: input.observations ?? [], results: input.results ?? [], nextSteps: input.nextSteps ?? [], ...(input.blocker ? { blocker: input.blocker } : {}), ...(input.material === true ? { material: true } : {}) }, mail: [], nextWakeAt: validateNextWakeAt(input.nextWakeAt, wakeStartedAt) };
+      const value: TurnOutput = { handoff: compact ?? { observations: input.observations ?? [], results: input.results ?? [], nextSteps: input.nextSteps ?? [], ...(input.blocker ? { blocker: input.blocker } : {}), ...(input.material === true ? { material: true } : {}) }, mail: [], nextWakeAt: validateNextWakeAt(input.nextWakeAt, wakeStartedAt) };
       handoff(value);
       return { content: [{ type: "text", text: "handoff recorded" }], details: value, terminate: true };
     },

@@ -36,7 +36,7 @@ export type ControlRequest =
 
 export type ControlFrame =
   | { type: "result"; value: JsonValue }
-  | { type: "accepted"; wakeId: string; value: JsonValue }
+  | { type: "accepted"; turnId: string; value: JsonValue }
   | { type: "event"; event: JsonValue }
   | { type: "error"; error: string };
 
@@ -164,7 +164,7 @@ async function interact(message: string, socket: Socket, supervisor: Supervisor,
 export async function* interactFrames(message: string, supervisor: Supervisor, ledger: Ledger, isActive: () => boolean = () => true): AsyncGenerator<ControlFrame> {
   if (!message.trim()) throw new Error("message is required");
   const accepted = await supervisor.startHumanTurn(message);
-  yield { type: "accepted", wakeId: accepted.turnId, value: accepted as unknown as JsonValue };
+  yield { type: "accepted", turnId: accepted.turnId, value: accepted as unknown as JsonValue };
   yield* turnFrames(accepted.turnId, ledger, isActive);
 }
 
@@ -174,7 +174,7 @@ async function* turnFrames(turnId: string, ledger: Ledger, isActive: () => boole
     if (!isActive()) return;
     for (const event of ledger.readStream(`turn:${turnId}`)) { if (event.seq <= lastSeq) continue; lastSeq = event.seq; if (event.type.startsWith("message.") || event.type.startsWith("tool.") || event.type.startsWith("item.") || event.type.startsWith("turn.")) yield { type: "event", event: event as unknown as JsonValue }; }
     const current = ledger.turn(turnId); if (!current) throw new Error("Turn disappeared");
-    if (current.status !== "in_progress") { const answer = ledger.turnItems(turnId).filter((item) => item.type === "assistant_message").at(-1); yield { type: "result", value: { turn: current, ...(answer ? { response: { content: String((answer.data as { text?: unknown }).text ?? "") } } : {}) } as unknown as JsonValue }; return; }
+    if (current.status !== "in_progress") { const answer = ledger.turnItems(turnId).filter((item) => item.type === "assistant_message").at(-1); const streamed=ledger.readStream(`turn:${turnId}`).some((event)=>event.type==="message.assistant.completed");yield { type: "result", value: { turn: current, ...(answer&&!streamed ? { response: { content: String((answer.data as { text?: unknown }).text ?? "") } } : {}) } as unknown as JsonValue }; return; }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }

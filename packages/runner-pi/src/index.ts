@@ -10,9 +10,9 @@ import {
   type RunRequest,
   type Runner,
   type RunnerHandle,
-  type RunnerResult,
+  type RunnerCandidateResult,
   type TurnContext,
-  type WakeOutput,
+  type TurnOutput,
 } from "goah-ledger-contract";
 
 export { createPiModel, defaultAuthFile, modelCatalog, providerCatalog, resolvedApiKey, LOCAL_PROVIDERS, type ModelSummary, type ProviderSummary } from "./model-provider.js";
@@ -23,7 +23,7 @@ export { resolveEnvSpec } from "./env-spec.js";
 export interface PiStep {
   trace?: Array<{ type: string; data: JsonValue }>;
   response?: AssistantResponse;
-  handoff?: WakeOutput;
+  handoff?: TurnOutput;
   stopped?: boolean;
 }
 export interface PiRunnerSession { step(): Promise<PiStep>; close(): Promise<void> }
@@ -35,8 +35,8 @@ export class PiRunnerAdapter {
 
   prepare(request: RunRequest): RunnerHandle {
     let started = false;
-    let resolveResult!: (result: RunnerResult) => void;
-    const result = new Promise<RunnerResult>((resolve) => { resolveResult = resolve; });
+    let resolveResult!: (result: RunnerCandidateResult) => void;
+    const result = new Promise<RunnerCandidateResult>((resolve) => { resolveResult = resolve; });
     return {
       pid: null,
       begin: () => {
@@ -51,7 +51,7 @@ export class PiRunnerAdapter {
 
   async terminateProcess(pid: number): Promise<void> { await terminatePid(pid, 500); }
 
-  async #run(request: RunRequest): Promise<RunnerResult> {
+  async #run(request: RunRequest): Promise<RunnerCandidateResult> {
     const runnerSession = await this.driver.createRunnerSession(request);
     try {
       while (true) {
@@ -97,7 +97,7 @@ type WorkerMessage =
   | { type: "trace"; event: { type: string; data: JsonValue } }
   | { type: "rpc_request"; id: string; method: AgentCapability; params: JsonValue }
   | { type: "steer_ack"; id: string; accepted: boolean }
-  | { type: "result"; result: RunnerResult };
+  | { type: "result"; result: RunnerCandidateResult };
 type ParentMessage =
   | { type: "start"; request: WorkerRequest }
   | { type: "rpc_response"; id: string; result?: JsonValue; error?: string }
@@ -117,19 +117,19 @@ export class ProcessRunner implements Runner {
     });
     let started = false;
     let timedOut = false;
-    let messageResult: RunnerResult | null = null;
+    let messageResult: RunnerCandidateResult | null = null;
     let protocolError: string | null = null;
     let stderr = "";
     let timer: NodeJS.Timeout | undefined;
     let settled = false;
     let resolveStartReady!: () => void;
     const startReady = new Promise<void>((resolve) => { resolveStartReady = resolve; });
-    let resolveResult!: (result: RunnerResult) => void;
+    let resolveResult!: (result: RunnerCandidateResult) => void;
     const pendingSteering = new Map<string, { resolve(): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
-    const result = new Promise<RunnerResult>((resolve) => { resolveResult = resolve; });
-    const settle = (value: RunnerResult) => { if (!settled) { settled = true; resolveResult(value); } };
+    const result = new Promise<RunnerCandidateResult>((resolve) => { resolveResult = resolve; });
+    const settle = (value: RunnerCandidateResult) => { if (!settled) { settled = true; resolveResult(value); } };
 
-    child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.stderr?.on("data", (chunk: Buffer) => { stderr = `${stderr}${chunk.toString()}`.slice(-65_536); });
     const lines = createInterface({ input: child.stdout! });
     lines.on("line", (line) => {
       try {
@@ -205,7 +205,7 @@ export class ProcessRunner implements Runner {
 
 export type WorkerRpc = (method: AgentCapability, params: JsonValue) => Promise<JsonValue>;
 export interface WorkerControls { onSteer(listener: (message: string) => boolean): void }
-export type WorkerRun = (request: WorkerRequest, emit: (event: { type: string; data: JsonValue }) => void, rpc: WorkerRpc, controls: WorkerControls) => Promise<RunnerResult>;
+export type WorkerRun = (request: WorkerRequest, emit: (event: { type: string; data: JsonValue }) => void, rpc: WorkerRpc, controls: WorkerControls) => Promise<RunnerCandidateResult>;
 
 /** Entry helper for runner executables. It exits when its parent disappears. */
 export async function runProcessWorker(run: WorkerRun): Promise<void> {

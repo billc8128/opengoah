@@ -107,7 +107,8 @@ test("Console chat streams a CEO interaction and decisions resolve gated actions
     assert.ok(runtime.ledger.turns().some((turn) => turn.source === "human"))
 
     const seed = runtime.ledger.appendEvent({ streamId: "control:test", ts: new Date().toISOString(), actor: "worker", type: "fact", data: { text: "evidence" } })
-    await runtime.supervisor.submitAction({ id: "web-action", agent: "worker", kind: "publish", payload: {}, reason: "publish needs review", evidence: [seed.seq], auditAdvice: null, adviceAcked: false }, "missing-connector")
+    const now=new Date().toISOString();runtime.ledger.putThread({id:"thread:worker",agent:"worker",parentThreadId:runtime.ledger.threads().find((thread)=>thread.agent==="ceo")!.id,createdAt:now,updatedAt:now},"supervisor");runtime.ledger.putTurn({id:"turn:worker",threadId:"thread:worker",source:"system",goalId:null,goalRevision:null,status:"in_progress",attempt:1,error:null,startedAt:now,endedAt:null,leaseUntil:new Date(Date.now()+60_000).toISOString(),leaseToken:"test",runnerPid:null},"supervisor");
+    await runtime.supervisor.submitAction({ id: "web-action", agent: "worker", createdInTurn:"turn:worker",kind: "publish", payload: {}, reason: "publish needs review", evidence: [seed.seq], auditAdvice: null, adviceAcked: false }, "missing-connector")
     assert.equal(runtime.ledger.action("web-action")?.status, "requested")
     const decision = await fetch(`${metadata.url}api/action?token=${metadata.token}`, {
       method: "POST",

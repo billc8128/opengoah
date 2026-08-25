@@ -10,7 +10,7 @@ import {
   type JsonValue,
   type Ledger,
   type RunRequest,
-  type WakeOutput,
+  type TurnOutput,
 } from "goah-ledger-contract";
 import { SqliteLedger, type SqliteLedgerOptions } from "goah-ledger-sqlite";
 import type { PiDriver, PiRunnerSession } from "goah-runner-pi";
@@ -30,7 +30,7 @@ export interface FauxStep {
   trace?: Array<{ type: string; data: JsonValue }>;
   response?: string;
   write?: { path: string; content: string };
-  handoff?: WakeOutput;
+  handoff?: TurnOutput;
   stop?: boolean;
   crash?: string;
   effect?: (request: RunRequest) => void;
@@ -101,14 +101,16 @@ export function assertLedgerConformance(create: LedgerConformanceFactory): void 
   let reopened = false;
   try { ledger.putGoal({ id: "root", parentId: null, objective: "test", observationMethod, verificationMethod: observationMethod, owner: "a", phase: "active", revision: 4 }, "human"); } catch { reopened = true; }
   if (!reopened) throw new Error("ledger conformance: completed goal was reopened");
-  const first = ledger.enqueueWake({ id: "z", agent: "a", triggerRef: "first", status: "queued", leaseUntil: null, attempt: 0, startedAt: null, endedAt: null, enqueuedSeq: 0, leaseToken: null, runnerPid: null }, "supervisor");
-  ledger.enqueueWake({ id: "a", agent: "b", triggerRef: "second", status: "queued", leaseUntil: null, attempt: 0, startedAt: null, endedAt: null, enqueuedSeq: 0, leaseToken: null, runnerPid: null }, "supervisor");
-  const claimed = ledger.claimNextWake(clock.now().toISOString(), "2030-01-01T00:01:00.000Z", "lease");
+  const first = ledger.enqueueWake({ id: "z", agent: "a", triggerRef: "first", status: "queued", attempt: 0, enqueuedSeq: 0, claimedAt:null,consumedAt:null,turnId:null }, "supervisor");
+  ledger.enqueueWake({ id: "a", agent: "b", triggerRef: "second", status: "queued", attempt: 0, enqueuedSeq: 0, claimedAt:null,consumedAt:null,turnId:null }, "supervisor");
+  const claimed = ledger.claimNextWake(clock.now().toISOString());
   if (claimed?.id !== "z") throw new Error("ledger conformance: wakes are not FIFO");
+  ledger.putThread({id:"thread:a",agent:"a",parentThreadId:null,createdAt:clock.now().toISOString(),updatedAt:clock.now().toISOString()},"supervisor");const turn={id:"turn:a",threadId:"thread:a",source:"system" as const,goalId:null,goalRevision:null,status:"in_progress" as const,attempt:1,error:null,startedAt:clock.now().toISOString(),endedAt:null,leaseUntil:"2030-01-01T00:10:00.000Z",leaseToken:"lease",runnerPid:null};ledger.startTurnFromWake("z",turn,clock.now().toISOString());
+  if(ledger.wake("z")?.turnId!==turn.id)throw new Error("ledger conformance: consumed Wake did not link its Turn");
   if (first.event.ts !== clock.now().toISOString()) throw new Error("ledger conformance: injected clock was ignored");
   let rejected = false;
   try {
-    ledger.requestAction({ id: "bad", agent: "a", kind: "mock", connector: "mock", payload: {}, reason: "bad", evidence: [999_999], gated: false, status: "requested", reconciledAt: null, externalRef: null, auditAdvice: null, adviceAcked: false }, "a");
+    ledger.requestAction({ id: "bad", agent: "a", createdInTurn:"turn:a",kind: "mock", connector: "mock", payload: {}, reason: "bad", evidence: [999_999], gated: false, status: "requested", reconciledAt: null, externalRef: null, auditAdvice: null, adviceAcked: false }, "a");
   } catch { rejected = true; }
   if (!rejected) throw new Error("ledger conformance: nonexistent evidence was accepted");
   const informational = ledger.appendEvent({ streamId: "conformance:events", ts: clock.now().toISOString(), actor: "a", type: "transcript.conformance_info", data: {}, ignorable: true });

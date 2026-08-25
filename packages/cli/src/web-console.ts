@@ -34,7 +34,7 @@ export function consoleSnapshot(ledger: Ledger, supervisor: Supervisor, now = ne
     goals: ledger.goals(),
     team: supervisor.teamList(now),
     threads: ledger.threads(),
-    turns: ledger.turns(),
+    turns: ledger.turns().map((turn)=>({...turn,leaseToken:null})),
     wakes: ledger.wakes(),
     actions: ledger.actions(),
     schedules: ledger.schedules(),
@@ -115,7 +115,7 @@ async function route(request: IncomingMessage, response: ServerResponse, supervi
       const threadId = decodeURIComponent(url.pathname.slice("/api/threads/".length))
       const thread = ledger.thread(threadId)
       if (!thread) { sendJson(response, 404, { error: "thread not found" }); return }
-      const turns = ledger.turns(threadId); sendJson(response, 200, redactValue({ thread, turns: turns.map((turn) => ({ ...turn, items: ledger.turnItems(turn.id) })) }))
+      const turns = ledger.turns(threadId); sendJson(response, 200, redactValue({ thread, turns: turns.map((turn) => ({ ...turn,leaseToken:null, items: ledger.turnItems(turn.id) })) }))
       return
     }
     if (request.method === "POST" && url.pathname === "/api/ceo") {
@@ -171,7 +171,6 @@ async function route(request: IncomingMessage, response: ServerResponse, supervi
 }
 
 function isTrajectoryEvent(type: string): boolean {
-  if (["wake.lease_renewed", "wake.runner_attached"].includes(type)) return false
   return ["goal.", "delegation.", "handoff.", "wake.", "mail.", "schedule.", "action.", "metric.", "observation.", "ceo.", "human."].some((prefix) => type.startsWith(prefix))
 }
 

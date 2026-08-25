@@ -46,8 +46,7 @@ export class VerificationPlane {
   async verifyTurn(turnId: string): Promise<VerificationResult> {
     const trace = this.ledger.readStream(`turn:${turnId}`);
     const handoff = this.ledger.turnItems(turnId).findLast((item) => item.type === "handoff")?.data ?? null;
-    const seqs = new Set(trace.map((event) => event.seq));
-    const actions = this.ledger.actions().filter((action) => action.evidence.some((seq) => seqs.has(seq)));
+    const actions = this.ledger.actions().filter((action) => action.createdInTurn === turnId);
     const result = await this.model.verifyTurn({ turnId, handoff, trace, actions });
     this.#apply(result, "verifier", turnId);
     this.ledger.appendEvent({ streamId: `turn:${turnId}`, ts: this.supervisor.clock.now().toISOString(), actor: "verifier", type: "verification.completed", data: { turnId, findings: result.findings.length, tokensUsed: result.tokensUsed } });
@@ -68,7 +67,7 @@ export class VerificationPlane {
   #apply(result: VerificationResult, by: "verifier" | "audit", turnId?: string): void {
     for (const finding of result.findings) {
       if (!this.ledger.action(finding.actionId)) continue;
-      this.supervisor.putAuditAdvice(finding.actionId, { by, body: finding.body, evidence: finding.evidence }, turnId);
+      this.supervisor.putAuditAdvice(finding.actionId, { by, body: finding.body, evidence: finding.evidence });
     }
   }
 }

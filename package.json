@@ -14,7 +14,8 @@
     "examples/*"
   ],
   "scripts": {
-    "build": "tsc -b && npm run console:build",
+    "clean": "node scripts/clean-build.mjs",
+    "build": "npm run clean && tsc -b && npm run console:build",
     "typecheck": "tsc -b --pretty false",
     "test": "npm run build && node --test packages/*/dist/*.test.js",
     "test:soak": "npm run build && node --test --test-name-pattern='accelerated 30-day soak' packages/testkit/dist/index.test.js",

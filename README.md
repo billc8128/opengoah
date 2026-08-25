@@ -31,15 +31,15 @@ Implemented and tested today:
 - Stream-aware append-only SQLite event kernel with durable Thread, Turn, Item, Goal, Work Record, Wake, Mailbox, and Action projections
 - Versioned Turn transcript vocabulary with future-version refusal, exact request snapshots, normalized user/assistant/tool events, compaction replacements, and interrupted-tool `unknown` repair
 - Deterministic Active Context composition: structured projections render to short Markdown, and the exact model-visible value is retained by `request.prepared`
-- FIFO wake lifecycle with leases: per-agent concurrency of one, trigger deduplication, fencing tokens, recorded runner PIDs, and kill-before-recovery semantics
+- FIFO Wake scheduling with per-agent claim exclusion and trigger deduplication; claiming creates one Turn and records `wake.turnId`
 - Action state machine with real evidence validation, human approval/rejection, `unknown` semantics, and query-based reconciliation
 - Audit advice write/ack APIs and mandatory injection of unacknowledged advice into the action owner's next context
 - Connector capability manifests and isolated connector subprocesses: undeclared capabilities fail closed, ambient secrets are not inherited, automatic retry requires declared native idempotency
 - Runner-owned local execution: non-software goals need no Git, while coding agents can use ordinary Git and worktree commands through their skills
 - Real runner subprocess boundary with sliding lease renewal, process-group termination, optional runner-specific timeout, and stale-event rejection
 - Ordinary Human Turns return normal responses; Goal-bound Turns require a current Work Record revision and compact Goal Handoff
-- Mail acknowledged atomically with a valid response or Goal Handoff; abnormal Human interactions and rejected steering are redelivered from the same unread Mail
-- Injected clocks, schema v1→v9 migrations, schema v11 Thread storage, indexed bounded queries, and a public ledger conformance suite
+- Goal Mail is acknowledged atomically with its successful Handoff; ordinary Human conversation never uses Mail or Wake
+- Injected clocks, schema v12 Turn-owned execution, indexed bounded queries, and a public ledger conformance suite; earlier development schemas are intentionally rejected
 - Optional mechanical metric evaluation (missing/stale/sustain/guardrails), a total-silence tripwire, trigger coalescing, FTS5 fact search, and generic evidence-backed actions; Goal itself has no required metric or target
 - Official Pi 0.84.2 worker binding with `read`, `write`, `edit`, and `bash` for every Agent plus model-view-only mid-turn compaction
 - Durable textual Goal observation methods with root human confirmation, atomic child assignment, revision invalidation, replay, and evidence-backed completion
@@ -74,7 +74,7 @@ git clone https://github.com/billc8128/opengoah.git
 cd goah
 npm install
 npm test          # contract, replay, Runner routing, organization, recovery, approval, audit, and connector tests
-npm run example   # one full wake: goal → schedule → lease → faux run → handoff → done
+npm run example   # one full cycle: Goal → Wake → Turn → Work Record + Handoff
 npm run example:guardian
 npm run test:soak
 ```
@@ -145,12 +145,12 @@ Ark is not a built-in special case. If needed later, configure it as a Pi custom
 ```
             ┌──────────────────────────── supervisor (only resident process) ───────────────────────────┐
             │                                                                                           │
-  input ────┼─▶ enqueue wake ─▶ lease ─▶ run local agent ─┬─▶ response ───────────▶ done              │
-            │                                             └─▶ Work Record + Handoff ─▶ done          │
-            │       │                                          │   │         │                          │
-            │       │ dedupe by (agent, trigger_ref)           │   │         │ crash / no handoff       │
-            │       ▼                                          │   │         ▼                          │
-            │   already queued? reuse                          │   │      abnormal + recovery context   │
+  Human ────┼──────────────────────▶ Human Turn ─────────┬─▶ normal response                         │
+            │                                            └─▶ optional Goal binding                   │
+  Goal ─────┼─▶ Wake queued ─▶ claimed ─▶ Goal Turn ───────▶ Work Record + Handoff                    │
+            │       │                     │ lease / PID / fencing / retry / recovery                   │
+            │       │ dedupe trigger      ▼                                                            │
+            │       └──────────────▶ Wake consumed (`turnId`)                                          │
             │                                                  │   │                                    │
             │                              actions (reason + evidence, gated) ─▶ connector dispatch     │
             │                                                      │                                    │
@@ -201,12 +201,12 @@ Read this before pointing goah at anything real.
 Mechanically enforced today:
 
 - No external side effects by default: a connector must declare a capability for an action's kind, and non-dry-run connectors additionally require an explicit supervisor opt-in. Anything undeclared is gated, fail-closed.
-- Runner and connector code executes in child processes with bounded environments. Connector secrets are explicitly scoped to that connector; runners never receive a ledger connection. Pi authentication is resolved before a wake starts; the worker receives only that request's scoped auth over its private process pipe. Read/write/edit reject Goah state paths, and Bash runs inside a platform sandbox that masks credential/control state; unsupported platforms fail the Bash tool closed. Control state defaults to `~/.goah/state`.
+- Runner and connector code executes in child processes with bounded environments. Connector secrets are explicitly scoped to that connector; runners never receive a ledger connection. Pi authentication is resolved before a Turn starts; the worker receives only that request's scoped auth over its private process pipe. Read/write/edit reject Goah state paths, and Bash runs inside a platform sandbox that masks credential/control state; unsupported platforms fail the Bash tool closed. Control state defaults to `~/.goah/state`.
 - The events table is append-only (enforced by SQLite triggers); invalid wake/action state transitions are rejected by both the library and the database.
 - `request.prepared` records model-visible behavior but excludes provider API keys, authorization headers, abort handles, and transport-private objects.
-- Recovery Active Context includes only the abnormal reason, interrupted/compaction markers, and tool calls with unknown outcomes; raw deltas and request snapshots remain in the ledger for explicit inspection.
+- Recovery Active Context includes only the failed Turn reason, interruption/compaction markers, and tool calls with unknown outcomes; raw deltas and request snapshots remain in the ledger for explicit inspection.
 - Every action evidence sequence must exist. Gated actions require an authorized approval carrying its own reason and evidence.
-- Mail survives abnormal wakes, and unacknowledged audit advice is forced into the next context.
+- Mail survives failed Turns, and unacknowledged audit advice is forced into the next context.
 - An `unknown` action is never automatically re-dispatched unless the connector manifest explicitly declares native idempotency and automatic retry.
 
 Not guaranteed, by design honesty:
@@ -219,7 +219,7 @@ Not guaranteed, by design honesty:
 
 | Milestone | Scope |
 |---|---|
-| v2 ledger kernel | ✅ stream-aware event schema, required/ignorable events, SQLite schema v11, transaction fault injection |
+| v2 ledger kernel | ✅ stream-aware event schema, required/ignorable events, SQLite schema v12, transaction fault injection |
 | resumable Thread + Turn transcript | ✅ durable Thread/Turn/Item projections, normalized Pi messages/tools/requests, compaction facts, replay and interrupted-tool repair |
 | Active Context | ✅ deterministic Markdown composition with evidence source sequences |
 | execution modules | ✅ Goal/Wake/Schedule/Mailbox/Action/Handoff contracts are layered above the generic kernel; further physical package splitting is intentionally deferred |

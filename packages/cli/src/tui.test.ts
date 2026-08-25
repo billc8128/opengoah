@@ -26,8 +26,8 @@ test("TUI reconnect selects the newest live Human interaction only", () => {
 test("TUI renders streamed assistant text and tool completion", () => {
   const lines: string[] = []; const tools = new Map<string, { status: string; detail: string }>(); const thinking: string[] = []; const wakeStates: string[] = []; let live = ""; let completed = "";
   const render = (frame: Parameters<typeof renderFrame>[0]) => renderFrame(frame, (line) => lines.push(line), (text) => { live += text; }, (text) => { completed = text; }, (text) => lines.push(text), (tool) => tools.set(tool.callId, tool), (activity) => thinking.push(`${activity.phase}:${activity.text}`), (state) => wakeStates.push(state));
-  render({ type: "accepted", wakeId: "wake", value: { wake: { status: "queued" } } });
-  render({ type: "event", event: { type: "wake.running", data: {} } });
+  render({ type: "accepted", turnId: "wake", value: { wake: { status: "queued" } } });
+  render({ type: "event", event: { type: "turn.started", data: {} } });
   render({ type: "event", event: { type: "message.assistant.delta", data: { delta: { type: "thinking_start" } } } });
   render({ type: "event", event: { type: "message.assistant.delta", data: { delta: { type: "thinking_delta", delta: "private reasoning" } } } });
   render({ type: "event", event: { type: "message.assistant.delta", data: { delta: { type: "thinking_end", content: "private reasoning" } } } });
@@ -52,14 +52,14 @@ test("TUI discards assistant text from a failed completed message", () => {
 
 test("TUI hides internal wake ids and credential-shaped environment errors", () => {
   const lines: string[] = [];
-  renderFrame({ type: "accepted", wakeId: "private-wake-id", value: {} }, (line) => lines.push(line));
-  renderFrame({ type: "event", event: { type: "wake.abnormal_reason", data: { reason: "environment variable is missing: pasted-secret-ZAI_API_KEY (set it)" } } }, (line) => lines.push(line));
+  renderFrame({ type: "accepted", turnId: "private-wake-id", value: {} }, (line) => lines.push(line));
+  renderFrame({ type: "event", event: { type: "transcript.interrupted", data: { reason: "environment variable is missing: pasted-secret-ZAI_API_KEY (set it)" } } }, (line) => lines.push(line));
   assert.deepEqual(lines.map((line) => stripAnsi(line).trim()), ["error  environment variable is missing: [REDACTED] (set it)"]);
   const stack: string[] = [];
-  renderFrame({ type: "event", event: { type: "wake.abnormal_reason", data: { reason: "file:///Users/test/pi-worker.js:24\n  const x = missing.value\n            ^\n\nTypeError: Cannot read properties of undefined (reading 'value')\n    at file:///Users/test/pi-worker.js:24:9" } } }, (line) => stack.push(line));
+  renderFrame({ type: "event", event: { type: "transcript.interrupted", data: { reason: "file:///Users/test/pi-worker.js:24\n  const x = missing.value\n            ^\n\nTypeError: Cannot read properties of undefined (reading 'value')\n    at file:///Users/test/pi-worker.js:24:9" } } }, (line) => stack.push(line));
   assert.deepEqual(stack.map((line) => stripAnsi(line).trim()), ["error  TypeError: Cannot read properties of undefined (reading 'value')"]);
   const provider: string[] = [];
-  renderFrame({ type: "event", event: { type: "wake.abnormal_reason", data: { reason: '429: {"code":"1310","message":"Weekly/Monthly Limit Exhausted. Resets Thursday"}' } } }, (line) => provider.push(line));
+  renderFrame({ type: "event", event: { type: "transcript.interrupted", data: { reason: '429: {"code":"1310","message":"Weekly/Monthly Limit Exhausted. Resets Thursday"}' } } }, (line) => provider.push(line));
   assert.deepEqual(provider.map((line) => stripAnsi(line).trim()), ["error  Provider 429: Weekly/Monthly Limit Exhausted. Resets Thursday"]);
 });
 

@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { type EventRecord, type JsonValue, type RequestSnapshot, type TurnItemSnapshot, type TurnSnapshot } from "goah-ledger-contract";
+import { replayTranscript, type EventRecord, type JsonValue, type ReplayedTranscript, type RequestSnapshot, type TurnItemSnapshot, type TurnSnapshot } from "goah-ledger-contract";
 import type { SqliteLedger } from "goah-ledger-sqlite";
 
 export interface ThreadListItem {
@@ -14,7 +14,7 @@ export interface ThreadListItem {
 
 export interface ThreadDetail {
   thread: ThreadListItem;
-  turns: Array<TurnSnapshot & { items: TurnItemSnapshot[] }>;
+  turns: Array<TurnSnapshot & { items: TurnItemSnapshot[]; transcript:ReplayedTranscript|null }>;
 }
 
 export interface TurnContextSnapshot {
@@ -43,7 +43,7 @@ export function listThreads(ledger: SqliteLedger): ThreadListItem[] {
 
 export function showThread(ledger: SqliteLedger, threadId: string): ThreadDetail {
   if (!ledger.thread(threadId)) throw new Error(`thread not found: ${threadId}`);
-  return { thread: summarizeThread(ledger, threadId), turns: ledger.turns(threadId).map((turn) => ({ ...turn, items: ledger.turnItems(turn.id) })) };
+  return { thread: summarizeThread(ledger, threadId), turns: ledger.turns(threadId).map((turn) => {const events=ledger.readStream(`turn:${turn.id}`);return{...turn,leaseToken:null,items:ledger.turnItems(turn.id),transcript:events.some((event)=>event.type==="transcript.started")?replayTranscript(events):null};}) };
 }
 
 export function replayThread(ledger: SqliteLedger, threadId: string): ThreadDetail {
@@ -107,4 +107,4 @@ function contextSnapshot(events: EventRecord[]): TurnContextSnapshot | null {
   };
 }
 
-const SENSITIVE_KEY = /^(?:api[_-]?key|token|secret|password|authorization|cookie|set-cookie)$/i;
+const SENSITIVE_KEY = /^(?:api[_-]?key|token|(?:lease|fencing|access|refresh|auth)[_-]?token|secret|password|authorization|cookie|set-cookie)$/i;

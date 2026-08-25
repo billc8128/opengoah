@@ -1,9 +1,9 @@
 # ADR 0001：里程碑 0 故障语义
 
-- 状态：accepted
+- 状态：部分由 ADR 0012 取代
 - 日期：2026-08-18
 - 来源：北辰 Harness 设计稿 v0.10 §5、§8、§10、§11
-- 部分决定由 ADR 0011 取代：第 6 条的强制 Handoff 仅适用于 Goal-bound Turn。
+- Wake lease/PID/fencing 与运行状态由 ADR 0012 的 Turn-owned execution 取代；第 6 条的强制 Handoff 仅适用于 Goal-bound Turn。
 
 ## 决定
 

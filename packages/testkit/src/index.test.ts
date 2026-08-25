@@ -4,13 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { CONTRACT_VERSION, controlStream, wakeStream, type Clock, type EventInput, type GoalSnapshot, type JsonValue, type Runner, type WakeSnapshot } from "goah-ledger-contract";
+import { CONTRACT_VERSION, controlStream, wakeStream, type Clock, type EventInput, type GoalSnapshot, type JsonValue, type Runner, type TurnSnapshot, type WakeSnapshot } from "goah-ledger-contract";
 import { piWorkerPath, ProcessRunner, verificationWorkerPath } from "goah-runner-pi";
 import { calibrateVerificationThreshold, evaluateVerification, ProcessVerifierModel, renderDashboard, runSupervisorDaemon, Supervisor, VerificationPlane, type SupervisorOptions, type VerifierModel } from "goah-supervisor";
 import { assertLedgerConformance, createMemoryLedger, fauxRunnerWorkerPath, MockConnector, SimulatedClock } from "./index.js";
 
 const metric = { source: "test", window: "1h", direction: "at_least" as const, target: 1, freshnessMs: 60_000, onMissing: "abnormal" as const, onStale: "wake_owner" as const };
-function queuedWake(id: string, agent = "worker", triggerRef = `trigger:${id}`): WakeSnapshot { return { id, agent, triggerRef, status: "queued", leaseUntil: null, attempt: 0, startedAt: null, endedAt: null, enqueuedSeq: 0, leaseToken: null, runnerPid: null }; }
+function queuedWake(id: string, agent = "worker", triggerRef = `trigger:${id}`): WakeSnapshot { return { id, agent, triggerRef, status: "queued", attempt: 0, enqueuedSeq: 0, claimedAt:null,consumedAt:null,turnId:null }; }
 function goal(): GoalSnapshot { return { id: "root", parentId: null, objective: "produce a checked artifact", observationMethod: null, verificationMethod: null, owner: "worker", phase: "active", revision: 0 }; }
 function event(actor: string, type: string, data: JsonValue = {}, turnId?: string): EventInput { return { streamId: turnId ? wakeStream(turnId) : controlStream(actor), ts: "2026-08-18T00:00:00.000Z", actor, type, data }; }
 function repository(): string {
@@ -30,7 +30,7 @@ test("vertical slice commits handoff while the runner owns local files", async (
   const ledger = createMemoryLedger({ clock });
   const contextFile = join(mkdtempSync(join(tmpdir(), "goah-context-")), "context.json");
   const runner = fauxRunner([
-    { write: { path: "artifact.txt", content: "verified\n" }, trace: [{ type: "tool.completed", data: { callId: "write", result: { name: "write_artifact" } } }] },
+    { write: { path: "artifact.txt", content: "verified\n" }, trace: [{ type: "tool.called", data: { callId: "write",name:"write",arguments:{path:"artifact.txt"} } },{ type: "tool.completed", data: { callId: "write", result: { name: "write_artifact" } } }] },
     { handoff: { handoff: { observations: ["runner root clean"], results: ["local file written"], nextSteps: ["check later"] }, mail: [], nextWakeAt: "2026-08-19T00:00:00.000Z" } },
   ], contextFile, repo);
   const supervisor = new Supervisor(ledger, runner, clock);
@@ -38,7 +38,7 @@ test("vertical slice commits handoff while the runner owns local files", async (
   ledger.putMail({ id: "mail-1", to: "worker", from: "human", level: "decision", body: {}, readAt: null }, "human");
   supervisor.planWake("worker", clock.now().toISOString(), "initial run");
   const completed = await supervisor.tick();
-  assert.equal(completed?.status, "done");
+  assert.equal(completed?.status, "consumed");
   assert.equal(readFileSync(join(repo, "artifact.txt"), "utf8"), "verified\n");
   assert.match((JSON.parse(readFileSync(contextFile, "utf8")) as { text: string }).text, /# Incoming/);
   assert.equal(ledger.unreadMail("worker").length, 0);
@@ -90,11 +90,13 @@ test("a Human interaction interrupts active automatic CEO work", async () => {
   await new Promise<void>((resolve) => setImmediate(resolve));
   const accepted = await supervisor.startHumanTurn("你好");
   assert.equal(terminated, true);
-  assert.equal((await automatic)?.status, "abnormal");
+  const automaticWake=await automatic;assert.equal(automaticWake?.status,"consumed");assert.equal(ledger.turn(automaticWake!.turnId!)?.status,"interrupted");
   while (ledger.turn(accepted.turnId)?.status === "in_progress") await new Promise((resolveWait) => setTimeout(resolveWait, 1));
   assert.equal(ledger.turn(accepted.turnId)?.status, "completed");
   ledger.close();
 });
+
+test("an active Human Turn blocks queued automatic Wakes",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const pending=Promise.withResolvers<{outcome:"response";response:{content:string}}>();const runner:Runner={isolation:"process",prepare:()=>({pid:null,begin:()=>undefined,result:pending.promise,terminate:async()=>pending.resolve({outcome:"response",response:{content:"stopped"}})}),terminateProcess:async()=>undefined};const supervisor=new Supervisor(ledger,runner,clock);supervisor.createRootGoal("background","root");supervisor.planWake("ceo",clock.now().toISOString(),"automatic");const human=await supervisor.startHumanTurn("hello");assert.equal(await supervisor.tick(),null);assert.equal(ledger.wakes()[0]?.status,"queued");await supervisor.interruptTurn(human.turnId);ledger.close();});
 
 test("a follow-up steers the active Human turn and both messages commit together", async () => {
   const clock = new SimulatedClock();
@@ -124,6 +126,8 @@ test("a follow-up steers the active Human turn and both messages commit together
   ledger.close();
 });
 
+test("reasoning deltas become a durable reasoning Item",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const runner:Runner={isolation:"process",prepare:(request)=>({pid:null,begin:()=>{request.emit({type:"message.assistant.delta",data:{messageId:"m",delta:{type:"thinking_start"}}});request.emit({type:"message.assistant.delta",data:{messageId:"m",delta:{type:"thinking_delta",delta:"inspect state"}}});request.emit({type:"message.assistant.delta",data:{messageId:"m",delta:{type:"thinking_end"}}});},result:Promise.resolve({outcome:"response",response:{content:"done"}}),terminate:async()=>undefined}),terminateProcess:async()=>undefined};const supervisor=new Supervisor(ledger,runner,clock);const accepted=await supervisor.startHumanTurn("test");while(ledger.turn(accepted.turnId)?.status==="in_progress")await new Promise((resolve)=>setTimeout(resolve,1));const reasoning=ledger.turnItems(accepted.turnId).find((item)=>item.type==="reasoning");assert.equal(reasoning?.status,"completed");assert.deepEqual(reasoning?.data,{text:"inspect state"});ledger.close();});
+
 test("interrupting a Human Turn terminates it without Mail or Wake", async () => {
   const clock = new SimulatedClock(); const ledger = createMemoryLedger({ clock }); const result = Promise.withResolvers<{ outcome: "abnormal"; reason: string }>();
   const runner: Runner = { isolation:"process",prepare:()=>({pid:null,begin:()=>undefined,result:result.promise,terminate:async()=>result.resolve({outcome:"abnormal",reason:"stopped"})}),terminateProcess:async()=>undefined };
@@ -133,7 +137,7 @@ test("interrupting a Human Turn terminates it without Mail or Wake", async () =>
 test("a follow-up during Turn retry backoff joins the same Turn", async () => {
   const clock = new SimulatedClock(); const ledger = createMemoryLedger({ clock }); let attempt=0; let retryContext="";
   const runner: Runner = { isolation:"process",prepare:(request)=>{ attempt+=1; if(attempt>1) retryContext=String((request.context as {text?:string}).text??""); return {pid:null,begin:()=>undefined,result:Promise.resolve(attempt===1?{outcome:"abnormal" as const,reason:"temporary"}:{outcome:"response" as const,response:{content:"recovered"}}),terminate:async()=>undefined}; },terminateProcess:async()=>undefined };
-  const supervisor = new Supervisor(ledger,runner,clock,{turnRetryPolicy:{maxAttempts:2,baseDelayMs:25}}); const first=await supervisor.startHumanTurn("first"); while(!ledger.readStream(`turn:${first.turnId}`).some((event)=>event.type==="turn.retry_started")) await new Promise((resolveWait)=>setTimeout(resolveWait,1)); const follow=await supervisor.startHumanTurn("correction"); assert.equal(follow.turnId,first.turnId); while(ledger.turn(first.turnId)?.status==="in_progress") await new Promise((resolveWait)=>setTimeout(resolveWait,1)); assert.match(retryContext,/Follow-up: correction/); assert.equal(ledger.turnItems(first.turnId).filter((item)=>item.type==="user_message").length,2); ledger.close();
+  const supervisor = new Supervisor(ledger,runner,clock,{turnRetryPolicy:{maxAttempts:2,baseDelayMs:25}}); const first=await supervisor.startHumanTurn("first"); while(!ledger.readStream(`turn:${first.turnId}`).some((event)=>event.type==="turn.retry_started")) await new Promise((resolveWait)=>setTimeout(resolveWait,1)); const follow=await supervisor.startHumanTurn("correction"); assert.equal(follow.turnId,first.turnId); while(ledger.turn(first.turnId)?.status==="in_progress") await new Promise((resolveWait)=>setTimeout(resolveWait,1)); assert.match(retryContext,/Human: correction/); assert.equal(ledger.turnItems(first.turnId).filter((item)=>item.type==="user_message").length,2); ledger.close();
 });
 
 test("a Goal-bound Turn cannot hand off without updating its Work Record", async () => {
@@ -148,8 +152,8 @@ test("a Goal-bound Turn cannot hand off without updating its Work Record", async
   supervisor.createGoal(goal());
   supervisor.planWake("worker", clock.now().toISOString(), "missing record update");
   const wake = await supervisor.tick();
-  assert.equal(wake?.status, "abnormal");
-  assert.match(String((ledger.eventsForWake(wake!.id).find((event) => event.type === "wake.abnormal_reason")?.data as { reason?: string }).reason), /update its Work Record/);
+  assert.equal(wake?.status, "consumed");
+  assert.match(String((ledger.turn(wake!.turnId!)?.error as {reason?:string;message?:string})?.message), /update its Work Record/);
   ledger.close();
 });
 
@@ -173,7 +177,7 @@ test("automatic Goal rounds advance from the Work Record timeline", async () => 
   supervisor.createGoal(goal());
   for (let round = 1; round <= 2; round += 1) {
     supervisor.planWake("worker", clock.now().toISOString(), `round-${round}`);
-    assert.equal((await supervisor.tick())?.status, "done");
+    assert.equal((await supervisor.tick())?.status, "consumed");
     clock.advance(1);
   }
   const rounds = ledger.eventsSince(0, ["run.admitted"]).map((event) => (event.data as { source: { kind: string; round?: number } }).source.round);
@@ -191,15 +195,15 @@ test("crashed wake keeps emergency mail and local partial work for recovery", as
   ledger.putMail({ id: "urgent", to: "worker", from: "human", level: "emergency", body: { alert: true }, readAt: null }, "human");
   first.planWake("worker", clock.now().toISOString(), "crash");
   const abnormal = await first.tick();
-  assert.equal(abnormal?.status, "abnormal");
+  assert.equal(abnormal?.status, "consumed");assert.equal(ledger.turn(abnormal!.turnId!)?.status,"failed");
   assert.equal(ledger.unreadMail("worker").length, 1);
   assert.equal(readFileSync(join(repo, "partial.txt"), "utf8"), "keep\n");
 
   const recoveryContext = join(mkdtempSync(join(tmpdir(), "goah-context-")), "context.json");
   const recovering = fauxRunner([{ handoff: { handoff: { observations: [], results: [], nextSteps: [] }, mail: [], nextWakeAt: null } }], recoveryContext, repo);
-  ledger.enqueueWake(queuedWake("recovery", "worker", `recovery:${abnormal!.id}`), "supervisor");
+  ledger.enqueueWake(queuedWake("recovery", "worker", `recovery:${abnormal!.turnId}`), "supervisor");
   const second = new Supervisor(ledger, recovering, clock);
-  assert.equal((await second.tick())?.status, "done");
+  assert.equal((await second.tick())?.status, "consumed");
   const context = JSON.parse(readFileSync(recoveryContext, "utf8")) as { text: string };
   assert.match(context.text, /# Incoming/);
   assert.match(context.text, /# Recovery/);
@@ -213,16 +217,14 @@ test("recovery kills the recorded runner before another wake can use its local r
   const clock = new SimulatedClock();
   const ledger = createMemoryLedger({ clock });
   const runner = new ProcessRunner({ command: process.execPath, args: [fauxRunnerWorkerPath()], cwd: repo, env: { GOAH_FAUX_STEPS: JSON.stringify([{ write: { path: "running.txt", content: "partial\n" }, hang: true }]) }, killGraceMs: 25 });
-  ledger.enqueueWake(queuedWake("running"), "supervisor");
-  const leased = ledger.claimNextWake(clock.now().toISOString(), new Date(clock.now().getTime() + 100).toISOString(), "lease")!;
-  const running = ledger.markWakeRunning(leased.id, clock.now().toISOString(), "lease");
-  const handle = runner.prepare({ agent:running.agent,sourceWake:running,execution:{ id:running.id,threadId:"thread",source:"system",goalId:null,goalRevision:null,status:"in_progress",error:null,startedAt:clock.now().toISOString(),endedAt:null,leaseUntil:running.leaseUntil,leaseToken:running.leaseToken,runnerPid:null }, turn: { source: { kind: "system", reason: "test" } }, context: {}, now: () => clock.now().toISOString(), emit: () => undefined });
-  ledger.attachWakeProcess(running.id, "lease", handle.pid!, clock.now().toISOString());
+  const execution=testTurn(ledger,"worker","running-turn",{leaseUntil:new Date(clock.now().getTime()+100).toISOString(),leaseToken:"lease"});
+  const handle = runner.prepare({ agent:"worker",execution, turn: { source: { kind: "system", reason: "test" } }, context: {}, now: () => clock.now().toISOString(), emit: () => undefined });
+  ledger.attachTurnProcess(execution.id,"lease",handle.pid!);
   handle.begin();
   await waitFor(() => existsSync(join(repo, "running.txt")));
   clock.advance(200);
   await new Supervisor(ledger, runner, clock).recover();
-  assert.equal(ledger.wake("running")?.status, "abnormal");
+  assert.equal(ledger.turn(execution.id)?.status, "failed");
   assert.throws(() => process.kill(handle.pid!, 0));
   assert.equal(readFileSync(join(repo, "running.txt"), "utf8"), "partial\n");
   ledger.close();
@@ -239,7 +241,7 @@ test("supervisor leaves Git history decisions to the runner", async () => {
   const head = git(repo, ["rev-parse", "HEAD"]);
   const supervisor = new Supervisor(ledger, runner, clock);
   supervisor.createGoal(goal()); supervisor.planWake("worker", clock.now().toISOString(), "local edit");
-  assert.equal((await supervisor.tick())?.status, "done");
+  assert.equal((await supervisor.tick())?.status, "consumed");
   assert.equal(readFileSync(join(repo, "README.md"), "utf8"), "worker change\n");
   assert.equal(git(repo, ["rev-parse", "HEAD"]), head);
   assert.match(git(repo, ["status", "--short"]), /README\.md/);
@@ -256,9 +258,10 @@ test("gated action can be approved, connector crash becomes unknown, and audit a
   const supervisor = new Supervisor(ledger, fauxRunner([{ handoff: { handoff: { observations: [], results: [], nextSteps: [] }, mail: [], nextWakeAt: null } }], contextFile), clock);
   supervisor.registerConnector(connector.spec);
   const evidence = ledger.appendEvent({ ...event("worker", "observed"), ts: clock.now().toISOString() });
-  const requested = await supervisor.submitAction({ id: "a1", agent: "worker", kind: "mock.write", payload: {}, reason: "evidence", evidence: [evidence.seq], auditAdvice: null, adviceAcked: false }, "external");
+  const actionTurn=testTurn(ledger,"worker","action-turn");const requested = await supervisor.submitAction({ id: "a1", agent: "worker", createdInTurn:actionTurn.id,kind: "mock.write", payload: {}, reason: "evidence", evidence: [evidence.seq], auditAdvice: null, adviceAcked: false }, "external");
   assert.equal(requested.status, "requested");
   await assert.rejects(() => supervisor.approveAction("a1", "human", "approved", [evidence.seq]), /injected connector crash/);
+  ledger.putTurn({...ledger.turn(actionTurn.id)!,status:"completed",endedAt:clock.now().toISOString(),leaseUntil:null,leaseToken:null,runnerPid:null},"supervisor");
   await supervisor.recover();
   assert.equal(ledger.action("a1")?.status, "unknown");
   assert.equal((await supervisor.reconcileAction("a1")).status, "confirmed");
@@ -272,6 +275,8 @@ test("gated action can be approved, connector crash becomes unknown, and audit a
   ledger.close();
 });
 
+test("approval does not mutate an Action when its connector is unavailable",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const supervisor=new Supervisor(ledger,fauxRunner([]),clock);const turn=testTurn(ledger,"worker","missing-connector-turn");const evidence=ledger.appendEvent({...event("worker","observed"),ts:clock.now().toISOString()});await supervisor.submitAction({id:"missing",agent:"worker",createdInTurn:turn.id,kind:"write",payload:{},reason:"test",evidence:[evidence.seq],auditAdvice:null,adviceAcked:false},"missing");await assert.rejects(()=>supervisor.approveAction("missing","human","approve",[evidence.seq]),/connector not registered/);assert.equal(ledger.action("missing")?.status,"requested");ledger.close();});
+
 test("connector subprocess does not inherit ambient supervisor secrets", async () => {
   process.env.GOAH_AMBIENT_SECRET_TEST = "must-not-leak";
   try {
@@ -284,7 +289,7 @@ test("connector subprocess does not inherit ambient supervisor secrets", async (
       args: ["-e", "process.stdin.resume(); process.stdin.on('end',()=>process.stdout.write(JSON.stringify({status:process.env.GOAH_AMBIENT_SECRET_TEST?'failed':'confirmed'})))"],
     });
     const evidence = ledger.appendEvent({ ...event("worker", "observed"), ts: clock.now().toISOString() });
-    const result = await supervisor.submitAction({ id: "env", agent: "worker", kind: "check.env", payload: {}, reason: "verify isolation", evidence: [evidence.seq], auditAdvice: null, adviceAcked: false }, "isolated");
+    const actionTurn=testTurn(ledger,"worker","env-turn");const result = await supervisor.submitAction({ id: "env", agent: "worker", createdInTurn:actionTurn.id,kind: "check.env", payload: {}, reason: "verify isolation", evidence: [evidence.seq], auditAdvice: null, adviceAcked: false }, "isolated");
     assert.equal(result.status, "confirmed");
     ledger.close();
   } finally {
@@ -317,8 +322,8 @@ test("supervisor renews a live runner lease instead of treating duration as a ta
   ]);
   const supervisor = new Supervisor(ledger, runner, clock, { leaseMs: 60 });
   supervisor.createGoal(goal()); supervisor.planWake("worker", clock.now().toISOString(), "renew lease");
-  assert.equal((await supervisor.tick())?.status, "done");
-  assert.equal(ledger.events().some((event) => event.type === "wake.lease_renewed"), true);
+  assert.equal((await supervisor.tick())?.status, "consumed");
+  assert.equal(ledger.events().some((event) => event.type === "turn.in_progress"), true);
   ledger.close();
 });
 
@@ -328,16 +333,18 @@ test("verification plane enforces blind-first audit and reports calibrated metri
   const supervisor = new Supervisor(ledger, fauxRunner([]), clock);
   supervisor.createGoal(goal());
   const evidence = ledger.appendEvent({ ...event("worker", "tool.fact", { value: 1 }, "w"), ts: clock.now().toISOString() });
-  ledger.requestAction({ id: "a", agent: "worker", kind: "mock.write", connector: "mock", payload: {}, reason: "private rationale", evidence: [evidence.seq], gated: false, status: "requested", reconciledAt: null, externalRef: null, auditAdvice: null, adviceAcked: false }, "worker", "w");
+  const verifyTurn=testTurn(ledger,"worker","w");ledger.requestAction({ id: "a", agent: "worker", createdInTurn:verifyTurn.id,kind: "mock.write", connector: "mock", payload: {}, reason: "private rationale", evidence: [evidence.seq], gated: false, status: "requested", reconciledAt: null, externalRef: null, auditAdvice: null, adviceAcked: false }, "worker", "w");
   ledger.appendEvent({ ...event("worker", "handoff.recorded", { results: ["claimed"] }, "w"), ts: clock.now().toISOString() });
   let blindPayload = "";
+  let verifiedActions:string[]=[];
   const model: VerifierModel = {
-    verifyTurn: async () => ({ findings: [{ actionId: "a", body: { issue: "unsupported" }, evidence: [evidence.seq], riskWeight: 2 }], tokensUsed: 10 }),
+    verifyTurn: async (input) => {verifiedActions=input.actions.map((action)=>action.id);return{ findings: [{ actionId: "a", body: { issue: "unsupported" }, evidence: [evidence.seq], riskWeight: 2 }], tokensUsed: 10 }},
     blindAudit: async (facts) => { blindPayload = JSON.stringify(facts); return { findings: [], tokensUsed: 5 }; },
     reasonAudit: async () => ({ findings: [], tokensUsed: 5 }),
   };
   const plane = new VerificationPlane(ledger, supervisor, model);
   await plane.verifyTurn("w");
+  assert.deepEqual(verifiedActions,["a"]);
   assert.equal(ledger.unackedAuditAdvice("worker").length, 1);
   await plane.auditGlobal();
   assert.doesNotMatch(blindPayload, /private rationale|claimed/);
@@ -387,11 +394,11 @@ test("accelerated 30-day soak keeps wake context bounded and projections replaya
   supervisor.createGoal(goal());
   for (let day = 0; day < 30; day += 1) {
     supervisor.planWake("worker", clock.now().toISOString(), `day-${day}`);
-    assert.equal((await supervisor.tick())?.status, "done");
+    assert.equal((await supervisor.tick())?.status, "consumed");
     assert.ok(readFileSync(contextFile).byteLength < 20_000);
     clock.advance(86_400_000);
   }
-  assert.equal(ledger.wakes().filter((wake) => wake.status === "done").length, 30);
+  assert.equal(ledger.wakes().filter((wake) => wake.status === "consumed").length, 30);
   const before = JSON.stringify({ goals: ledger.goals(), wakes: ledger.wakes(), schedules: ledger.schedules() });
   ledger.rebuildProjections();
   assert.equal(JSON.stringify({ goals: ledger.goals(), wakes: ledger.wakes(), schedules: ledger.schedules() }), before);
@@ -410,7 +417,7 @@ test("official Pi agent core worker completes a structured handoff through the p
   } });
   const supervisor = new Supervisor(ledger, runner, clock);
   supervisor.createGoal(goal()); supervisor.planWake("worker", clock.now().toISOString(), "pi integration");
-  assert.equal((await supervisor.tick())?.status, "done");
+  assert.equal((await supervisor.tick())?.status, "consumed");
   const started = ledger.events().find((event) => event.type === "transcript.started");
   assert.equal((started?.data as { formatVersion?: number }).formatVersion, 1);
   assert.equal(ledger.events().some((event) => event.type === "request.prepared"), true);
@@ -424,6 +431,8 @@ test("official Pi agent core worker completes a structured handoff through the p
   ledger.close();
 });
 
+test("failed Runner execution ends the canonical transcript as interrupted",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const runner=new ProcessRunner({command:process.execPath,args:[piWorkerPath()],env:{GOAH_PI_PROVIDER:"faux",GOAH_PI_MODEL:"faux-goah",GOAH_PI_FAUX_ERROR:"provider failed"}});const supervisor=new Supervisor(ledger,runner,clock,{turnRetryPolicy:{maxAttempts:1,baseDelayMs:1}});const accepted=await supervisor.startHumanTurn("hello");while(ledger.turn(accepted.turnId)?.status==="in_progress")await new Promise((resolve)=>setTimeout(resolve,5));const terminals=ledger.readStream(`turn:${accepted.turnId}`).filter((event)=>event.type==="transcript.completed"||event.type==="transcript.interrupted").map((event)=>event.type);assert.deepEqual(terminals,["transcript.interrupted"]);ledger.close();});
+
 test("official Pi worker exposes organization tools only to the CEO profile", async () => {
   const clock = new SimulatedClock();
   const ledger = createMemoryLedger({ clock });
@@ -434,7 +443,7 @@ test("official Pi worker exposes organization tools only to the CEO profile", as
   } });
   const supervisor = new Supervisor(ledger, runner, clock);
   supervisor.startGoal("operate organization", "pi-ceo-root");
-  assert.equal((await supervisor.tick())?.status, "done");
+  assert.equal((await supervisor.tick())?.status, "consumed");
   const prepared = ledger.events().find((event) => event.type === "request.prepared")?.data as { tools?: Array<{ name?: string }> };
   assert.equal(prepared.tools?.some((tool) => tool.name === "delegate_goal"), true);
   assert.equal(prepared.tools?.some((tool) => tool.name === "team_list"), true);
@@ -459,7 +468,7 @@ test("bidirectional runner RPC applies child capabilities and rejects parent-onl
   const supervisor = new Supervisor(ledger, runner, clock, { profiles: [{ agent: "worker", role: "child" }] });
   supervisor.registerConnector(connector.spec);
   supervisor.createGoal(goal()); supervisor.planWake("worker", clock.now().toISOString(), "rpc");
-  assert.equal((await supervisor.tick())?.status, "done");
+  assert.equal((await supervisor.tick())?.status, "consumed");
   assert.equal(ledger.action("rpc-action")?.status, "confirmed");
   assert.equal(ledger.mailbox().some((mail) => mail.to === "human"), true);
   assert.equal(ledger.schedules()[0]?.nextWakeAt, "2026-08-20T00:00:00.000Z");
@@ -468,7 +477,7 @@ test("bidirectional runner RPC applies child capabilities and rejects parent-onl
   const denied = new Supervisor(ledger, fauxRunner([{ rpc: { method: "goal.put", params: { goal: { ...goal(), revision: 1 } } } }]), clock, { profiles: [{ agent: "worker", role: "child" }] });
   clock.advance(1);
   denied.planWake("worker", clock.now().toISOString(), "denied");
-  assert.equal((await denied.tick())?.status, "abnormal");
+  const deniedWake=await denied.tick();assert.equal(deniedWake?.status,"consumed");assert.equal(ledger.turn(deniedWake!.turnId!)?.status,"failed");
   assert.equal(ledger.goal("root")?.revision, 0);
   ledger.close();
 });
@@ -486,7 +495,7 @@ test("legacy Goal memory remains readable while Goal Agents write Work Records i
 
   const secondContext = join(mkdtempSync(join(tmpdir(), "goah-memory-")), "context-2.json");
   supervisor.planWake("worker", clock.now().toISOString(), "memory-second");
-  assert.equal((await new Supervisor(ledger, fauxRunner([{ handoff: { handoff: { observations: [], results: [], nextSteps: [] }, mail: [], nextWakeAt: null } }], secondContext), clock, { memoryTailChars: 200 }).tick())?.status, "done");
+  assert.equal((await new Supervisor(ledger, fauxRunner([{ handoff: { handoff: { observations: [], results: [], nextSteps: [] }, mail: [], nextWakeAt: null } }], secondContext), clock, { memoryTailChars: 200 }).tick())?.status, "consumed");
   const context = JSON.parse(readFileSync(secondContext, "utf8")) as { text: string; sourceSeqs: number[] };
   assert.match(context.text, /# Working memory\n\n- integration tests fake-fail[^\n]*\[event:\d+\]/);
   assert.doesNotMatch(context.text, /legacy survey/);
@@ -509,7 +518,7 @@ test("CEO role delegates atomically and receives its dedicated operating policy"
     { handoff: { handoff: { observations: [], results: ["delegated"], nextSteps: [] }, mail: [], nextWakeAt: null } },
   ], contextFile), clock, { profiles: [{ agent: "ceo", role: "ceo" }] });
   supervisor.planWake("ceo", clock.now().toISOString(), "replan");
-  assert.equal((await supervisor.tick())?.status, "done");
+  assert.equal((await supervisor.tick())?.status, "consumed");
   assert.equal(ledger.goal("child")?.owner, "worker");
   assert.equal(ledger.unreadMail("worker").length, 1);
   assert.equal(ledger.queuedWakeForAgent("worker")?.triggerRef, "delegation:delegation-1");
@@ -546,9 +555,9 @@ test("root revision blocks stale child gated actions until CEO revises the child
   supervisor.delegate({ id: "d", parentGoalId: "revenue", childGoal: { id: "baseline", objective: "establish baseline", observationMethod: "Run the baseline report.", verificationMethod: "Run the baseline report.", owner: "analyst" }, brief: {}, reason: "bounded evidence work", evidence: [delegationEvidence.seq] });
   supervisor.updateGoal("revenue", { objective: "grow retained net revenue" }, "human");
   const actionEvidence = ledger.appendEvent({ ...event("analyst", "analysis.observed", { ready: true }), ts: clock.now().toISOString() });
-  await assert.rejects(() => supervisor.submitAction({ id: "stale", agent: "analyst", kind: "external.write", payload: {}, reason: "publish", evidence: [actionEvidence.seq], auditAdvice: null, adviceAcked: false }, "missing"), /predates root revision/);
+  const actionTurn=testTurn(ledger,"analyst","analyst-turn");await assert.rejects(() => supervisor.submitAction({ id: "stale", agent: "analyst", createdInTurn:actionTurn.id,kind: "external.write", payload: {}, reason: "publish", evidence: [actionEvidence.seq], auditAdvice: null, adviceAcked: false }, "missing"), /predates root revision/);
   supervisor.reviseChildGoal("baseline", "establish retained revenue baseline", "Run the retained revenue baseline report.", "Require the retained revenue baseline report to pass.", "ceo", "root objective changed", [actionEvidence.seq]);
-  const requested = await supervisor.submitAction({ id: "current", agent: "analyst", kind: "external.write", payload: {}, reason: "publish", evidence: [actionEvidence.seq], auditAdvice: null, adviceAcked: false }, "missing");
+  const requested = await supervisor.submitAction({ id: "current", agent: "analyst", createdInTurn:actionTurn.id,kind: "external.write", payload: {}, reason: "publish", evidence: [actionEvidence.seq], auditAdvice: null, adviceAcked: false }, "missing");
   assert.equal(requested.status, "requested");
   ledger.close();
 });
@@ -560,10 +569,9 @@ test("CEO rejects a motionless active organization and injects the violation int
   const supervisor = new Supervisor(ledger, fauxRunner([{ handoff: { handoff: { observations: [], results: [], nextSteps: [] }, mail: [], nextWakeAt: null } }], contextFile), clock, { retryPolicy: { maxAttempts: 2, baseDelayMs: 1 } });
   const started = supervisor.startGoal("operate without stalling", "root-motion");
   assert.equal(started.wake.agent, "ceo");
-  assert.equal((await supervisor.tick())?.status, "abnormal");
+  const invalid=await supervisor.tick();assert.equal(invalid?.status,"consumed");assert.equal(ledger.turn(invalid!.turnId!)?.status,"failed");
   assert.equal(ledger.events().some((item) => item.type === "ceo.motion_invalid"), true);
-  clock.advance(2);
-  assert.equal((await supervisor.tick())?.status, "abnormal");
+  clock.advance(2);const recovery=await supervisor.tick();assert.equal(recovery?.status,"consumed");assert.equal(ledger.turn(recovery!.turnId!)?.status,"failed");
   assert.match((JSON.parse(readFileSync(contextFile, "utf8")) as { text: string }).text, /ceo\.motion_invalid/);
   ledger.close();
 });
@@ -574,7 +582,7 @@ test("system-silence tripwire asks the CEO for confirmation after total ledger s
   const policy: SupervisorOptions = { profiles: [{ agent: "ceo", role: "ceo" }], silence: { maxSilentMs: 6 * 3_600_000 } };
   const first = new Supervisor(ledger, fauxRunner([{ handoff: { handoff: { observations: ["explicit wait"], results: [], nextSteps: [], blocker: "waiting for human data access" }, mail: [], nextWakeAt: null } }]), clock, policy);
   first.startGoal("grow daily views", "views");
-  assert.equal((await first.tick())?.status, "done");
+  assert.equal((await first.tick())?.status, "consumed");
 
   clock.advance(5 * 3_600_000);
   const quiet = new Supervisor(ledger, fauxRunner([{ handoff: { handoff: { observations: ["still waiting"], results: [], nextSteps: [] }, mail: [], nextWakeAt: null } }]), clock, policy);
@@ -583,7 +591,7 @@ test("system-silence tripwire asks the CEO for confirmation after total ledger s
 
   clock.advance(2 * 3_600_000);
   const confirming = new Supervisor(ledger, fauxRunner([{ handoff: { handoff: { observations: ["confirmed waiting"], results: [], nextSteps: [], blocker: "still waiting for human data access" }, mail: [], nextWakeAt: null } }]), clock, policy);
-  assert.equal((await confirming.tick())?.status, "done");
+  assert.equal((await confirming.tick())?.status, "consumed");
   assert.equal(ledger.events().some((event) => event.type === "watchdog.system_silence"), true);
   const silenceMail = ledger.mailbox().find((mail) => mail.id.startsWith("silence:"));
   assert.ok(silenceMail);
@@ -640,7 +648,7 @@ test("process verifier model runs on official Pi core and writes advice", async 
   const supervisor = new Supervisor(ledger, fauxRunner([]), clock);
   supervisor.createGoal(goal());
   const evidence = ledger.appendEvent({ ...event("worker", "fact", {}, "verify-wake"), ts: clock.now().toISOString() });
-  ledger.requestAction({ id: "verify-action", agent: "worker", kind: "mock", connector: "mock", payload: {}, reason: "r", evidence: [evidence.seq], gated: false, status: "requested", reconciledAt: null, externalRef: null, auditAdvice: null, adviceAcked: false }, "worker", "verify-wake");
+  const verifyTurn=testTurn(ledger,"worker","verify-wake");ledger.requestAction({ id: "verify-action", agent: "worker", createdInTurn:verifyTurn.id,kind: "mock", connector: "mock", payload: {}, reason: "r", evidence: [evidence.seq], gated: false, status: "requested", reconciledAt: null, externalRef: null, auditAdvice: null, adviceAcked: false }, "worker", "verify-wake");
   const model = new ProcessVerifierModel({ command: process.execPath, args: [verificationWorkerPath()], env: { GOAH_PI_PROVIDER: "faux", GOAH_PI_MODEL: "faux-verifier", GOAH_VERIFIER_FAUX_FINDINGS: JSON.stringify([{ actionId: "verify-action", body: { issue: "found" }, evidence: [evidence.seq], riskWeight: 3 }]) } });
   await new VerificationPlane(ledger, supervisor, model).verifyTurn("verify-wake");
   assert.equal(ledger.unackedAuditAdvice("worker").length, 1);
@@ -672,6 +680,7 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 2_000;
   while (!predicate()) { if (Date.now() > deadline) throw new Error("condition timed out"); await new Promise((resolve) => setTimeout(resolve, 10)); }
 }
+function testTurn(ledger:ReturnType<typeof createMemoryLedger>,agent:string,id:string,patch:Partial<TurnSnapshot>={}):TurnSnapshot{const now=new Date().toISOString();let ceo=ledger.threads().find((candidate)=>candidate.agent==="ceo");if(agent!=="ceo"&&!ceo){ceo={id:"thread:ceo",agent:"ceo",parentThreadId:null,createdAt:now,updatedAt:now};ledger.putThread(ceo,"supervisor");}let thread=ledger.threads().find((candidate)=>candidate.agent===agent);if(!thread){thread={id:`thread:${agent}`,agent,parentThreadId:agent==="ceo"?null:ceo!.id,createdAt:now,updatedAt:now};ledger.putThread(thread,"supervisor");}const turn:TurnSnapshot={id,threadId:thread.id,source:"system",goalId:null,goalRevision:null,status:"in_progress",attempt:1,error:null,startedAt:now,endedAt:null,leaseUntil:new Date(Date.now()+60_000).toISOString(),leaseToken:"test-lease",runnerPid:null,...patch};ledger.putTurn(turn,"supervisor");return turn;}
 function fauxRunner(steps: unknown[], contextFile?: string, cwd?: string): ProcessRunner {
   return new ProcessRunner({ command: process.execPath, args: [fauxRunnerWorkerPath()], ...(cwd ? { cwd } : {}), env: { GOAH_FAUX_STEPS: JSON.stringify(steps), ...(contextFile ? { GOAH_FAUX_CONTEXT_FILE: contextFile } : {}) }, killGraceMs: 25 });
 }

@@ -261,7 +261,8 @@ export function diagnoseConfig(config: GoahConfig): { ok: boolean; checks: Docto
     try {
       const version = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
       if (version > SQLITE_SCHEMA_VERSION) throw new Error(`ledger schema ${version} is newer than supported schema ${SQLITE_SCHEMA_VERSION}`);
-      return `${database} (schema ${version}${version < SQLITE_SCHEMA_VERSION ? `, migrates to ${SQLITE_SCHEMA_VERSION}` : ""})`;
+      if(version>0&&version<SQLITE_SCHEMA_VERSION)throw new Error(`ledger schema ${version} predates Turn-owned execution; recreate this development workspace`);
+      return `${database} (schema ${version})`;
     }
     finally { db.close(); }
   });
@@ -286,15 +287,12 @@ export function diagnoseConfig(config: GoahConfig): { ok: boolean; checks: Docto
 export function statusSnapshot(ledger: SqliteLedger): object {
   const events = ledger.events();
   const wakes = ledger.wakes().map((wake) => {
-    const wakeEvents = events.filter((event) => event.streamId === wakeStream(wake.id));
-    const abnormal = [...wakeEvents].reverse().find((event) => event.type === "wake.abnormal_reason");
-    const tokensUsed = wakeEvents.reduce((total, event) => total + assistantTokens(event.data), 0);
-    return { ...wake, tokensUsed, abnormalReason: abnormal ? field(abnormal.data, "reason") : null };
+    const turn=wake.turnId?ledger.turn(wake.turnId):null;const turnEvents=turn?ledger.readStream(`turn:${turn.id}`):[];const tokensUsed=turnEvents.reduce((total,event)=>total+assistantTokens(event.data),0);return{...wake,tokensUsed,abnormalReason:turn?.status==="failed"?field(turn.error,"message"):null};
   });
   const goals = ledger.goals().map((goal) => ({ ...goal, evaluation: [...events].reverse().find((event) => event.streamId === `metric:${goal.id}` && event.type === "metric.evaluated")?.data ?? null }));
   const handoffs = events.filter((event) => event.type === "handoff.recorded").slice(-20).map((event) => ({ seq: event.seq, ts: event.ts, agent: event.actor, streamId: event.streamId, handoff: event.data }));
   const modelCapabilities = [...events].reverse().find((event) => event.type === "transcript.started")?.data ?? null;
-  return { seq: events.at(-1)?.seq ?? 0, threads: ledger.threads(), turns: ledger.turns(), goals, wakes, actions: ledger.actions(), modelCapabilities, recentHandoffs: handoffs };
+  return { seq: events.at(-1)?.seq ?? 0, threads: ledger.threads(), turns: ledger.turns().map((turn)=>({...turn,leaseToken:null})), goals, wakes, actions: ledger.actions(), modelCapabilities, recentHandoffs: handoffs };
 }
 
 function defaultModel(provider: string): string {

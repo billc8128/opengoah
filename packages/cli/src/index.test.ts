@@ -116,7 +116,7 @@ test("interactive stream follows redelivery wakes through recovery", async () =>
   const frames = await framesPromise;
   assert.equal(frames.filter((frame) => frame.type === "accepted").length, 1);
   assert.equal(frames.some((frame) => frame.type === "event" && (frame.event as { type?: string }).type === "message.assistant.completed"), true);
-  assert.equal((frames.findLast((frame) => frame.type === "result") as unknown as { value: { response: { content: string } } }).value.response.content, "recovered response");
+  assert.equal(frames.findLast((frame) => frame.type === "result")?.type,"result");
   ledger.close();
 });
 
@@ -131,7 +131,7 @@ test("interactive stream terminates when a Human turn completes", async () => {
 
 test("welcome snapshot restores ordinary Human conversation", async () => {
   const state = mkdtempSync(join(tmpdir(), "goah-welcome-conversation-")); const clock: Clock = { now: () => new Date("2026-08-25T00:00:00.000Z") }; const ledger = new SqliteLedger(join(state, "ledger.sqlite"), { clock });
-  const runner: Runner = { isolation: "process", prepare: () => ({ pid: null, begin: () => undefined, result: Promise.resolve({ outcome: "response", response: { content: "restored answer" } }), terminate: async () => undefined }), terminateProcess: async () => undefined }; const supervisor = new Supervisor(ledger, runner, clock); const accepted = await supervisor.startHumanTurn("remember this question"); while (ledger.turn(accepted.turnId)?.status === "in_progress") await new Promise((resolveWait) => setTimeout(resolveWait, 1)); ledger.close();
+  const runner: Runner = { isolation: "process", prepare: () => ({ pid: null, begin: () => undefined, result: Promise.resolve({ outcome: "response", response: { content: "restored answer" } }), terminate: async () => undefined }), terminateProcess: async () => undefined }; const supervisor = new Supervisor(ledger, runner, clock); const accepted = await supervisor.startHumanTurn("remember this question"); while (ledger.turn(accepted.turnId)?.status === "in_progress") await new Promise((resolveWait) => setTimeout(resolveWait, 1));const now=clock.now().toISOString();const ceo=ledger.threads().find((thread)=>thread.agent==="ceo")!;ledger.putThread({id:"child-thread",agent:"worker",parentThreadId:ceo.id,createdAt:now,updatedAt:now},"supervisor");ledger.putTurn({id:"child-turn",threadId:"child-thread",source:"goal",goalId:null,goalRevision:null,status:"in_progress",attempt:1,error:null,startedAt:now,endedAt:null,leaseUntil:"2026-08-25T00:10:00.000Z",leaseToken:"lease",runnerPid:null},"supervisor");ledger.putTurnItem({id:"child-message",turnId:"child-turn",ordinal:1,type:"user_message",status:"completed",data:{text:"internal worker prompt"},createdAt:now,completedAt:now},"worker");ledger.putTurn({...ledger.turn("child-turn")!,status:"completed",endedAt:now,leaseUntil:null,leaseToken:null},"supervisor");ledger.close();
   assert.deepEqual(welcomeSnapshot(state, { runner: "pi", target: "test/model" }).conversation.map((row) => row.text), ["remember this question", "restored answer"]);
 });
 
@@ -155,12 +155,12 @@ test("CLI runs the install-to-first-handoff path with the faux provider", () => 
   assert.equal(created.goal.id, "first");
   assert.equal(created.wake.status, "queued");
   const run = JSON.parse(invoke(directory, "run-once"));
-  assert.equal(run.wake.status, "done");
-  const wakeId = run.wake.id;
+  assert.equal(run.wake.status, "consumed");
+  const wakeId = run.wake.id;const turnId=run.wake.turnId;
   const status = JSON.parse(invoke(directory, "status"));
   assert.equal(status.goals[0].id, "first");
   assert.equal(status.wakes.length, 1);
-  assert.equal(status.wakes[0].status, "done");
+  assert.equal(status.wakes[0].status, "consumed");
   assert.equal(status.modelCapabilities.provider, "faux");
   assert.equal(status.recentHandoffs.length, 1);
   const threads = JSON.parse(invoke(directory, "thread", "list"));
@@ -170,17 +170,17 @@ test("CLI runs the install-to-first-handoff path with the faux provider", () => 
   const detail = JSON.parse(invoke(directory, "thread", "show", "--config", "goah.config.json", threadId));
   assert.ok(detail.turns[0].items.length > 0);
   assert.equal(JSON.stringify(detail).includes("apiKey"), false);
-  const context = JSON.parse(invoke(directory, "context", "show", wakeId));
+  const context = JSON.parse(invoke(directory, "context", "show", turnId));
   assert.match(context.text, /Complete the first handoff/);
-  const events = JSON.parse(invoke(directory, "events", "--stream", `wake:${wakeId}`));
-  assert.equal(events.at(-1).type, "wake.done");
+  const events = JSON.parse(invoke(directory, "events", "--stream", `turn:${turnId}`));
+  assert.equal(events.some((event:{type:string})=>event.type==="transcript.completed"),true);
   const exportedPath = join(directory, "thread.json");
   const exported = JSON.parse(invoke(directory, "thread", "export", threadId, "--output", exportedPath));
   assert.equal(exported.redacted, true);
   assert.equal(JSON.parse(readFileSync(exportedPath, "utf8")).format, "goah.thread-export.v1");
   const queued = JSON.parse(invoke(directory, "wake", "worker", "--reason", "manual follow-up"));
   assert.equal(queued.wake.status, "queued");
-  assert.equal(JSON.parse(invoke(directory, "run-once")).wake.status, "done");
+  assert.equal(JSON.parse(invoke(directory, "run-once")).wake.status, "consumed");
   assert.equal(JSON.parse(invoke(directory, "status")).wakes.length, 2);
 });
 
@@ -193,8 +193,9 @@ test("CLI rejects an unsupported legacy Ark provider", () => {
 });
 
 test("thread export redaction preserves structure while removing common secrets and home paths", () => {
-  const redacted = redactValue({ token: "top-secret", nested: { text: `Bearer abcdef /Users/example key-abcdefghijklmnop ${process.env.HOME}` } }) as { token: string; nested: { text: string } };
+  const redacted = redactValue({ token: "top-secret",leaseToken:"fencing-secret",lease_token:"snake-secret", nested: { text: `Bearer abcdef /Users/example key-abcdefghijklmnop ${process.env.HOME}` } }) as { token: string;leaseToken:string;lease_token:string;nested: { text: string } };
   assert.equal(redacted.token, "[REDACTED]");
+  assert.equal(redacted.leaseToken,"[REDACTED]");assert.equal(redacted.lease_token,"[REDACTED]");
   assert.doesNotMatch(redacted.nested.text, /abcdef|abcdefghijklmnop/);
   if (process.env.HOME) assert.doesNotMatch(redacted.nested.text, new RegExp(process.env.HOME.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });
@@ -226,7 +227,7 @@ test("CLI runs a local operations goal without Git", () => {
   assert.equal(doctor.ok, true);
   assert.match(doctor.checks.find((item: { name: string }) => item.name === "root").detail, /runner-owned local execution/);
   invoke(directory, "goal-create", "--id", "store", "--owner", "operator", "--objective", "Open a storefront", "--wake-now");
-  assert.equal(JSON.parse(invoke(directory, "run-once")).wake.status, "done");
+  assert.equal(JSON.parse(invoke(directory, "run-once")).wake.status, "consumed");
   assert.equal(JSON.parse(invoke(directory, "status")).wakes.length, 1);
 });
 

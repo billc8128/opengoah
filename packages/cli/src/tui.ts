@@ -127,7 +127,7 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   await ensureDaemon(configPath, stateDir);
   const liveSnapshot = await requestControl(stateDir, { op: "status" }).catch(() => null);
   const liveTurns = liveSnapshot && typeof liveSnapshot === "object" && !Array.isArray(liveSnapshot) && Array.isArray(liveSnapshot.turns) ? liveSnapshot.turns as Array<Record<string, unknown>> : [];
-  const liveInteractionWakeId = findLiveTurnId(liveTurns);
+  const liveInteractionTurnId = findLiveTurnId(liveTurns);
   const terminal = new ProcessTerminal();
   const tui = new TuiAltScreen(terminal, true, undefined, { mouse: true });
   terminal.setTitle(`Goah · ${runner.target}`);
@@ -152,8 +152,7 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   const queued: string[] = [];
   const queuedTurnIds: string[] = [];
   let activeStream: AbortController | null = null;
-  let activeInteractionWakeId: string | null = null;
-  let resumeInteractionWakeId: string | null = null;
+  let activeInteractionTurnId: string | null = null;
   let steeringTail: Promise<void> = Promise.resolve();
   let configuring = false;
   let exiting = false;
@@ -176,7 +175,7 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
     statusView.setText(statusText("working", queued.length));
     if (showUser) { transcriptView.addUser(message); tui.requestRender(); }
     try {
-      await streamControl(stateDir, { op: "interact", message }, (frame) => { if (frame.type === "accepted") activeInteractionWakeId = frame.wakeId; if (frame.type === "result" || frame.type === "error") activeInteractionWakeId = null; renderFrame(frame, push, appendLive, commitLive, pushResponse, updateTool, updateThinking, setWakeState, () => commitLive("")); }, controller.signal);
+      await streamControl(stateDir, { op: "interact", message }, (frame) => { if (frame.type === "accepted") activeInteractionTurnId = frame.turnId; if (frame.type === "result" || frame.type === "error") activeInteractionTurnId = null; renderFrame(frame, push, appendLive, commitLive, pushResponse, updateTool, updateThinking, setWakeState, () => commitLive("")); }, controller.signal);
     } catch (error) {
       transcriptView.clearLiveMarkdown();
       transcriptView.updateThinking({ phase: "clear", text: "" });
@@ -191,10 +190,10 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   };
   const attachTurn = async (turnId: string): Promise<void> => {
     busy.active = true;
-    activeInteractionWakeId = turnId;
+    activeInteractionTurnId = turnId;
     const controller = new AbortController(); activeStream = controller;
     statusView.setText(statusText("queued", 1));
-    try { await streamControl(stateDir, { op: "turn.attach", turnId }, (frame) => { if (frame.type === "result" || frame.type === "error") activeInteractionWakeId = null; renderFrame(frame, push, appendLive, commitLive, pushResponse, updateTool, updateThinking, setWakeState, () => commitLive("")); }, controller.signal); }
+    try { await streamControl(stateDir, { op: "turn.attach", turnId }, (frame) => { if (frame.type === "result" || frame.type === "error") activeInteractionTurnId = null; renderFrame(frame, push, appendLive, commitLive, pushResponse, updateTool, updateThinking, setWakeState, () => commitLive("")); }, controller.signal); }
     catch (error) { if (!controller.signal.aborted) push(errorLine(error)); }
     finally {
       if (activeStream === controller) activeStream = null;
@@ -235,16 +234,14 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
     if (busy.active) {
       const snapshot = await requestControl(stateDir, { op: "status" }).catch(() => null);
       if (!snapshot) { push("Cannot inspect the current turn; use /stop before changing Runner configuration."); return; }
-      const wakes = snapshot && typeof snapshot === "object" && !Array.isArray(snapshot) && Array.isArray(snapshot.wakes) ? snapshot.wakes as Array<Record<string, unknown>> : [];
-      if (wakes.some((wake) => wake.agent === "ceo" && (wake.status === "leased" || wake.status === "running"))) { push("Wait for the current turn or use /stop before changing Runner configuration."); return; }
-      configuring = true; resumeInteractionWakeId = activeInteractionWakeId; activeStream?.abort();
-      while (busy.active) await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+      const turns = snapshot && typeof snapshot === "object" && !Array.isArray(snapshot) && Array.isArray(snapshot.turns) ? snapshot.turns as Array<Record<string, unknown>> : [];
+      if (turns.some((turn) => turn.status === "in_progress")) { push("Wait for the current Turn or use /stop before changing Runner configuration."); return; }
     } else configuring = true;
     statusView.setText(statusText("setup"));
     tui.stop();
     try { await work(); }
     catch (error) { push(errorLine(error)); }
-    finally { configuring = false; if (resumeInteractionWakeId && !queuedTurnIds.includes(resumeInteractionWakeId)) queuedTurnIds.unshift(resumeInteractionWakeId); resumeInteractionWakeId = null; if (!exiting) { tui.start(); tui.requestRender(true); statusView.setText(statusText("ready")); continuePending(); } }
+    finally { configuring = false; if (!exiting) { tui.start(); tui.requestRender(true); statusView.setText(statusText("ready")); continuePending(); } }
   };
   const launchRunnerCommand = async (command: "model" | "auth", commandArgs: string[] = []): Promise<void> => withConfigurationScreen(async () => {
     const current = configuredRunnerProfile(configPath);
@@ -253,7 +250,7 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
     try { await applyWizardResult({ profile: result.profile }, existsSync(configPath) ? configPath : null); }
     catch (error) { await result.rollback?.(); throw error; }
     for (const line of result.output) push(line);
-    push(await reloadDaemon(stateDir, configPath) ? "Configuration updated — applies to the next wake." : "Configuration saved — restart Goah to apply it.");
+    push(await reloadDaemon(stateDir, configPath) ? "Configuration updated — applies to the next Turn." : "Configuration saved — restart Goah to apply it.");
   });
   const launchSetup = async (text: string): Promise<void> => withConfigurationScreen(async () => {
     const current = configuredRunnerProfile(configPath);
@@ -265,14 +262,14 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
       const result = await runSetupWizard(current);
       if (!result.profile) return;
       await applyWizardResult(result, existsSync(configPath) ? configPath : null);
-      push(await reloadDaemon(stateDir, configPath) ? "Runner profile updated — applies to the next wake." : "Runner profile saved — restart Goah to apply it.");
+      push(await reloadDaemon(stateDir, configPath) ? "Runner profile updated — applies to the next Turn." : "Runner profile saved — restart Goah to apply it.");
       return;
     }
     const result = await runRunnerCommandWizard(current, section === "model" ? "model" : "auth");
     try { await applyWizardResult({ profile: result.profile }, existsSync(configPath) ? configPath : null); }
     catch (error) { await result.rollback?.(); throw error; }
     for (const line of result.output) push(line);
-    push(await reloadDaemon(stateDir, configPath) ? "Configuration updated — applies to the next wake." : "Configuration saved — restart Goah to apply it.");
+    push(await reloadDaemon(stateDir, configPath) ? "Configuration updated — applies to the next Turn." : "Configuration saved — restart Goah to apply it.");
   });
 
   input.onSubmit = (line) => {
@@ -300,13 +297,13 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   tui.addInputListener((data) => {
     if (data !== "\x03") return undefined;
     exiting = true;
-    push(busy.active ? "Detached — the current wake continues in the daemon. Use /stop before detaching when you intend to cancel it." : "Detached.");
+    push(busy.active ? "Detached — the current Turn continues in the daemon. Use /stop before detaching when you intend to cancel it." : "Detached.");
     activeStream?.abort();
     tui.stop(); resolveExit();
     return { consume: true };
   });
   tui.start();
-  if (initialMessage) void send(initialMessage); else if (typeof liveInteractionWakeId === "string") void attachTurn(liveInteractionWakeId);
+  if (initialMessage) void send(initialMessage); else if (typeof liveInteractionTurnId === "string") void attachTurn(liveInteractionTurnId);
   await exited;
 }
 
@@ -360,8 +357,10 @@ export function renderFrame(frame: ControlFrame, push: (line: string) => void, a
   if (frame.type === "result") {
     const value = frame.value && typeof frame.value === "object" && !Array.isArray(frame.value) ? frame.value as Record<string, unknown> : {};
     const response = value.response && typeof value.response === "object" && !Array.isArray(value.response) ? value.response as Record<string, unknown> : {};
+    const turn=value.turn&&typeof value.turn==="object"&&!Array.isArray(value.turn)?value.turn as Record<string,unknown>:{};const error=turn.error&&typeof turn.error==="object"&&!Array.isArray(turn.error)?turn.error as Record<string,unknown>:{};
     updateThinking({ phase: "done", text: "" });
     if (typeof response.content === "string" && response.content.trim()) pushResponse(response.content.trim());
+    else if(turn.status==="failed"&&typeof error.message==="string")push(`${tuiTheme.error("error")}  ${safeError(error.message)}\n`);
     return;
   }
   if (frame.type !== "event") return;
@@ -370,7 +369,7 @@ export function renderFrame(frame: ControlFrame, push: (line: string) => void, a
   const record = event as Record<string, unknown>;
   const data = record.data && typeof record.data === "object" && !Array.isArray(record.data) ? record.data as Record<string, unknown> : {};
   if (record.type === "wake.enqueued") { setWakeState("queued"); return; }
-  if (record.type === "wake.leased" || record.type === "wake.running") { setWakeState("working"); return; }
+  if (record.type === "turn.started" || record.type === "transcript.started") { setWakeState("working"); return; }
   if (record.type === "tool.called") {
     updateThinking({ phase: "done", text: "" });
     updateTool({ kind: "tool", callId: String(data.callId ?? "tool"), name: String(data.name ?? "tool"), detail: toolDetail(data.arguments), status: "running" });
@@ -399,10 +398,10 @@ export function renderFrame(frame: ControlFrame, push: (line: string) => void, a
     }
   } else if (record.type === "ceo.human_requested") {
     push(`${tuiTheme.warning("needs you")}  ${safeError(compact(record.data ?? {}))}`);
-  } else if (record.type === "wake.abnormal_reason") {
+  } else if (record.type === "transcript.interrupted") {
     updateThinking({ phase: "clear", text: "" });
     clearLive();
-    push(`${tuiTheme.error("error")}  ${safeError(typeof data.reason === "string" ? data.reason : "Wake failed")}\n`);
+    push(`${tuiTheme.error("error")}  ${safeError(typeof data.reason === "string" ? data.reason : "Turn failed")}\n`);
   }
 }
 
@@ -541,7 +540,7 @@ function safeError(value: string): string {
   }
   const named = sanitized.match(/^(?:TypeError|RangeError|ReferenceError|SyntaxError|Error):\s*[^\n]+/m)?.[0];
   if (named) return named;
-  return sanitized.split("\n").map((line) => line.trim()).find((line) => line && !line.startsWith("file://") && !line.startsWith("at ") && line !== "^") ?? "Wake failed";
+  return sanitized.split("\n").map((line) => line.trim()).find((line) => line && !line.startsWith("file://") && !line.startsWith("at ") && line !== "^") ?? "Turn failed";
 }
 
 function messageText(value: unknown): string {

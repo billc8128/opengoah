@@ -112,14 +112,7 @@ function Overview({ snapshot, root, onView, onTalk, onApprovals }: { snapshot: C
   const children = snapshot.goals.filter((goal) => goal.parentId === root?.id)
   const ceo = snapshot.team.find((member) => member.agent === "ceo")
   const attention = snapshot.actions.filter((action) => ["requested", "unknown"].includes(action.status))
-  const recoveredWakeIds = new Set(snapshot.wakes.flatMap((wake) => {
-    const reference = wake.triggerRef.startsWith("recovery:")
-      ? wake.triggerRef.slice("recovery:".length)
-      : wake.triggerRef.startsWith("retry:") ? wake.triggerRef.slice("retry:".length).split("@")[0] : null
-    return reference ? [reference] : []
-  }))
-  const recovery = snapshot.wakes.filter((wake) =>
-    ["abnormal", "merge_blocked"].includes(wake.status) && !recoveredWakeIds.has(wake.id))
+  const recoveredTurnIds=new Set(snapshot.wakes.flatMap((wake)=>wake.triggerRef.startsWith("recovery:")?[wake.triggerRef.slice("recovery:".length).split(":")[0]!]:[]));const recovery=snapshot.turns.filter((turn)=>turn.status==="failed"&&!recoveredTurnIds.has(turn.id)).map((turn)=>({turn,agent:snapshot.threads.find((thread)=>thread.id===turn.threadId)?.agent??"unknown"}));
   const trajectory = trajectoryEvents(snapshot.events).slice(-3).reverse()
   return (
     <div className="overview-layout">
@@ -351,12 +344,10 @@ type ChatExchange = { kind: "user" | "ceo"; seq: number; text: string; handoff?:
 type LiveChat = { status: "running" | "done" | "error"; text: string; lines: string[]; handoff: ChatExchange["handoff"] }
 
 function chatHistory(snapshot: ConsoleSnapshot): ChatExchange[] {
-  const items: ChatExchange[] = []
+  const items: ChatExchange[] = [];const ceoThreadIds=new Set(snapshot.threads.filter((thread)=>thread.agent==="ceo").map((thread)=>thread.id));const humanTurnIds=new Set(snapshot.turns.filter((turn)=>turn.source==="human"&&ceoThreadIds.has(turn.threadId)).map((turn)=>turn.id));
   for (const event of snapshot.events) {
-    if (event.type === "mail.put") {
-      const mail = record(record(event.data).snapshot)
-      if (mail.to === "ceo" && mail.from === "human") items.push({ kind: "user", seq: event.seq, text: mailBodyText(mail.body) })
-    } else if (event.type === "handoff.recorded" && event.actor === "ceo") {
+    if(event.type==="item.user_message.started"||event.type==="item.assistant_message.started"){const item=record(record(event.data).snapshot);if(humanTurnIds.has(String(item.turnId))){const data=record(item.data);if(typeof data.text==="string")items.push({kind:event.type.includes("user_message")?"user":"ceo",seq:event.seq,text:data.text});}}
+    else if (event.type === "handoff.recorded" && event.actor === "ceo") {
       items.push({ kind: "ceo", seq: event.seq, text: "", handoff: handoffOf(event.data) })
     }
   }
@@ -374,7 +365,7 @@ function ChatView({ snapshot, onRefresh }: { snapshot: ConsoleSnapshot; onRefres
     const message = draft.trim()
     if (!message || live?.status === "running") return
     setDraft("")
-    setLive({ status: "running", text: "", lines: [`CEO wake queued`], handoff: undefined })
+    setLive({ status: "running", text: "", lines: ["CEO Turn started"], handoff: undefined })
     try {
       const response = await fetch("/api/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message }) })
       if (!response.ok || !response.body) throw new Error(`chat request failed (${response.status})`)
@@ -405,12 +396,12 @@ function ChatView({ snapshot, onRefresh }: { snapshot: ConsoleSnapshot; onRefres
       <header className="chat-header">
         <div>
           <h1>CEO</h1>
-          <p>Messages become durable decision mail. The CEO wake streams here, then lands in the ledger.</p>
+          <p>Messages start or steer a durable CEO Turn. Goal tools add strict Work Record and Handoff policy only when needed.</p>
         </div>
         <span className={`chat-live-pill ${live?.status === "running" ? "busy" : ""}`}>{live?.status === "running" ? "Working…" : "Ready"}</span>
       </header>
       <div className="chat-scroll">
-        {history.length === 0 && !live && <p className="chat-empty">还没有对话。说一句话开始——它会成为 CEO 的 decision mail。</p>}
+        {history.length === 0 && !live && <p className="chat-empty">还没有对话。说一句话开始一个 durable CEO Turn。</p>}
         {history.map((item) => item.kind === "user"
           ? <article key={item.seq} className="chat-entry user"><p>{item.text}</p><small>You · #{item.seq}</small></article>
           : <article key={item.seq} className="chat-entry ceo">{item.handoff && <HandoffBlock handoff={item.handoff} seq={item.seq} />}</article>)}
@@ -425,7 +416,7 @@ function ChatView({ snapshot, onRefresh }: { snapshot: ConsoleSnapshot; onRefres
       <footer className="chat-input-bar">
         <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void send() }} placeholder="改变目标、报告约束、或问下一步会发生什么…" disabled={live?.status === "running"} />
         <div>
-          <span>⌘↩ 发送 · 成为 durable decision mail</span>
+          <span>⌘↩ 发送 · start / steer CEO Turn</span>
           <button className="primary" disabled={!draft.trim() || live?.status === "running"} onClick={() => void send()}><Send /> 发送</button>
         </div>
       </footer>
@@ -433,15 +424,15 @@ function ChatView({ snapshot, onRefresh }: { snapshot: ConsoleSnapshot; onRefres
   )
 }
 
-type ChatFrame = { type: "accepted" | "result" | "error" | "event"; wakeId?: string; value?: unknown; event?: EventView; error?: string }
+type ChatFrame = { type: "accepted" | "result" | "error" | "event"; turnId?: string; value?: unknown; event?: EventView; error?: string }
 
 function applyFrame(frame: ChatFrame, setLive: Dispatch<SetStateAction<LiveChat | null>>): void {
   if (frame.type === "accepted") return
   if (frame.type === "error") { setLive((current) => current && { ...current, status: "error", lines: [...current.lines, frame.error ?? "error"] }); return }
   if (frame.type === "result") {
     const value = record(frame.value)
-    const wake = record(value.wake) as { status?: unknown }
-    setLive((current) => current && { ...current, status: "done", lines: [...current.lines, wake.status === "done" ? "Wake completed" : `Wake ${String(wake.status ?? "finished")}`] })
+    const turn = record(value.turn) as { status?: unknown }
+    setLive((current) => current && { ...current, status: turn.status==="failed"?"error":"done", lines: [...current.lines, `Turn ${String(turn.status ?? "finished")}`] })
     return
   }
   const event = frame.event
@@ -458,7 +449,7 @@ function applyFrame(frame: ChatFrame, setLive: Dispatch<SetStateAction<LiveChat 
     setLive((current) => current && { ...current, lines: [...current.lines, `→ ${String(data.name ?? "tool")}`] })
   } else if (event.type === "handoff.recorded") {
     setLive((current) => current && { ...current, handoff: handoffOf(event.data) })
-  } else if (event.type === "wake.abnormal_reason") {
+  } else if (event.type === "transcript.interrupted") {
     setLive((current) => current && { ...current, lines: [...current.lines, `! ${JSON.stringify(event.data)}`] })
   }
 }
@@ -534,7 +525,7 @@ function organizationItems(snapshot: ConsoleSnapshot): TrajectoryItemView[] {
     return { event, wakeId, agent: wakeId ? wakeAgents.get(wakeId) ?? event.actor : event.actor }
   })
 }
-function isOrganizationEvent(type: string): boolean { if (["wake.lease_renewed", "wake.runner_attached"].includes(type)) return false; return ["goal.", "delegation.", "handoff.", "wake.", "mail.", "schedule.", "action.", "metric.", "observation.", "ceo.", "human."].some((prefix) => type.startsWith(prefix)) }
+function isOrganizationEvent(type: string): boolean { return ["goal.", "delegation.", "handoff.", "wake.", "mail.", "schedule.", "action.", "metric.", "observation.", "ceo.", "human."].some((prefix) => type.startsWith(prefix)) }
 function eventNarrative(event: EventView, resolvedAgent = event.actor): string {
   const data = record(event.data)
   if (event.type === "handoff.recorded") return `Handoff: ${firstString(data.results) || firstString(data.observations) || "work recorded"}`
@@ -545,9 +536,9 @@ function eventNarrative(event: EventView, resolvedAgent = event.actor): string {
   if (event.type === "metric.evaluated" || event.type === "observation.confirmed") return `Observation confirmed: ${String(data.summary ?? data.status ?? "evidence recorded")}`
   if (event.type === "action.requested") return `Action awaiting approval: ${String(data.kind ?? "external action")}`
   if (event.type === "wake.enqueued") return "Wake queued"
-  if (event.type === "wake.running") return "Wake started"
-  if (event.type === "wake.done") return "Wake completed"
-  if (event.type === "wake.abnormal" || event.type === "wake.expired_abnormal" || event.type === "wake.abnormal_reason") return "Wake became abnormal"
+  if (event.type === "wake.claimed") return "Wake claimed"
+  if (event.type === "wake.consumed") return "Wake created a Turn"
+  if (event.type === "wake.cancelled") return "Wake cancelled"
   if (event.type === "schedule.put") { const snapshot = record(data.snapshot); return `Next wake scheduled for ${formatDateTime(String(snapshot.nextWakeAt ?? ""))}: ${String(snapshot.reason ?? "scheduled work")}` }
   if (event.type === "mail.put") { const snapshot = record(data.snapshot); return `Mail from ${displayAgent(String(snapshot.from ?? event.actor))} to ${displayAgent(String(snapshot.to ?? "unknown"))}` }
   if (event.type === "mail.sent" || event.type === "mail.delivered") return `Mail delivered: ${String(data.summary ?? data.level ?? "message")}`
@@ -560,12 +551,6 @@ function formatTime(value: string): string { const date = new Date(value); retur
 function formatDateTime(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) }
 function relativeTime(value: string, from = new Date().toISOString()): string { const minutes = Math.round((new Date(value).getTime() - new Date(from).getTime()) / 60_000); return minutes > 0 ? `in ${minutes}m` : minutes === 0 ? "now" : `${Math.abs(minutes)}m ago` }
 function record(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {} }
-
-function mailBodyText(value: unknown): string {
-  const body = record(value)
-  if (typeof body.message === "string" && body.message.trim()) return body.message
-  return JSON.stringify(value)
-}
 
 function handoffOf(value: unknown): NonNullable<ChatExchange["handoff"]> {
   const handoff = record(value)
@@ -581,7 +566,7 @@ function stringList(value: unknown): string[] { return Array.isArray(value) ? va
 function firstString(value: unknown): string { return Array.isArray(value) && typeof value[0] === "string" ? value[0] : "" }
 function stringArray(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [] }
 function messageContent(value: unknown): string { const message = record(value); const content = message.content; if (typeof content === "string") return content; if (!Array.isArray(content)) return "Message recorded"; return content.map((item) => typeof item === "string" ? item : typeof item === "object" && item !== null && "text" in item ? String((item as { text?: unknown }).text ?? "") : "").filter(Boolean).join(" ") }
-function threadForWake(snapshot: ConsoleSnapshot, wakeId: string): ThreadView | undefined { const turn = snapshot.turns.find((candidate) => candidate.id === wakeId); return turn ? snapshot.threads.find((thread) => thread.id === turn.threadId) : undefined }
+function threadForWake(snapshot: ConsoleSnapshot, wakeId: string): ThreadView | undefined { const wake=snapshot.wakes.find((candidate)=>candidate.id===wakeId);const turn = wake?.turnId?snapshot.turns.find((candidate) => candidate.id === wake.turnId):undefined; return turn ? snapshot.threads.find((thread) => thread.id === turn.threadId) : undefined }
 function threadDuration(turns: TurnView[]): string { if (!turns.length) return "0s"; const start = new Date(turns[0]!.startedAt).getTime(); const end = new Date(turns.at(-1)!.endedAt ?? turns.at(-1)!.startedAt).getTime(); const seconds = Math.max(0, Math.round((end - start) / 1_000)); return seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s` }
 function itemTone(type: TurnItemView["type"]): string { if (type === "user_message") return "user"; if (type === "assistant_message" || type === "reasoning") return "assistant"; if (type.startsWith("tool_")) return "tool"; if (type === "handoff") return "handoff"; return "context" }
 function turnItemText(item: TurnItemView): string {

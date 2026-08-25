@@ -464,7 +464,7 @@ interface WorkRecordSnapshot {
   content: string;
   updatedBy: string;
   updatedInTurn: string;
-  updatedInWake: string | null;
+  sourceWakeId: string | null;
   updatedAt: string;
   reason: string;
   evidence: number[];
@@ -516,7 +516,7 @@ CREATE TABLE work_records (
   content TEXT NOT NULL CHECK(length(trim(content)) > 0),
   updated_by TEXT NOT NULL,
   updated_in_turn TEXT NOT NULL,
-  updated_in_wake TEXT,
+  source_wake_id TEXT,
   updated_at TEXT NOT NULL,
   reason TEXT NOT NULL CHECK(length(trim(reason)) > 0),
   evidence TEXT NOT NULL CHECK(json_valid(evidence)),
@@ -536,7 +536,7 @@ The projection is a rebuildable current-file view. It is committed in the same t
 | `content` | authorized Agent request |
 | `updatedBy` | authenticated Agent identity |
 | `updatedInTurn` | current Turn id |
-| `updatedInWake` | current Wake id when present |
+| `sourceWakeId` | current Wake id when present |
 | `updatedAt` | Supervisor clock |
 | `reason` | authorized Agent request |
 | `evidence` | Agent request, existence checked by Ledger |
@@ -568,7 +568,7 @@ Ledger and Work Record are complementary:
 | exact Goal changes | current semantic understanding |
 | exact tool calls and results | observations derived from evidence |
 | messages and model requests | decisions and rejected approaches |
-| Wake, lease and recovery facts | completed work summary |
+| Turn lease, retry and recovery facts | completed work summary |
 | Action state and reconciliation | blockers and next steps |
 | immutable global order | versioned human/Agent-readable document |
 
@@ -740,7 +740,7 @@ Hide by default:
 
 ## 18. Migration
 
-This development release has no external users, so the Thread/Turn/Item transition does not migrate local pre-v2 data. Development workspaces are recreated. Goal and Work Record semantics remain the target schema; only interaction/thread storage is replaced.
+This development release has no external users, so schema v12 does not migrate schemas 1–11. Development workspaces are recreated. Goal and Work Record semantics remain the target schema; execution ownership and conversation storage are replaced together.
 
 ## 19. Implementation sequence
 

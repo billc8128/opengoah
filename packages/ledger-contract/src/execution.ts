@@ -1,7 +1,7 @@
 import { CONTRACT_VERSION, type EventInput, type EventRecord, type EventStore, type JsonValue } from "./kernel.js";
 import type { MetricSample } from "./metrics.js";
 
-export type WakeStatus = "queued" | "leased" | "running" | "done" | "abnormal" | "merge_blocked";
+export type WakeStatus = "queued" | "claimed" | "consumed" | "cancelled";
 export type ActionStatus = "requested" | "approved" | "dispatching" | "confirmed" | "failed" | "unknown";
 export type GoalPhase = "active" | "paused" | "blocked" | "complete";
 export type TurnStatus = "in_progress" | "completed" | "failed" | "interrupted";
@@ -9,7 +9,7 @@ export type TurnSourceKind = "human" | "goal" | "system";
 export type TurnItemType = "user_message" | "assistant_message" | "reasoning" | "tool_call" | "tool_result" | "plan" | "handoff";
 export type TurnItemStatus = "in_progress" | "completed" | "failed";
 export interface ThreadSnapshot { id: string; agent: string; parentThreadId: string | null; createdAt: string; updatedAt: string }
-export interface TurnSnapshot { id: string; threadId: string; source: TurnSourceKind; goalId: string | null; goalRevision: number | null; status: TurnStatus; error: JsonValue | null; startedAt: string; endedAt: string | null; leaseUntil: string | null; leaseToken: string | null; runnerPid: number | null }
+export interface TurnSnapshot { id: string; threadId: string; source: TurnSourceKind; goalId: string | null; goalRevision: number | null; status: TurnStatus; attempt: number; error: JsonValue | null; startedAt: string; endedAt: string | null; leaseUntil: string | null; leaseToken: string | null; runnerPid: number | null }
 export interface TurnItemSnapshot { id: string; turnId: string; ordinal: number; type: TurnItemType; status: TurnItemStatus; data: JsonValue; createdAt: string; completedAt: string | null }
 export interface GoalSnapshot { id: string; parentId: string | null; objective: string; observationMethod: string | null; verificationMethod: string | null; owner: string; phase: GoalPhase; revision: number }
 export interface WorkRecordSnapshot {
@@ -19,7 +19,7 @@ export interface WorkRecordSnapshot {
   content: string;
   updatedBy: string;
   updatedInTurn: string;
-  updatedInWake: string | null;
+  sourceWakeId: string | null;
   updatedAt: string;
   reason: string;
   evidence: number[];
@@ -33,11 +33,11 @@ export interface WorkRecordUpdateRequest {
   reason: string;
   evidence: number[];
   turnId: string;
-  wakeId?: string;
+  sourceWakeId?: string;
 }
 export interface WorkRecordDiff { goalId: string; fromRevision: number; toRevision: number; text: string }
 export interface ScheduleSnapshot { id: string; agent: string; nextWakeAt: string; reason: string; setBy: string }
-export interface WakeSnapshot { id: string; agent: string; triggerRef: string; status: WakeStatus; leaseUntil: string | null; attempt: number; startedAt: string | null; endedAt: string | null; enqueuedSeq: number; leaseToken: string | null; runnerPid: number | null }
+export interface WakeSnapshot { id: string; agent: string; triggerRef: string; status: WakeStatus; attempt: number; enqueuedSeq: number; claimedAt: string | null; consumedAt: string | null; turnId: string | null }
 export type MailLevel = "fyi" | "decision" | "emergency";
 export interface MailSnapshot { id: string; to: string; from: string; level: MailLevel; body: JsonValue; readAt: string | null }
 export interface DelegationRequest {
@@ -69,12 +69,12 @@ export interface TeamMemberView {
   nextWakeAt: string | null;
 }
 export interface AuditAdvice { by: string; at: string; body: JsonValue; evidence: number[] }
-export interface ActionSnapshot { id: string; agent: string; kind: string; connector: string; payload: JsonValue; reason: string; evidence: number[]; gated: boolean; status: ActionStatus; reconciledAt: string | null; externalRef: string | null; auditAdvice: AuditAdvice | null; adviceAcked: boolean }
+export interface ActionSnapshot { id: string; agent: string; createdInTurn: string; kind: string; connector: string; payload: JsonValue; reason: string; evidence: number[]; gated: boolean; status: ActionStatus; reconciledAt: string | null; externalRef: string | null; auditAdvice: AuditAdvice | null; adviceAcked: boolean }
 export interface LegacyHandoff { observations: string[]; results: string[]; nextSteps: string[]; blocker?: string; material?: boolean }
 export interface GoalHandoff { goalId: string; goalRevision: number; recordRevision: number; outcome: "progress" | "waiting" | "blocked" | "completion_proposed"; evidence: number[] }
 export type Handoff = LegacyHandoff | GoalHandoff;
 export interface MailDraft { to: string; level: MailLevel; body: JsonValue }
-export interface WakeOutput { handoff: Handoff; mail: MailDraft[]; nextWakeAt: string | null }
+export interface TurnOutput { handoff: Handoff; mail: MailDraft[]; nextWakeAt: string | null }
 export interface RunnerTraceEvent { type: string; data: JsonValue }
 
 export type AgentRole = "child" | "ceo" | "verifier" | "audit";
@@ -109,8 +109,8 @@ export interface GoalBinding { goalId: string; goalRevision: number }
 export interface TurnContext { source: TurnSource; goalBinding?: GoalBinding }
 export interface AssistantResponse { content: string }
 export interface RunRequest { agent: string; execution: TurnSnapshot; sourceWake?: WakeSnapshot; turn: TurnContext; context: JsonValue; now(): string; emit(event: RunnerTraceEvent): void; rpc?(method: AgentCapability, params: JsonValue): Promise<JsonValue> }
-export type RunnerResult = { outcome: "response"; response: AssistantResponse } | { outcome: "handoff"; output: WakeOutput } | { outcome: "abnormal"; reason: string };
-export interface RunnerHandle { pid: number | null; begin(): void; result: Promise<RunnerResult>; steer?(message: string): Promise<void>; terminate(): Promise<void> }
+export type RunnerCandidateResult = { outcome: "response"; response: AssistantResponse } | { outcome: "handoff"; output: TurnOutput } | { outcome: "abnormal"; reason: string };
+export interface RunnerHandle { pid: number | null; begin(): void; result: Promise<RunnerCandidateResult>; steer?(message: string): Promise<void>; terminate(): Promise<void> }
 export interface Runner { readonly isolation: "process"; prepare(request: RunRequest): RunnerHandle; terminateProcess(pid: number): Promise<void> }
 
 export interface ConnectorCapability { kind: string; nativeIdempotency: boolean; query: "by_idempotency_key" | "by_external_ref" | "none"; automaticRetry: boolean; risk: "reversible" | "gated" | "irreversible" }
@@ -118,7 +118,7 @@ export interface ConnectorManifest { contractVersion: typeof CONTRACT_VERSION; c
 export interface ConnectorDispatchResult { status: "confirmed" | "failed"; externalRef?: string }
 export interface ConnectorQueryResult { status: "confirmed" | "failed" | "pending"; externalRef?: string }
 export interface ConnectorProcessSpec { manifest: ConnectorManifest; command: string; args: string[]; env?: Record<string, string>; timeoutMs?: number }
-export interface HandoffCommit { agent: string; wakeId: string; mailIds: string[]; ts: string; output: WakeOutput; outgoingMail: MailSnapshot[]; schedule: ScheduleSnapshot | null }
+export interface HandoffCommit { agent: string; turnId: string; sourceWakeId: string | null; mailIds: string[]; ts: string; output: TurnOutput; outgoingMail: MailSnapshot[]; schedule: ScheduleSnapshot | null; item: TurnItemSnapshot }
 
 /** Standard execution modules composed on top of the generic event store. */
 export interface Ledger extends EventStore {
@@ -138,14 +138,16 @@ export interface Ledger extends EventStore {
   completeGoal(request: GoalCompletionRequest, actor: string, wakeId?: string): GoalSnapshot;
   putSchedule(schedule: ScheduleSnapshot, actor: string, wakeId?: string): EventRecord;
   enqueueWake(wake: WakeSnapshot, actor: string): { event: EventRecord; created: boolean };
-  claimNextWake(now: string, leaseUntil: string, leaseToken: string): WakeSnapshot | null;
-  markWakeRunning(id: string, now: string, leaseToken: string): WakeSnapshot;
-  attachWakeProcess(id: string, leaseToken: string, pid: number, now: string): WakeSnapshot;
-  renewWakeLease(id: string, leaseToken: string, leaseUntil: string, now: string): WakeSnapshot;
-  finishWake(id: string, status: "done" | "abnormal" | "merge_blocked", now: string): WakeSnapshot;
-  expiredWakes(now: string): WakeSnapshot[];
-  recoverExpiredWake(id: string, now: string): WakeSnapshot;
-  appendRunnerEvent(input: EventInput, leaseToken: string): EventRecord;
+  claimNextWake(now: string): WakeSnapshot | null;
+  startTurnFromWake(id: string, turn: TurnSnapshot, now: string): WakeSnapshot;
+  consumeWake(id: string, turnId: string, now: string): WakeSnapshot;
+  releaseWake(id: string, now: string): WakeSnapshot;
+  cancelWake(id: string, now: string): WakeSnapshot;
+  attachTurnProcess(id: string, leaseToken: string, pid: number): TurnSnapshot;
+  renewTurnLease(id: string, leaseToken: string, leaseUntil: string, now: string): TurnSnapshot;
+  appendTurnEvent(input: EventInput, leaseToken: string): EventRecord;
+  repairTurnAttempt(id:string,reason:string,now:string,actor:string):TurnItemSnapshot[];
+  finishTurn(id:string,status:"completed"|"failed"|"interrupted",error:JsonValue|null,now:string,actor:string):TurnSnapshot;
   requestAction(action: ActionSnapshot, actor: string, wakeId?: string): EventRecord;
   approveAction(id: string, approver: string, reason: string, evidence: number[]): ActionSnapshot;
   rejectAction(id: string, approver: string, reason: string, evidence: number[]): ActionSnapshot;
@@ -184,7 +186,7 @@ export interface Ledger extends EventStore {
   close(): void;
 }
 
-const wakeTransitions: Record<WakeStatus, readonly WakeStatus[]> = { queued: ["leased", "abnormal"], leased: ["queued", "running", "abnormal"], running: ["done", "abnormal", "merge_blocked"], done: [], abnormal: [], merge_blocked: [] };
+const wakeTransitions: Record<WakeStatus, readonly WakeStatus[]> = { queued: ["claimed", "cancelled"], claimed: ["queued", "consumed", "cancelled"], consumed: [], cancelled: [] };
 const actionTransitions: Record<ActionStatus, readonly ActionStatus[]> = { requested: ["approved", "failed"], approved: ["dispatching", "failed"], dispatching: ["confirmed", "failed", "unknown"], unknown: ["dispatching", "confirmed", "failed"], confirmed: [], failed: [] };
 const goalTransitions: Record<GoalPhase, readonly GoalPhase[]> = { active: ["paused", "blocked", "complete"], paused: ["active", "complete"], blocked: ["active", "complete"], complete: [] };
 export function assertWakeTransition(from: WakeStatus, to: WakeStatus): void { if (!wakeTransitions[from].includes(to)) throw new Error(`invalid wake transition: ${from} -> ${to}`); }
@@ -192,12 +194,12 @@ export function assertActionTransition(from: ActionStatus, to: ActionStatus): vo
 export function assertGoalTransition(from: GoalPhase, to: GoalPhase): void { if (from !== to && !goalTransitions[from].includes(to)) throw new Error(`invalid goal transition: ${from} -> ${to}`); }
 export function assertHandoff(value: Handoff): void {
   if ("goalId" in value) {
-    if (!value.goalId.trim() || !Number.isInteger(value.goalRevision) || !Number.isInteger(value.recordRevision) || !["progress", "waiting", "blocked", "completion_proposed"].includes(value.outcome) || !Array.isArray(value.evidence)) throw new Error("invalid Goal handoff");
+    if (!value.goalId.trim() || !Number.isInteger(value.goalRevision) || value.goalRevision<0 || !Number.isInteger(value.recordRevision) || value.recordRevision<1 || !["progress", "waiting", "blocked", "completion_proposed"].includes(value.outcome) || !Array.isArray(value.evidence) || value.evidence.length===0) throw new Error("invalid Goal handoff");
     return;
   }
   if (!Array.isArray(value.observations) || !Array.isArray(value.results) || !Array.isArray(value.nextSteps)) throw new Error("invalid handoff: observations, results and nextSteps are required arrays");
 }
-export function assertActionRequest(value: ActionSnapshot): void { if (!value.reason.trim()) throw new Error("action reason is required"); if (value.evidence.length === 0) throw new Error("action evidence is required"); if (value.status !== "requested") throw new Error("new action must be requested"); if (!value.connector.trim()) throw new Error("action connector is required"); if (value.reconciledAt !== null) throw new Error("requested action cannot be reconciled"); }
+export function assertActionRequest(value: ActionSnapshot): void { if (!value.reason.trim()) throw new Error("action reason is required"); if (!value.createdInTurn.trim()) throw new Error("action Turn provenance is required"); if (value.evidence.length === 0) throw new Error("action evidence is required"); if (value.status !== "requested") throw new Error("new action must be requested"); if (!value.connector.trim()) throw new Error("action connector is required"); if (value.reconciledAt !== null) throw new Error("requested action cannot be reconciled"); }
 export function assertGoalSnapshot(value: GoalSnapshot): void {
   if (!value.objective.trim() || !value.owner.trim()) throw new Error("goal objective and owner are required");
   if (value.observationMethod !== null && !value.observationMethod.trim()) throw new Error("goal observation method cannot be blank");

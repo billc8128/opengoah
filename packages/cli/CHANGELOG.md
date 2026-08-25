@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Updated control, TUI, Thread inspection, Console, doctor, and exports for Turn-owned execution; fixed duplicate answers, cross-Agent welcome history, and fencing-token redaction.
+
 ## 0.11.5
 
 - Separated hidden thinking, assistant prose, and tool activity in the TUI; tool calls now update a compact execution row instead of blending into the conversation.

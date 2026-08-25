@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Completed the Thread/Turn/Item architecture: Wake is scheduling-only, Turn owns execution and recovery, Human input blocks automatic claims, Goal policies share one completion path, and schema v12 rejects earlier development state.
+
 ## 0.11.5
 
 - Keep Pi reasoning blocks out of user-visible assistant responses, render only text deltas as Markdown, and show tool calls as separate in-place execution rows with concise targets and status.

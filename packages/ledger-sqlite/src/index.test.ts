@@ -4,32 +4,34 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { controlStream, wakeStream, type ActionSnapshot, type Clock, type EventInput, type GoalSnapshot, type JsonValue, type WakeSnapshot } from "goah-ledger-contract";
+import { controlStream, replayTranscript, wakeStream, type ActionSnapshot, type Clock, type EventInput, type GoalSnapshot, type JsonValue, type WakeSnapshot } from "goah-ledger-contract";
 import { SQLITE_SCHEMA_VERSION, SqliteLedger } from "./index.js";
 
 const metric = { source: "test", window: "1h", direction: "at_least" as const, target: 1, freshnessMs: 60_000, onMissing: "abnormal" as const, onStale: "wake_owner" as const };
 function event(actor: string, type: string, data: JsonValue = {}, wakeId?: string): EventInput { return { streamId: wakeId ? wakeStream(wakeId) : controlStream(actor), ts: "2030-01-01T00:00:00.000Z", actor, type, data }; }
 class FixedClock implements Clock { constructor(readonly value = "2030-01-01T00:00:00.000Z") {} now(): Date { return new Date(this.value); } }
-function wake(id: string, agent = "agent-1"): WakeSnapshot { return { id, agent, triggerRef: `trigger:${id}`, status: "queued", leaseUntil: null, attempt: 0, startedAt: null, endedAt: null, enqueuedSeq: 0, leaseToken: null, runnerPid: null }; }
-function action(id: string, evidence: number[]): ActionSnapshot { return { id, agent: "a", kind: "mock.write", connector: "mock", payload: {}, reason: "evidence supports it", evidence, gated: false, status: "requested", reconciledAt: null, externalRef: null, auditAdvice: null, adviceAcked: false }; }
+function wake(id: string, agent = "agent-1"): WakeSnapshot { return { id, agent, triggerRef: `trigger:${id}`, status: "queued", attempt: 0, enqueuedSeq: 0, claimedAt:null,consumedAt:null,turnId:null }; }
+function action(id: string, evidence: number[],createdInTurn="turn-a"): ActionSnapshot { return { id, agent: "a", createdInTurn,kind: "mock.write", connector: "mock", payload: {}, reason: "evidence supports it", evidence, gated: false, status: "requested", reconciledAt: null, externalRef: null, auditAdvice: null, adviceAcked: false }; }
 
 test("Thread Turn and Item projections form one resumable execution history", () => {
   const ledger = new SqliteLedger(":memory:", { clock: new FixedClock() }); const now = "2030-01-01T00:00:00.000Z";
   ledger.putThread({ id: "thread", agent: "ceo", parentThreadId: null, createdAt: now, updatedAt: now }, "supervisor");
-  ledger.putTurn({ id: "turn", threadId: "thread", source: "human", goalId: null, goalRevision: null, status: "in_progress", error: null, startedAt: now, endedAt: null, leaseUntil: null, leaseToken: null, runnerPid: null }, "human");
+  ledger.putTurn({ id: "turn", threadId: "thread", source: "human", goalId: null, goalRevision: null, status: "in_progress", attempt:1,error: null, startedAt: now, endedAt: null, leaseUntil: "2030-01-01T00:10:00.000Z", leaseToken: "lease", runnerPid: null }, "human");
   ledger.putTurnItem({ id: "user", turnId: "turn", ordinal: 1, type: "user_message", status: "completed", data: { text: "hello" }, createdAt: now, completedAt: now }, "human");
   ledger.putTurnItem({ id: "assistant", turnId: "turn", ordinal: 2, type: "assistant_message", status: "completed", data: { text: "hi" }, createdAt: now, completedAt: now }, "ceo");
-  ledger.putTurn({ ...ledger.turn("turn")!, status: "completed", endedAt: now }, "supervisor");
+  ledger.putTurn({ ...ledger.turn("turn")!, status: "completed", endedAt: now, leaseUntil:null,leaseToken:null,runnerPid:null }, "supervisor");
   assert.equal(ledger.activeTurn("thread"), null); assert.equal(ledger.turns("thread").length, 1); assert.deepEqual(ledger.turnItems("turn").map((item) => item.type), ["user_message", "assistant_message"]);
   ledger.close();
 });
 
-test("schema 10 is rejected instead of being mistaken for the Thread model", () => {
-  const path = join(mkdtempSync(join(tmpdir(), "goah-retired-schema-")), "ledger.sqlite");
-  const raw = new DatabaseSync(path);
-  raw.exec("PRAGMA user_version=10");
-  raw.close();
-  assert.throws(() => new SqliteLedger(path, { clock: new FixedClock() }), /predates the Thread model/);
+test("terminal Turns reject late Items and active Turn control events remain replayable",()=>{const ledger=new SqliteLedger(":memory:",{clock:new FixedClock()});const turn=activeTurn(ledger,"ceo","t");ledger.appendTurnEvent({streamId:"turn:t",ts:new FixedClock().value,actor:"ceo",type:"transcript.started",data:{formatVersion:1,provider:"f",model:"m",runner:"r",contextWindowTokens:1,maxOutputTokensPerTurn:1}},"lease");ledger.renewTurnLease("t","lease","2030-01-01T00:20:00.000Z",new FixedClock().value);assert.equal(replayTranscript(ledger.readStream("turn:t")).status,"running");ledger.putTurn({...turn,status:"completed",endedAt:new FixedClock().value,leaseUntil:null,leaseToken:null,runnerPid:null},"supervisor");assert.throws(()=>ledger.putTurnItem({id:"late",turnId:"t",ordinal:1,type:"assistant_message",status:"completed",data:{text:"late"},createdAt:new FixedClock().value,completedAt:new FixedClock().value},"ceo"),/terminal turn/i);ledger.close();});
+
+test("Turn failure atomically repairs open Items and commits its Transcript terminal",()=>{let armed=false;const ledger=new SqliteLedger(":memory:",{clock:new FixedClock(),faultInjector:()=>{if(armed)throw new Error("crash during terminal")}});activeTurn(ledger,"ceo","t");ledger.appendTurnEvent({streamId:"turn:t",ts:new FixedClock().value,actor:"ceo",type:"transcript.started",data:{formatVersion:1,provider:"f",model:"m",runner:"r",contextWindowTokens:1,maxOutputTokensPerTurn:1}},"lease");ledger.putTurnItem({id:"call",turnId:"t",ordinal:1,type:"tool_call",status:"in_progress",data:{callId:"c",tool:"write"},createdAt:new FixedClock().value,completedAt:null},"ceo");const before=JSON.stringify({turn:ledger.turn("t"),items:ledger.turnItems("t"),events:ledger.readStream("turn:t")});armed=true;assert.throws(()=>ledger.finishTurn("t","failed",{message:"boom"},new FixedClock().value,"supervisor"),/crash during terminal/);assert.equal(JSON.stringify({turn:ledger.turn("t"),items:ledger.turnItems("t"),events:ledger.readStream("turn:t")}),before);armed=false;ledger.finishTurn("t","failed",{message:"boom"},new FixedClock().value,"supervisor");assert.deepEqual(ledger.turnItems("t").map((item)=>[item.type,item.status]),[["tool_call","failed"],["tool_result","completed"]]);assert.equal(replayTranscript(ledger.readStream("turn:t")).status,"interrupted");ledger.close();});
+
+test("Goal completion requires non-empty evidence",()=>{const ledger=new SqliteLedger(":memory:",{clock:new FixedClock()});ledger.putGoal({id:"g",parentId:null,objective:"ship",observationMethod:"inspect",verificationMethod:"verify",owner:"ceo",phase:"active",revision:0},"human");assert.throws(()=>ledger.completeGoal({goalId:"g",revision:0,reason:"done",evidence:[]},"human"),/evidence is required/);ledger.close();});
+
+test("pre-v12 development schemas are rejected explicitly", () => {
+  for(const version of [1,6,9,10,11]){const path=join(mkdtempSync(join(tmpdir(),`goah-retired-${version}-`)),"ledger.sqlite");const raw=new DatabaseSync(path);raw.exec(`PRAGMA user_version=${version}`);raw.close();assert.throws(()=>new SqliteLedger(path,{clock:new FixedClock()}),/predates Turn-owned execution/);}
 });
 
 test("event and projection roll back together at the injected transaction boundary", () => {
@@ -50,63 +52,6 @@ test("global event order and per-stream order are both monotonic", () => {
   ledger.close();
 });
 
-test("schema v6 adds the ignorable event envelope and goal phase constraints", () => {
-  const path = join(mkdtempSync(join(tmpdir(), "goah-v6-")), "ledger.sqlite");
-  new SqliteLedger(path, { clock: new FixedClock() }).close();
-  const raw = new DatabaseSync(path);
-  raw.exec("DROP TRIGGER events_fts_insert; DROP TRIGGER events_no_update; DROP TRIGGER events_no_delete; ALTER TABLE events DROP COLUMN ignorable; PRAGMA user_version=6");
-  raw.close();
-  const migrated = new SqliteLedger(path, { clock: new FixedClock() });
-  const columns = (migrated.db.prepare("PRAGMA table_info(events)").all() as Array<{ name: string }>).map((row) => row.name);
-  assert.equal(columns.includes("ignorable"), true);
-  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, SQLITE_SCHEMA_VERSION);
-  migrated.close();
-});
-
-test("schema v7 adds nullable Goal observation methods without rewriting history", () => {
-  const path = join(mkdtempSync(join(tmpdir(), "goah-v7-")), "ledger.sqlite");
-  new SqliteLedger(path, { clock: new FixedClock() }).close();
-  const raw = new DatabaseSync(path);
-  raw.exec(`DROP TRIGGER goals_valid_transition;
-    ALTER TABLE goals RENAME TO goals_v8;
-    CREATE TABLE goals(id TEXT PRIMARY KEY,parent_id TEXT,objective TEXT,owner TEXT,phase TEXT,revision INTEGER);
-    INSERT INTO goals SELECT id,parent_id,objective,owner,phase,revision FROM goals_v8;
-    DROP TABLE goals_v8;
-    PRAGMA user_version=7;`);
-  raw.close();
-  const migrated = new SqliteLedger(path, { clock: new FixedClock() });
-  const columns = (migrated.db.prepare("PRAGMA table_info(goals)").all() as Array<{ name: string }>).map((row) => row.name);
-  assert.equal(columns.includes("observation_method"), true);
-  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, SQLITE_SCHEMA_VERSION);
-  migrated.close();
-});
-
-test("schema v8 seeds Work Records from legacy handoff and memory timelines", () => {
-  const path = join(mkdtempSync(join(tmpdir(), "goah-v8-")), "ledger.sqlite");
-  const source = new SqliteLedger(path, { clock: new FixedClock() });
-  source.putGoal({ id: "legacy", parentId: null, objective: "ship", observationMethod: "Inspect release state.", verificationMethod: "Require release evidence.", owner: "worker", phase: "active", revision: 0 }, "human");
-  source.appendEvent({ streamId: "memory:worker", ts: new FixedClock().value, actor: "worker", type: "memory.appended", data: { note: "approach A was rejected", wakeId: "old" } });
-  source.appendEvent({ streamId: "wake:old", ts: new FixedClock().value, actor: "worker", type: "handoff.recorded", data: { observations: ["release inspected"], results: ["candidate built"], nextSteps: ["publish"] } });
-  source.close();
-  const raw = new DatabaseSync(path);
-  raw.exec(`DROP TRIGGER events_no_update; DROP TRIGGER events_no_delete; DROP TRIGGER events_fts_insert;
-    DROP TABLE work_records;
-    DELETE FROM events WHERE type IN ('work_record.created','work_record.updated');
-    DROP TRIGGER goals_valid_transition;
-    ALTER TABLE goals RENAME TO goals_v8;
-    CREATE TABLE goals(id TEXT PRIMARY KEY,parent_id TEXT,objective TEXT,observation_method TEXT,owner TEXT,phase TEXT,revision INTEGER);
-    INSERT INTO goals SELECT id,parent_id,objective,observation_method,owner,phase,revision FROM goals_v8;
-    DROP TABLE goals_v8;
-    PRAGMA user_version=8;`);
-  raw.close();
-  const migrated = new SqliteLedger(path, { clock: new FixedClock() });
-  assert.equal(migrated.goal("legacy")?.verificationMethod, "Inspect release state.");
-  assert.match(migrated.workRecord("legacy")?.content ?? "", /release inspected/);
-  assert.match(migrated.workRecord("legacy")?.content ?? "", /approach A was rejected/);
-  assert.deepEqual(migrated.workRecord("legacy")?.evidence.length, 2);
-  migrated.close();
-});
-
 test("schema has events plus six projections and replay reproduces all of them", () => {
   const ledger = new SqliteLedger(":memory:", { clock: new FixedClock() });
   const tables = (ledger.db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name IN ('actions','events','goals','mailbox','schedule','wakes','work_records') ORDER BY name").all() as Array<{ name: string }>).map(({ name }) => name);
@@ -117,6 +62,7 @@ test("schema has events plus six projections and replay reproduces all of them",
   ledger.enqueueWake(wake("w1"), "supervisor");
   ledger.putMail({ id: "m1", to: "agent-1", from: "human", level: "decision", body: {}, readAt: null }, "human");
   const evidence = ledger.appendEvent(event("a", "observed"));
+  activeTurn(ledger,"a","turn-a");
   ledger.requestAction(action("a1", [evidence.seq]), "a");
   const before = JSON.stringify({ goals: ledger.goals(), schedules: ledger.schedules(), wakes: ledger.wakes(), mailbox: ledger.mailbox(), actions: ledger.actions() });
   ledger.rebuildProjections();
@@ -125,7 +71,7 @@ test("schema has events plus six projections and replay reproduces all of them",
   ledger.close();
 });
 
-test("wake queue is FIFO, deduplicated, fenced and safely recovered", () => {
+test("Wake queue is FIFO, deduplicated, claimable, and linked to a Turn", () => {
   const ledger = new SqliteLedger(":memory:", { clock: new FixedClock() });
   ledger.enqueueWake(wake("zzz", "a"), "supervisor");
   ledger.enqueueWake(wake("aaa", "b"), "supervisor");
@@ -133,16 +79,11 @@ test("wake queue is FIFO, deduplicated, fenced and safely recovered", () => {
   ledger.appendEvent(event("supervisor", "wake.trigger_coalesced", { wakeId: "zzz", triggerRef: "trigger:alias" }, "zzz"));
   assert.equal(ledger.wakeByTrigger("a", "trigger:alias")?.id, "zzz");
   assert.equal(ledger.enqueueWake({ ...wake("alias", "a"), triggerRef: "trigger:alias" }, "supervisor").created, false);
-  const first = ledger.claimNextWake("2030-01-01T00:00:00.000Z", "2030-01-01T00:00:10.000Z", "lease-1");
+  const first = ledger.claimNextWake("2030-01-01T00:00:00.000Z");
   assert.equal(first?.id, "zzz");
-  ledger.markWakeRunning("zzz", "2030-01-01T00:00:01.000Z", "lease-1");
-  ledger.renewWakeLease("zzz", "lease-1", "2030-01-01T00:00:20.000Z", "2030-01-01T00:00:02.000Z");
-  assert.equal(ledger.expiredWakes("2030-01-01T00:00:11.000Z").length, 0);
-  assert.throws(() => ledger.appendRunnerEvent({ ...event("a", "trace", {}, "zzz"), ts: "2030-01-01T00:00:02.000Z" }, "stale"), /stale/);
-  const expired = ledger.expiredWakes("2030-01-01T00:00:21.000Z");
-  assert.equal(expired[0]?.id, "zzz");
-  assert.equal(ledger.recoverExpiredWake("zzz", "2030-01-01T00:00:21.000Z").status, "abnormal");
-  assert.equal(ledger.claimNextWake("2030-01-01T00:00:21.000Z", "2030-01-01T00:00:30.000Z", "lease-2")?.id, "aaa");
+  const turn=activeTurn(ledger,"a","turn-zzz");ledger.consumeWake("zzz",turn.id,"2030-01-01T00:00:01.000Z");
+  assert.equal(ledger.wake("zzz")?.turnId,turn.id);
+  assert.equal(ledger.claimNextWake("2030-01-01T00:00:02.000Z")?.id, "aaa");
   ledger.close();
 });
 
@@ -151,13 +92,14 @@ test("Goal and system wakes preserve FIFO while active ownership stays per Agent
   ledger.enqueueWake({ ...wake("goal", "ceo"), triggerRef: "schedule:ceo" }, "supervisor");
   ledger.enqueueWake({ ...wake("review", "ceo"), triggerRef: "mail:review" }, "supervisor");
   ledger.enqueueWake({ ...wake("child", "other"), triggerRef: "goal:child" }, "supervisor");
-  assert.equal(ledger.claimNextWake("2030-01-01T00:00:00.000Z", "2030-01-01T00:01:00.000Z", "lease-1")?.id, "goal");
-  assert.equal(ledger.claimNextWake("2030-01-01T00:00:00.000Z", "2030-01-01T00:01:00.000Z", "lease-2")?.id, "child");
+  assert.equal(ledger.claimNextWake("2030-01-01T00:00:00.000Z")?.id, "goal");
+  assert.equal(ledger.claimNextWake("2030-01-01T00:00:00.000Z")?.id, "child");
   ledger.close();
 });
 
 test("actions require real evidence and support approval plus audit delivery", () => {
   const ledger = new SqliteLedger(":memory:", { clock: new FixedClock() });
+  activeTurn(ledger,"a","turn-a");
   assert.throws(() => ledger.requestAction(action("bad", [999_999]), "a"), /does not exist/);
   const evidence = ledger.appendEvent(event("a", "observed"));
   ledger.requestAction(action("a1", [evidence.seq]), "a");
@@ -177,13 +119,13 @@ test("actions require real evidence and support approval plus audit delivery", (
 test("mail is acknowledged only by an atomic successful handoff", () => {
   const ledger = new SqliteLedger(":memory:", { clock: new FixedClock() });
   ledger.enqueueWake(wake("w"), "supervisor");
-  ledger.claimNextWake("2030-01-01T00:00:00.000Z", "2030-01-01T00:01:00.000Z", "lease");
-  ledger.markWakeRunning("w", "2030-01-01T00:00:01.000Z", "lease");
+  ledger.claimNextWake("2030-01-01T00:00:00.000Z");const turn=activeTurn(ledger,"agent-1","turn-w");ledger.consumeWake("w",turn.id,"2030-01-01T00:00:01.000Z");
   ledger.putMail({ id: "m", to: "agent-1", from: "human", level: "emergency", body: {}, readAt: null }, "human");
   ledger.putMail({ id: "later", to: "agent-1", from: "human", level: "decision", body: {}, readAt: null }, "human");
   assert.equal(ledger.unreadMail("agent-1").length, 2);
-  ledger.commitHandoff({ agent: "agent-1", wakeId: "w", mailIds: ["m"], ts: "2030-01-01T00:00:02.000Z", output: { handoff: { observations: [], results: [], nextSteps: [] }, mail: [], nextWakeAt: null }, outgoingMail: [], schedule: null });
+  ledger.commitHandoff(handoffCommit(turn.id,"w",["m"]));
   assert.deepEqual(ledger.unreadMail("agent-1").map((mail) => mail.id), ["later"]);
+  assert.equal(ledger.turn(turn.id)?.status,"completed");assert.equal(ledger.readStream(`turn:${turn.id}`).some((event)=>event.type==="transcript.completed"),true);
   ledger.close();
 });
 
@@ -191,12 +133,11 @@ test("handoff event and mail acknowledgement roll back together", () => {
   let armed = false;
   const ledger = new SqliteLedger(":memory:", { clock: new FixedClock(), faultInjector: () => { if (armed) throw new Error("kill during handoff"); } });
   ledger.enqueueWake(wake("w"), "supervisor");
-  ledger.claimNextWake("2030-01-01T00:00:00.000Z", "2030-01-01T00:01:00.000Z", "lease");
-  ledger.markWakeRunning("w", "2030-01-01T00:00:01.000Z", "lease");
+  ledger.claimNextWake("2030-01-01T00:00:00.000Z");const turn=activeTurn(ledger,"agent-1","turn-w");ledger.consumeWake("w",turn.id,"2030-01-01T00:00:01.000Z");
   ledger.putMail({ id: "m", to: "agent-1", from: "human", level: "emergency", body: {}, readAt: null }, "human");
   const before = JSON.stringify(ledger.events());
   armed = true;
-  assert.throws(() => ledger.commitHandoff({ agent: "agent-1", wakeId: "w", mailIds: ["m"], ts: "2030-01-01T00:00:02.000Z", output: { handoff: { observations: [], results: [], nextSteps: [] }, mail: [], nextWakeAt: null }, outgoingMail: [], schedule: null }), /kill during handoff/);
+  assert.throws(() => ledger.commitHandoff(handoffCommit(turn.id,"w",["m"])), /kill during handoff/);
   assert.equal(JSON.stringify(ledger.events()), before);
   assert.equal(ledger.unreadMail("agent-1").length, 1);
   ledger.close();
@@ -214,82 +155,6 @@ test("injected clock is authoritative and newer schemas are rejected", () => {
   raw.exec("PRAGMA user_version=99");
   raw.close();
   assert.throws(() => new SqliteLedger(path), /newer than supported/);
-});
-
-test("schema v1 is migrated without rewriting event history", () => {
-  const path = join(mkdtempSync(join(tmpdir(), "goah-v1-")), "ledger.sqlite");
-  const raw = new DatabaseSync(path);
-  raw.exec(`
-    CREATE TABLE events(seq INTEGER PRIMARY KEY AUTOINCREMENT,ts TEXT,agent TEXT,kind TEXT,data TEXT,wake_id TEXT);
-    CREATE TABLE goals(id TEXT PRIMARY KEY,parent_id TEXT,objective TEXT,metric TEXT,target TEXT,owner TEXT,budget TEXT,phase TEXT,revision INTEGER);
-    CREATE TABLE schedule(id TEXT PRIMARY KEY,agent TEXT,next_wake_at TEXT,reason TEXT,set_by TEXT);
-    CREATE TABLE mailbox(id TEXT PRIMARY KEY,to_agent TEXT,from_agent TEXT,level TEXT,body TEXT,read_at TEXT);
-    CREATE TABLE wakes(id TEXT PRIMARY KEY,agent TEXT,trigger_ref TEXT,status TEXT,lease_until TEXT,attempt INTEGER,started_at TEXT,ended_at TEXT);
-    CREATE TABLE actions(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,payload TEXT,reason TEXT,evidence TEXT,gated INTEGER,status TEXT,reconciled_at TEXT,external_ref TEXT,audit_advice TEXT,advice_acked INTEGER);
-    INSERT INTO events(ts,agent,kind,data,wake_id) VALUES('2029-01-01T00:00:00.000Z','supervisor','wake.enqueued','{"projection":"wakes","snapshot":{"id":"w","agent":"a","triggerRef":"t","status":"queued","leaseUntil":null,"attempt":0,"startedAt":null,"endedAt":null}}','w');
-    INSERT INTO events(ts,agent,kind,data,wake_id) VALUES('2029-01-01T00:00:01.000Z','supervisor','wake.leased','{"projection":"wakes","snapshot":{"id":"w","agent":"a","triggerRef":"t","status":"leased","leaseUntil":"2029-01-01T00:01:00.000Z","attempt":1,"startedAt":null,"endedAt":null}}','w');
-    INSERT INTO wakes VALUES('w','a','t','leased','2029-01-01T00:01:00.000Z',1,NULL,NULL);
-    INSERT INTO actions VALUES('a','a','mock','{}','r','[1]',0,'requested',NULL,NULL,NULL,0);
-    PRAGMA user_version=1;
-  `);
-  raw.close();
-  const ledger = new SqliteLedger(path, { clock: new FixedClock() });
-  assert.equal(ledger.wake("w")?.enqueuedSeq, 1);
-  assert.match(ledger.wake("w")?.leaseToken ?? "", /^legacy:/);
-  assert.equal(ledger.action("a")?.connector, "legacy");
-  assert.equal((ledger.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, SQLITE_SCHEMA_VERSION);
-  assert.equal(ledger.events().length, 2);
-  ledger.rebuildProjections();
-  assert.equal(ledger.wake("w")?.enqueuedSeq, 1);
-  assert.equal(ledger.wake("w")?.status, "leased");
-  ledger.close();
-});
-
-test("schema v2 migration builds the FTS index from existing events", () => {
-  const path = join(mkdtempSync(join(tmpdir(), "goah-v2-")), "ledger.sqlite");
-  const ledger = new SqliteLedger(path, { clock: new FixedClock() });
-  ledger.appendEvent(event("a", "fact", { text: "migrationsearchterm" }));
-  ledger.close();
-  const raw = new DatabaseSync(path);
-  raw.exec("DROP TRIGGER events_fts_insert; DROP TABLE events_fts; PRAGMA user_version=2");
-  raw.close();
-  const migrated = new SqliteLedger(path, { clock: new FixedClock() });
-  assert.equal(migrated.searchEvents("migrationsearchterm").length, 1);
-  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, SQLITE_SCHEMA_VERSION);
-  migrated.close();
-});
-
-test("schema v3 migration indexes coalesced wake triggers", () => {
-  const path = join(mkdtempSync(join(tmpdir(), "goah-v3-")), "ledger.sqlite");
-  const ledger = new SqliteLedger(path, { clock: new FixedClock() });
-  ledger.enqueueWake(wake("w", "a"), "supervisor");
-  ledger.appendEvent(event("supervisor", "wake.trigger_coalesced", { wakeId: "w", triggerRef: "metric:g:missing:none" }, "w"));
-  ledger.close();
-  const raw = new DatabaseSync(path);
-  raw.exec("DROP INDEX events_coalesced_trigger; PRAGMA user_version=3");
-  raw.close();
-  const migrated = new SqliteLedger(path, { clock: new FixedClock() });
-  assert.equal(migrated.wakeByTrigger("a", "metric:g:missing:none")?.id, "w");
-  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, SQLITE_SCHEMA_VERSION);
-  migrated.close();
-});
-
-test("schema v4 migration removes the legacy goal budget column", () => {
-  const path = join(mkdtempSync(join(tmpdir(), "goah-v4-")), "ledger.sqlite");
-  new SqliteLedger(path, { clock: new FixedClock() }).close();
-  const raw = new DatabaseSync(path);
-  raw.exec(`ALTER TABLE goals RENAME TO goals_v5;
-    CREATE TABLE goals(id TEXT PRIMARY KEY,parent_id TEXT,objective TEXT,metric TEXT,target TEXT,owner TEXT,budget TEXT,phase TEXT,revision INTEGER);
-    INSERT INTO goals VALUES('legacy',NULL,'legacy','${JSON.stringify(metric).replaceAll("'", "''")}','1','a','{"currency":"USD","limit":10,"window":"goal"}','active',0);
-    DROP TABLE goals_v5; PRAGMA user_version=4;`);
-  raw.close();
-  const migrated = new SqliteLedger(path, { clock: new FixedClock() });
-  assert.equal(migrated.goal("legacy")?.objective, "legacy");
-  assert.equal("budget" in migrated.goal("legacy")!, false);
-  const columns = (migrated.db.prepare("PRAGMA table_info(goals)").all() as Array<{ name: string }>).map((row) => row.name);
-  assert.equal(columns.includes("budget"), false);
-  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, SQLITE_SCHEMA_VERSION);
-  migrated.close();
 });
 
 test("goal parent cannot be changed during an update", () => {
@@ -352,14 +217,15 @@ test("Work Records are versioned Goal documents backed by replayable events", ()
   assert.match(initial?.content ?? "", /Goal created/);
 
   const evidence = ledger.appendEvent(event("ceo", "release.observed", { ok: true }));
-  const updated = ledger.updateWorkRecord({ goalId: "root", expectedRevision: 0, goalRevision: 0, content: "# Current State\n\nRelease candidate verified.\n\n# Observations\n\nSmoke test passed.\n\n# Work Completed\n\nPrepared release.\n\n# Decisions\n\nShip.\n\n# Blockers\n\nNone.\n\n# Next Steps\n\nPublish.\n", reason: "record verified release state", evidence: [evidence.seq], turnId: "turn-1", wakeId: "wake-1" }, "ceo");
+  const turn=activeTurn(ledger,"ceo","turn-1");ledger.putTurn({...turn,goalId:"root",goalRevision:0},"supervisor");
+  const updated = ledger.updateWorkRecord({ goalId: "root", expectedRevision: 0, goalRevision: 0, content: "# Current State\n\nRelease candidate verified.\n\n# Observations\n\nSmoke test passed.\n\n# Work Completed\n\nPrepared release.\n\n# Decisions\n\nShip.\n\n# Blockers\n\nNone.\n\n# Next Steps\n\nPublish.\n", reason: "record verified release state", evidence: [evidence.seq], turnId: "turn-1", sourceWakeId: "wake-1" }, "ceo");
   assert.equal(updated.recordRevision, 1);
   assert.equal(updated.lastEventSeq > evidence.seq, true);
   assert.deepEqual(ledger.workRecordHistory("root").map((record) => record.recordRevision), [0, 1]);
   assert.match(ledger.workRecordDiff("root", 0, 1).text, /\+Release candidate verified/);
   assert.equal(ledger.searchWorkRecords("Release").some((record) => record.goalId === "root"), true);
-  assert.throws(() => ledger.updateWorkRecord({ goalId: "root", expectedRevision: 0, goalRevision: 0, content: "stale", reason: "stale", evidence: [evidence.seq], turnId: "turn-2" }, "ceo"), /CAS/);
-  assert.throws(() => ledger.updateWorkRecord({ goalId: "root", expectedRevision: 1, goalRevision: 0, content: "unauthorized", reason: "unauthorized", evidence: [evidence.seq], turnId: "turn-2" }, "other"), /owner/);
+  assert.throws(() => ledger.updateWorkRecord({ goalId: "root", expectedRevision: 0, goalRevision: 0, content: "stale", reason: "stale", evidence: [evidence.seq], turnId: "turn-1" }, "ceo"), /CAS/);
+  assert.throws(() => ledger.updateWorkRecord({ goalId: "root", expectedRevision: 1, goalRevision: 0, content: "unauthorized", reason: "unauthorized", evidence: [evidence.seq], turnId: "turn-1" }, "other"), /owner/);
 
   const before = ledger.workRecord("root");
   ledger.rebuildProjections();
@@ -440,9 +306,10 @@ test("reassignment changes ownership, notifies both sides, and wakes only the ne
   assert.deepEqual(result.mail.map((item) => item.to), ["old", "new"]);
   assert.equal(result.wake.agent, "new");
   assert.equal(ledger.wakes().some((item) => item.agent === "old" && item.status === "queued"), false);
-  assert.equal(ledger.wake("old-wake")?.status, "abnormal");
+  assert.equal(ledger.wake("old-wake")?.status, "cancelled");
   assert.deepEqual(ledger.commitReassignment(request, "ceo"), result);
   assert.throws(() => ledger.updateWorkRecord({ goalId: "launch", goalRevision: 1, expectedRevision: 0, content: "old owner write", reason: "stale owner", evidence: [evidence.seq], turnId: "old-turn" }, "old"), /owner/);
+  const turn=activeTurn(ledger,"new","new-turn");ledger.putTurn({...turn,goalId:"launch",goalRevision:1},"supervisor");
   assert.equal(ledger.updateWorkRecord({ goalId: "launch", goalRevision: 1, expectedRevision: 0, content: "# Current State\n\nNew owner resumed work.\n", reason: "accept reassignment", evidence: [evidence.seq], turnId: "new-turn" }, "new").updatedBy, "new");
   ledger.close();
 });
@@ -451,25 +318,20 @@ test("FTS searches event facts and actions keep payload policy external", () => 
   const ledger = new SqliteLedger(":memory:", { clock: new FixedClock() });
   ledger.putGoal({ id: "root", parentId: null, objective: "generic policy", observationMethod: null, verificationMethod: null, owner: "a", phase: "active", revision: 0 }, "human");
   const evidence = ledger.appendEvent(event("a", "observation", { note: "uniquenebulafact" }));
+  activeTurn(ledger,"a","turn-a");
   assert.equal(ledger.searchEvents("uniquenebulafact").map((event) => event.seq).includes(evidence.seq), true);
   ledger.requestAction({ ...action("generic", [evidence.seq]), payload: { domainSpecificPolicy: { quota: 60 } } }, "a");
   assert.equal(ledger.approveAction("generic", "human", "policy is handled outside the ledger", [evidence.seq]).status, "approved");
   ledger.close();
 });
 
-test("fault injection rolls back every wake mutation point", () => {
+test("fault injection rolls back every Wake scheduling mutation point", () => {
   const cases: Array<{ name: string; setup(l: SqliteLedger): void; mutate(l: SqliteLedger): void }> = [
     { name: "enqueue", setup: () => undefined, mutate: (l) => { l.enqueueWake(wake("w"), "supervisor"); } },
-    { name: "lease", setup: (l) => { l.enqueueWake(wake("w"), "supervisor"); }, mutate: (l) => { l.claimNextWake("2030-01-01T00:00:00.000Z", "2030-01-01T00:00:10.000Z", "lease"); } },
-    { name: "running", setup: leased, mutate: (l) => { l.markWakeRunning("w", "2030-01-01T00:00:01.000Z", "lease"); } },
-    { name: "pid", setup: running, mutate: (l) => { l.attachWakeProcess("w", "lease", 123, "2030-01-01T00:00:02.000Z"); } },
-    { name: "renew", setup: running, mutate: (l) => { l.renewWakeLease("w", "lease", "2030-01-01T00:00:20.000Z", "2030-01-01T00:00:02.000Z"); } },
-    { name: "done", setup: running, mutate: (l) => { l.finishWake("w", "done", "2030-01-01T00:00:02.000Z"); } },
-    { name: "abnormal", setup: running, mutate: (l) => { l.finishWake("w", "abnormal", "2030-01-01T00:00:02.000Z"); } },
-    { name: "merge blocked", setup: running, mutate: (l) => { l.finishWake("w", "merge_blocked", "2030-01-01T00:00:02.000Z"); } },
-    { name: "leased abnormal", setup: leased, mutate: (l) => { l.finishWake("w", "abnormal", "2030-01-01T00:00:02.000Z"); } },
-    { name: "expired leased", setup: leased, mutate: (l) => { l.recoverExpiredWake("w", "2030-01-01T00:00:11.000Z"); } },
-    { name: "expired running", setup: running, mutate: (l) => { l.recoverExpiredWake("w", "2030-01-01T00:00:11.000Z"); } },
+    { name: "claim", setup: (l) => { l.enqueueWake(wake("w"), "supervisor"); }, mutate: (l) => { l.claimNextWake("2030-01-01T00:00:00.000Z"); } },
+    { name: "release", setup: claimed, mutate: (l) => { l.releaseWake("w","2030-01-01T00:00:01.000Z"); } },
+    { name: "cancel", setup: (l) => { l.enqueueWake(wake("w"),"supervisor"); }, mutate: (l) => { l.cancelWake("w","2030-01-01T00:00:01.000Z"); } },
+    { name: "consume", setup: (l) => { claimed(l);activeTurn(l,"agent-1","turn-w"); }, mutate: (l) => { l.consumeWake("w","turn-w","2030-01-01T00:00:01.000Z"); } },
   ];
   for (const item of cases) {
     let armed = false;
@@ -489,6 +351,7 @@ test("fault injection rolls back every action, audit, and approval transition", 
     let armed = false;
     const ledger = new SqliteLedger(":memory:", { clock: new FixedClock(), faultInjector: () => { if (armed) throw new Error(`kill at ${target}`); } });
     const evidence = ledger.appendEvent(event("a", "observed"));
+    activeTurn(ledger,"a","turn-a");
     if (target !== "request") ledger.requestAction(action("a", [evidence.seq]), "a");
     if (["dispatch", "dispatchFailed", "confirm", "unknown", "retry", "reconcileConfirmed", "reconcileFailed"].includes(target)) ledger.approveAction("a", "human", "ok", [evidence.seq]);
     if (["dispatchFailed", "confirm", "unknown", "retry", "reconcileConfirmed", "reconcileFailed"].includes(target)) ledger.transitionAction("a", "dispatching");
@@ -516,11 +379,9 @@ test("fault injection rolls back every action, audit, and approval transition", 
   }
 });
 
-function leased(ledger: SqliteLedger): void {
+function claimed(ledger: SqliteLedger): void {
   ledger.enqueueWake(wake("w"), "supervisor");
-  ledger.claimNextWake("2030-01-01T00:00:00.000Z", "2030-01-01T00:00:10.000Z", "lease");
+  ledger.claimNextWake("2030-01-01T00:00:00.000Z");
 }
-function running(ledger: SqliteLedger): void {
-  leased(ledger);
-  ledger.markWakeRunning("w", "2030-01-01T00:00:01.000Z", "lease");
-}
+function activeTurn(ledger:SqliteLedger,agent:string,id:string):import("goah-ledger-contract").TurnSnapshot{let thread=ledger.threads().find((candidate)=>candidate.agent===agent);if(!thread){const now="2030-01-01T00:00:00.000Z";thread={id:`thread:${agent}`,agent,parentThreadId:null,createdAt:now,updatedAt:now};ledger.putThread(thread,"supervisor");}const existing=ledger.turn(id);if(existing)return existing;const turn={id,threadId:thread.id,source:"system" as const,goalId:null,goalRevision:null,status:"in_progress" as const,attempt:1,error:null,startedAt:"2030-01-01T00:00:00.000Z",endedAt:null,leaseUntil:"2030-01-01T00:10:00.000Z",leaseToken:"lease",runnerPid:null};ledger.putTurn(turn,"supervisor");return turn;}
+function handoffCommit(turnId:string,sourceWakeId:string|null,mailIds:string[]=[]):import("goah-ledger-contract").HandoffCommit{const ts="2030-01-01T00:00:02.000Z";const output={handoff:{observations:[],results:[],nextSteps:[]},mail:[],nextWakeAt:null};return{agent:"agent-1",turnId,sourceWakeId,mailIds,ts,output,outgoingMail:[],schedule:null,item:{id:`handoff:${turnId}`,turnId,ordinal:1,type:"handoff",status:"completed",data:output.handoff,createdAt:ts,completedAt:ts}};}

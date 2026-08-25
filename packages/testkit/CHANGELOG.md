@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Added conformance and regression coverage for scheduling-only Wakes, Turn-owned recovery, Human priority, Action provenance, reasoning Items, and canonical Transcript terminals.
+
 ## 0.6.0
 
 - Conformance suite now checks `latestEvent()`; soak tests disable the silence tripwire.
