@@ -158,9 +158,10 @@ export class Supervisor {
   }
 
   sessionFor(agent = "ceo"): import("goah-ledger-contract").SessionSnapshot {
-    const existing = this.ledger.sessions().find((session) => session.agent === agent && session.parentSessionId === null);
+    const parentSessionId = agent === "ceo" ? null : this.sessionFor("ceo").id;
+    const existing = this.ledger.sessions().find((session) => session.agent === agent && session.parentSessionId === parentSessionId);
     if (existing) return existing;
-    const now = this.#now(); const session = { id: randomUUID(), agent, parentSessionId: null, createdAt: now, updatedAt: now };
+    const now = this.#now(); const session = { id: randomUUID(), agent, parentSessionId, createdAt: now, updatedAt: now };
     this.ledger.putSession(session, "supervisor"); return session;
   }
 
@@ -169,8 +170,7 @@ export class Supervisor {
     const automatic = this.ledger.wakes().find((wake) => wake.agent === "ceo" && (wake.status === "leased" || wake.status === "running")); if (automatic) { const execution = this.ledger.turn(automatic.id); if (execution?.status === "in_progress") this.ledger.putTurn({ ...execution,status:"interrupted",endedAt:this.#now(),leaseUntil:null,leaseToken:null,runnerPid:null },"human"); await this.#stopWake(automatic); }
     const session = this.sessionFor("ceo"); const active = this.ledger.activeTurn(session.id);
     if (active) {
-      const handle = this.#handles.get(active.id); if (!handle?.steer) throw new Error("the active Turn is not accepting steering");
-      this.#appendTurnItem(active.id, "user_message", { text: message }, "human"); await handle.steer(message); return { sessionId: session.id, turnId: active.id, steered: true };
+      const handle = this.#handles.get(active.id); this.#appendTurnItem(active.id, "user_message", { text: message }, "human"); if (handle?.steer) await handle.steer(message); return { sessionId: session.id, turnId: active.id, steered: true };
     }
     const now = this.#now(); this.ledger.putSession({ ...session,updatedAt:now },"supervisor"); const leaseToken = randomUUID();
     const turn: TurnSnapshot = { id: randomUUID(), sessionId: session.id, source: "human", goalId: null, goalRevision: null, status: "in_progress", error: null, startedAt: now, endedAt: null, leaseUntil: new Date(this.clock.now().getTime() + this.#leaseMs).toISOString(), leaseToken, runnerPid: null };
@@ -185,7 +185,8 @@ export class Supervisor {
   }
 
   async #runDirectTurn(initial: TurnSnapshot, message: string, leaseToken: string): Promise<void> {
-    const turnContext: TurnContext = { source: { kind: "human" } }; const profile = this.#profiles.get("ceo") ?? { agent: "ceo", role: "ceo" as const }; const runnerProfile = this.#runnerProfiles.get(profile.runnerProfile ?? "default");
+    if (initial.status !== "in_progress") return;
+    const turnContext: TurnContext = { source: { kind: "human" }, ...(initial.goalId && initial.goalRevision !== null ? { goalBinding:{ goalId:initial.goalId,goalRevision:initial.goalRevision } } : {}) }; const profile = this.#profiles.get("ceo") ?? { agent: "ceo", role: "ceo" as const }; const runnerProfile = this.#runnerProfiles.get(profile.runnerProfile ?? "default");
     const recent = this.ledger.turns(initial.sessionId).filter((turn) => turn.id !== initial.id && turn.status === "completed").slice(-8).flatMap((turn) => this.ledger.turnItems(turn.id).filter((item) => item.type === "user_message" || item.type === "assistant_message").map((item) => `${item.type === "user_message" ? "Human" : "Assistant"}: ${String((item.data as { text?: unknown }).text ?? "")}`));
     const currentMessages = this.ledger.turnItems(initial.id).filter((item) => item.type === "user_message").map((item) => String((item.data as { text?: unknown }).text ?? ""));
     const sourceSeqs = this.ledger.readStream(`turn:${initial.id}`).filter((event) => event.type === "item.user_message.started").map((event) => event.seq);
@@ -771,9 +772,18 @@ export class Supervisor {
     if (method === "work_record.search") return this.ledger.searchWorkRecords(String(input.query), Number(input.limit ?? 20)) as unknown as JsonValue;
     if (method === "work_record.update") { const binding = context.goalBinding!; return this.ledger.updateWorkRecord({ goalId: binding.goalId, goalRevision: binding.goalRevision, expectedRevision: Number(input.expectedRevision), content: String(input.content), reason: String(input.reason), evidence: numberArray(input.evidence), turnId }, agent) as unknown as JsonValue; }
     if (method === "goal.delegate") return this.delegate({ id:String(input.id),parentGoalId:String(input.parentGoalId),childGoal:asChildGoal(input.childGoal),brief:(input.brief??null) as JsonValue,reason:String(input.reason),evidence:numberArray(input.evidence) },agent) as unknown as JsonValue;
+    if (method === "goal.reassign") return this.reassignGoal({ id:String(input.id),goalId:String(input.goalId),newOwner:String(input.newOwner),brief:(input.brief??null) as JsonValue,reason:String(input.reason),evidence:numberArray(input.evidence) },agent) as unknown as JsonValue;
+    if (method === "goal.revise") return this.reviseChildGoal(String(input.goalId),String(input.objective),String(input.observationMethod),String(input.verificationMethod),agent,String(input.reason),numberArray(input.evidence)) as unknown as JsonValue;
+    if (method === "goal.pause" || method === "goal.resume") { const goal=this.#goal(String(input.goalId)); const directRoot=!context.goalBinding&&context.source.kind==="human"&&goal.parentId===null; if(!context.goalBinding&&!directRoot) throw new Error(`${method} requires a Goal-bound Turn`); const next=this.transitionGoal(goal.id,method==="goal.pause"?"paused":"active",directRoot?"human":agent); if(method==="goal.resume"&&directRoot){context.goalBinding={goalId:next.id,goalRevision:next.revision};this.ledger.putTurn({...execution,goalId:next.id,goalRevision:next.revision},"supervisor");return {goal:next,goalBinding:context.goalBinding} as unknown as JsonValue;} return next as unknown as JsonValue; }
+    if (method === "goal.complete") { const goal=this.#goal(String(input.goalId)); const directRoot=!context.goalBinding&&context.source.kind==="human"&&goal.parentId===null; if(!context.goalBinding&&!directRoot) throw new Error("goal.complete requires a Goal-bound Turn"); return this.completeGoal({goalId:goal.id,revision:Number(input.revision),reason:String(input.reason),evidence:numberArray(input.evidence)},directRoot?"human":agent) as unknown as JsonValue; }
     if (method === "mail.send") { const mail: MailSnapshot = { id:randomUUID(),to:String(input.to),from:agent,level:String(input.level) as MailSnapshot["level"],body:(input.body??null) as JsonValue,readAt:null }; this.ledger.putMail(mail,agent); return mail as unknown as JsonValue; }
     if (method === "human.request") { const mail: MailSnapshot = { id:randomUUID(),to:"human",from:agent,level:"decision",body:{ type:String(input.type),message:input.message??null,evidence:numberArray(input.evidence) },readAt:null }; this.ledger.putMail(mail,agent); return mail as unknown as JsonValue; }
-    throw new Error(`${method} is not yet available on direct Turns`);
+    if (method === "schedule.set") return (this.planWake(agent,String(input.at),String(input.reason),agent)??{scheduled:true}) as unknown as JsonValue;
+    if (method === "audit.ack") return this.ackAuditAdvice(String(input.actionId),agent) as unknown as JsonValue;
+    if (method === "audit.write") return this.putAuditAdvice(String(input.actionId),{by:agent,body:(input.body??null) as JsonValue,evidence:numberArray(input.evidence)}) as unknown as JsonValue;
+    if (method === "goal.put") { this.ledger.putGoal(input.goal as unknown as GoalSnapshot,agent); return input.goal as JsonValue; }
+    if (method === "memory.append") { const note=String(input.note??"").trim(); if(!note) throw new Error("memory note cannot be empty"); const event=this.ledger.appendEvent({streamId:memoryStream(agent),ts:this.#now(),actor:agent,type:"memory.appended",data:{note,turnId}}); return {seq:event.seq} as unknown as JsonValue; }
+    const action=await this.submitAction({id:String(input.id),agent,kind:String(input.kind),payload:(input.payload??null) as JsonValue,reason:String(input.reason),evidence:numberArray(input.evidence),auditAdvice:null,adviceAcked:false},String(input.connector)); return action as unknown as JsonValue;
   }
 
   async #collectMetrics(): Promise<void> {

@@ -164,9 +164,9 @@ test("CLI runs the install-to-first-handoff path with the faux provider", () => 
   assert.equal(status.modelCapabilities.provider, "faux");
   assert.equal(status.recentHandoffs.length, 1);
   const sessions = JSON.parse(invoke(directory, "session", "list"));
-  assert.equal(sessions[0].turnCount, 1);
-  assert.equal(sessions[0].status, "idle");
-  const sessionId = sessions[0].sessionId;
+  const workerSession = sessions.find((session: { turnCount: number }) => session.turnCount === 1);
+  assert.equal(workerSession.status, "idle");
+  const sessionId = workerSession.sessionId;
   const detail = JSON.parse(invoke(directory, "session", "show", "--config", "goah.config.json", sessionId));
   assert.ok(detail.turns[0].items.length > 0);
   assert.equal(JSON.stringify(detail).includes("apiKey"), false);

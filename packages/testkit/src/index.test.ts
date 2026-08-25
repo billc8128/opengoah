@@ -130,6 +130,12 @@ test("interrupting a Human Turn terminates it without Mail or Wake", async () =>
   const supervisor = new Supervisor(ledger,runner,clock); const accepted = await supervisor.startHumanTurn("cancel me"); await new Promise((resolveWait)=>setImmediate(resolveWait)); assert.equal((await supervisor.interruptTurn(accepted.turnId)).status,"interrupted"); await new Promise((resolveWait)=>setImmediate(resolveWait)); assert.equal(ledger.wakes().length,0); assert.equal(ledger.mailbox().length,0); ledger.close();
 });
 
+test("a follow-up during Turn retry backoff joins the same Turn", async () => {
+  const clock = new SimulatedClock(); const ledger = createMemoryLedger({ clock }); let attempt=0; let retryContext="";
+  const runner: Runner = { isolation:"process",prepare:(request)=>{ attempt+=1; if(attempt>1) retryContext=String((request.context as {text?:string}).text??""); return {pid:null,begin:()=>undefined,result:Promise.resolve(attempt===1?{outcome:"abnormal" as const,reason:"temporary"}:{outcome:"response" as const,response:{content:"recovered"}}),terminate:async()=>undefined}; },terminateProcess:async()=>undefined };
+  const supervisor = new Supervisor(ledger,runner,clock,{turnRetryPolicy:{maxAttempts:2,baseDelayMs:25}}); const first=await supervisor.startHumanTurn("first"); while(!ledger.readStream(`turn:${first.turnId}`).some((event)=>event.type==="turn.retry_started")) await new Promise((resolveWait)=>setTimeout(resolveWait,1)); const follow=await supervisor.startHumanTurn("correction"); assert.equal(follow.turnId,first.turnId); while(ledger.turn(first.turnId)?.status==="in_progress") await new Promise((resolveWait)=>setTimeout(resolveWait,1)); assert.match(retryContext,/Follow-up: correction/); assert.equal(ledger.turnItems(first.turnId).filter((item)=>item.type==="user_message").length,2); ledger.close();
+});
+
 test("a Goal-bound Turn cannot hand off without updating its Work Record", async () => {
   const clock = new SimulatedClock();
   const ledger = createMemoryLedger({ clock });

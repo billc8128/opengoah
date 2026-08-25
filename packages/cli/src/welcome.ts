@@ -1,10 +1,8 @@
 /**
- * Welcome-panel snapshot: read-only Ledger facts rendered into fixed slots.
+ * Startup snapshot: compact organization summary plus resumable conversation Items.
  *
- * Zero daemon dependency and zero blocking: the workspace ledger is a local
- * SQLite file opened read-only; a missing ledger (fresh workspace) renders
- * placeholder slots, so panel height never changes between runs (pi/omp
- * fixed-slot pattern).
+ * Zero daemon dependency: the workspace Ledger is opened read-only before the
+ * live Turn subscription begins.
  */
 import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
@@ -23,7 +21,7 @@ export interface WelcomeSnapshot {
 
 export const WELCOME_TEAM_SLOTS = 3;
 export const WELCOME_HANDOFF_SLOTS = 2;
-export const WELCOME_CONVERSATION_SLOTS = 4;
+export const WELCOME_CONVERSATION_SLOTS = 240;
 export const GOAH_TERMINAL_MARK = [
   "        ▄▄",
   "      ▄▀▀  █▄",
@@ -56,8 +54,8 @@ export function welcomeSnapshot(stateDir: string, runner: RunnerDisplay): Welcom
         return [{ agent: row.actor, result }];
       } catch { return [{ agent: row.actor, result: "" }]; }
     });
-    const itemRows = db.prepare("SELECT type,data FROM turn_items WHERE type IN ('user_message','assistant_message') ORDER BY rowid DESC LIMIT 30").all() as unknown as Array<{ type: string; data: string }>;
-    const conversation = itemRows.reverse().flatMap((row) => { try { const data = JSON.parse(row.data) as { text?: unknown }; return typeof data.text === "string" ? [{ speaker: row.type === "user_message" ? "You" : "Goah", text: shorten(data.text) }] : []; } catch { return []; } }).slice(-WELCOME_CONVERSATION_SLOTS);
+    const itemRows = db.prepare("SELECT type,data FROM turn_items WHERE type IN ('user_message','assistant_message') ORDER BY rowid DESC LIMIT ?").all(WELCOME_CONVERSATION_SLOTS) as unknown as Array<{ type: string; data: string }>;
+    const conversation = itemRows.reverse().flatMap((row) => { try { const data = JSON.parse(row.data) as { text?: unknown }; return typeof data.text === "string" ? [{ speaker: row.type === "user_message" ? "You" : "Goah", text: data.text }] : []; } catch { return []; } });
     return { root: root ? { id: root.id, objective: root.objective, phase: root.phase } : null, team, handoffs, conversation, runner: runner.runner, target: runner.target };
   } finally { db.close(); }
 }
@@ -70,5 +68,3 @@ export function renderWelcome(snapshot: WelcomeSnapshot, hasHistory: boolean): s
   lines.push("");
   return lines;
 }
-
-function shorten(value: string): string { return value.length > 120 ? `${value.slice(0, 117)}…` : value; }
