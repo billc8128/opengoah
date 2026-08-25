@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import { mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { request } from "node:http"
 import test from "node:test"
 import { createRuntime, defaultConfig, loadConfig } from "./index.js"
 import { consoleMetadataPath, readConsoleMetadata, runWebConsole } from "./web-console.js"
@@ -13,6 +14,7 @@ test("local Console serves assets, redacted snapshots, and CEO control through S
   writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`)
   const runtime = createRuntime(loadConfig(configPath))
   runtime.ledger.putMail({ id: "secret-mail", to: "ceo", from: "human", level: "decision", body: { apiKey: "sk-do-not-expose-123456789" }, readAt: null }, "human")
+  await assert.rejects(()=>runWebConsole(runtime.supervisor,runtime.ledger,config.stateDir,new AbortController().signal,{host:"0.0.0.0"}),/loopback/)
 
   const controller = new AbortController()
   let resolveListening!: () => void
@@ -27,6 +29,9 @@ test("local Console serves assets, redacted snapshots, and CEO control through S
   assert.match(await page.text(), /Goah Console/)
   const forgedReferer=await fetch(`${metadata.url}api/snapshot`,{headers:{referer:metadata.url}})
   assert.equal(forgedReferer.status,403)
+  const rebound=await rawRequest(metadata.url,"evil.test")
+  assert.equal(rebound.status,403)
+  assert.equal(rebound.setCookie,undefined)
 
   const ceoResponse = await fetch(`${metadata.url}api/ceo?token=${metadata.token}`, {
     method: "POST",
@@ -64,6 +69,8 @@ test("local Console serves assets, redacted snapshots, and CEO control through S
   assert.equal(consoleMetadataPath(config.stateDir), join(config.stateDir, "console.json"))
   runtime.ledger.close()
 })
+
+function rawRequest(url:string,host:string):Promise<{status:number;setCookie:string[]|undefined}>{return new Promise((resolve,reject)=>{const target=new URL(url);const call=request({hostname:target.hostname,port:target.port,path:target.pathname,headers:{host}},(response)=>{response.resume();response.once("end",()=>resolve({status:response.statusCode??0,setCookie:response.headers["set-cookie"]}));});call.once("error",reject);call.end();});}
 
 test("Console chat streams a CEO interaction and decisions resolve gated actions", async () => {
   const root = mkdtempSync(join(tmpdir(), "goah-console-chat-"))

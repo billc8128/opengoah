@@ -185,8 +185,8 @@ async function main(): Promise<void> {
       const wake = flag("--wake-now") ? supervisor.planWake(owner, new Date().toISOString(), `goal:${id}`, "supervisor") : null;
       console.log(JSON.stringify({ goal, wake }, null, 2));
     } else if (command === "goal-update") {
-      const objective = option("--objective"); const observationMethod = option("--observation-method"); const verificationMethod = option("--verification-method"); const owner = option("--owner");
-      const goal = supervisor.updateGoal(requiredPositional(1, "goal id"), { ...(objective ? { objective } : {}), ...(observationMethod ? { observationMethod } : {}), ...(verificationMethod ? { verificationMethod } : {}), ...(owner ? { owner } : {}) }, option("--actor") ?? "human");
+      const objective = option("--objective"); const observationMethod = option("--observation-method"); const verificationMethod = option("--verification-method");if(option("--owner"))throw new Error("Goal ownership changes require atomic CEO reassignment, not goal-update");
+      const goal = supervisor.updateGoal(requiredPositional(1, "goal id"), { ...(objective ? { objective } : {}), ...(observationMethod ? { observationMethod } : {}), ...(verificationMethod ? { verificationMethod } : {}) }, option("--actor") ?? "human");
       console.log(JSON.stringify({ goal }, null, 2));
     } else if (["goal-pause", "goal-resume", "goal-complete"].includes(command)) {
       const id = requiredPositional(1, "goal id");
@@ -255,7 +255,7 @@ function openUrl(url: string): void {
 function remoteRequest(command: string): ControlRequest | null {
   if (command === "status") return { op: "status" };
   if (command === "goal-start") return { op: "goal.start", objective: required("--objective"), ...(option("--id") ? { id: option("--id")! } : {}) };
-  if (command === "goal-update") return { op: "goal.update", id: requiredPositional(1, "goal id"), ...(option("--objective") ? { objective: option("--objective")! } : {}), ...(option("--observation-method") ? { observationMethod: option("--observation-method")! } : {}), ...(option("--verification-method") ? { verificationMethod: option("--verification-method")! } : {}), ...(option("--owner") ? { owner: option("--owner")! } : {}) };
+  if (command === "goal-update") {if(option("--owner"))throw new Error("Goal ownership changes require atomic CEO reassignment, not goal-update");return { op: "goal.update", id: requiredPositional(1, "goal id"), ...(option("--objective") ? { objective: option("--objective")! } : {}), ...(option("--observation-method") ? { observationMethod: option("--observation-method")! } : {}), ...(option("--verification-method") ? { verificationMethod: option("--verification-method")! } : {}) };}
   if (command === "goal-pause" || command === "goal-resume") return { op: "goal.transition", id: requiredPositional(1, "goal id"), phase: command === "goal-pause" ? "paused" : "active" };
   if (command === "goal-complete") return { op: "goal.complete", id: requiredPositional(1, "goal id"), reason: required("--reason"), evidence: evidence() };
   if (command === "ceo-send") return { op: "ceo.send", message: required("--message") };
@@ -284,7 +284,7 @@ goah ceo status | ceo inbox
 goah ceo approve ACTION_ID --reason TEXT --evidence SEQ[,SEQ]
 goah goal-create --id ID --owner AGENT --objective TEXT [--observation-method TEXT] [--wake-now]
 goah goal-show ID | goal-list
-goah goal-update ID [--objective TEXT] [--observation-method TEXT] [--owner AGENT] [--actor ACTOR]
+goah goal-update ID [--objective TEXT] [--observation-method TEXT] [--actor ACTOR]
 goah goal-pause|goal-resume ID [--actor ACTOR]
 goah goal-complete ID --reason TEXT --evidence SEQ[,SEQ] [--actor ACTOR]
 goah wake AGENT [--reason TEXT]

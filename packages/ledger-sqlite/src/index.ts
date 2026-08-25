@@ -44,7 +44,7 @@ type FaultInjector = (point: FaultPoint) => void;
 type Row = Record<string, unknown>;
 type ProjectionName = "threads" | "turns" | "turn_items" | "goals" | "schedule" | "wakes" | "mailbox" | "actions" | "work_records";
 
-export const SQLITE_SCHEMA_VERSION = 14;
+export const SQLITE_SCHEMA_VERSION = 15;
 
 const createThreads = `CREATE TABLE IF NOT EXISTS threads (
   id TEXT PRIMARY KEY,
@@ -268,8 +268,8 @@ export class SqliteLedger implements Ledger {
   }
 
   close(): void { this.db.close(); }
-  appendEvent(input: EventInput): EventRecord { return this.#transaction(() => this.#insertEvent(input)); }
-  appendEvents(inputs: EventInput[]): EventRecord[] { return this.#transaction(() => inputs.map((input) => this.#insertEvent(input))); }
+  appendEvent(input: EventInput): EventRecord { this.#assertRawEvent(input);return this.#transaction(() => this.#insertEvent(input)); }
+  appendEvents(inputs: EventInput[]): EventRecord[] { for(const input of inputs)this.#assertRawEvent(input);return this.#transaction(() => inputs.map((input) => this.#insertEvent(input))); }
   readStream(streamId: string, fromStreamSeq = 1): EventRecord[] {
     return (this.db.prepare("SELECT * FROM events WHERE stream_id=? AND stream_seq>=? ORDER BY stream_seq").all(streamId, fromStreamSeq) as Row[]).map(mapEvent);
   }
@@ -318,6 +318,7 @@ export class SqliteLedger implements Ledger {
   putGoal(goal: GoalSnapshot, actor: string, wakeId?: string,change?:GoalChangeMetadata): EventRecord {
     const normalized = normalizeGoal(goal);
     assertGoalSnapshot(normalized);
+    if(change?.idempotencyKey){const row=this.db.prepare("SELECT * FROM events WHERE type='goal.changed' AND actor=? AND json_extract(data,'$.idempotencyKey')=? ORDER BY seq LIMIT 1").get(actor,change.idempotencyKey) as Row|undefined;if(row){const event=mapEvent(row);const data=event.data as unknown as GoalChangedData;const same=isDeepStrictEqual(data.snapshot,normalized)&&data.operation===change.operation&&data.reason===change.reason.trim()&&isDeepStrictEqual(data.evidence,change.evidence)&&(!change.authority||isDeepStrictEqual(data.authority,change.authority));if(!same)throw new Error("Goal idempotency key was reused with a different mutation");return event;}}
     const current = this.#getGoal(normalized.id);
     if (current) {
       if (normalized.revision !== current.revision + 1) throw new Error("goal revision CAS failed");
@@ -568,6 +569,7 @@ export class SqliteLedger implements Ledger {
 
   appendTurnEvent(input: EventInput, leaseToken: string): EventRecord {
     return this.#transaction(() => {
+      this.#assertRawEvent(input);
       if (!input.streamId.startsWith("turn:")) throw new Error("runner event requires a Turn stream");
       const turn = this.#requiredTurn(input.streamId.slice("turn:".length)); this.#assertTurnLease(turn, leaseToken);
       if (turn.status !== "in_progress" || !turn.leaseUntil || input.ts > turn.leaseUntil) throw new Error("stale runner event rejected");
@@ -721,38 +723,34 @@ export class SqliteLedger implements Ledger {
     const source = this.events();
     this.#transaction(() => {
       this.db.exec("DELETE FROM actions; DELETE FROM turn_items; DELETE FROM wakes; DELETE FROM turns; DELETE FROM threads; DELETE FROM work_records; DELETE FROM mailbox; DELETE FROM schedule; DELETE FROM goals;");
+      const goalKeys=new Set<string>();
       for (const event of source) {
         const data = event.data as { projection?: ProjectionName; snapshot?: unknown };
-        if (data.projection && data.snapshot) this.#applyProjection(data.projection, data.snapshot, event.seq);
+        if(!data.projection)continue;const expected=projectionForEvent(event.type);if(expected!==data.projection)throw new Error(`event ${event.seq} cannot drive ${String(data.projection)} projection`);if(!data.snapshot)throw new Error(`projection event ${event.seq} has no snapshot`);if(data.projection==="goals")this.#replayGoalChange(event,goalKeys);else this.#applyProjection(data.projection,data.snapshot,event.seq);
       }
     });
   }
 
   #delegationResult(id: string): DelegationResult | null {
-    const row = this.db.prepare("SELECT data FROM events WHERE type='delegation.created' AND json_extract(data,'$.delegationId')=? ORDER BY seq LIMIT 1").get(id) as { data: string } | undefined;
+    const row = this.db.prepare("SELECT data,actor FROM events WHERE type='delegation.created' AND json_extract(data,'$.delegationId')=? ORDER BY seq LIMIT 1").get(id) as { data: string;actor:string } | undefined;
     if (!row) return null;
     const data = JSON.parse(row.data) as { goalId: string; mailId: string; wakeId: string };
-    const goal = this.#getGoal(data.goalId);
-    const mailRow = this.db.prepare("SELECT * FROM mailbox WHERE id=?").get(data.mailId) as Row | undefined;
-    const wake = this.wake(data.wakeId);
-    if (!goal || !mailRow || !wake) throw new Error("committed delegation projections are incomplete");
-    return { delegationId: id, goal, mail: mapMail(mailRow), wake };
+    const goal=this.#goalChangeSnapshot(id,row.actor);const mail=this.#eventSnapshot<MailSnapshot>("mail.put",data.mailId);const wake=this.#eventSnapshot<WakeSnapshot>("wake.enqueued",data.wakeId);
+    if (!goal || !mail || !wake) throw new Error("committed delegation facts are incomplete");
+    return { delegationId: id, goal, mail, wake };
   }
 
   #reassignmentResult(id: string): ReassignmentResult | null {
-    const row = this.db.prepare("SELECT data FROM events WHERE type='goal.reassigned' AND json_extract(data,'$.reassignmentId')=? ORDER BY seq LIMIT 1").get(id) as { data: string } | undefined;
+    const row = this.db.prepare("SELECT data,actor FROM events WHERE type='goal.reassigned' AND json_extract(data,'$.reassignmentId')=? ORDER BY seq LIMIT 1").get(id) as { data: string;actor:string } | undefined;
     if (!row) return null;
     const data = JSON.parse(row.data) as { goalId: string; mailIds: string[]; wakeId: string };
-    const goal = this.#getGoal(data.goalId);
-    const mail = data.mailIds.map((mailId) => {
-      const mailRow = this.db.prepare("SELECT * FROM mailbox WHERE id=?").get(mailId) as Row | undefined;
-      if (!mailRow) throw new Error("committed reassignment mail is missing");
-      return mapMail(mailRow);
-    });
-    const wake = this.wake(data.wakeId);
-    if (!goal || !wake) throw new Error("committed reassignment projections are incomplete");
+    const goal=this.#goalChangeSnapshot(id,row.actor);const mail=data.mailIds.map((mailId)=>{const value=this.#eventSnapshot<MailSnapshot>("mail.put",mailId);if(!value)throw new Error("committed reassignment mail is missing");return value;});const wake=this.#eventSnapshot<WakeSnapshot>("wake.enqueued",data.wakeId);
+    if (!goal || !wake) throw new Error("committed reassignment facts are incomplete");
     return { reassignmentId: id, goal, mail, wake };
   }
+
+  #goalChangeSnapshot(id:string,actor:string):GoalSnapshot|null{const row=this.db.prepare("SELECT data FROM events WHERE type='goal.changed' AND actor=? AND json_extract(data,'$.idempotencyKey')=? ORDER BY seq LIMIT 1").get(actor,id) as {data:string}|undefined;return row?(JSON.parse(row.data) as unknown as GoalChangedData).snapshot:null;}
+  #eventSnapshot<T>(type:string,id:string):T|null{const row=this.db.prepare("SELECT data FROM events WHERE type=? AND json_extract(data,'$.snapshot.id')=? ORDER BY seq LIMIT 1").get(type,id) as {data:string}|undefined;return row?(JSON.parse(row.data) as {snapshot:T}).snapshot:null;}
 
   #decideAction(id: string, status: "approved" | "failed", approver: string, reason: string, evidence: number[]): ActionSnapshot {
     if (!reason.trim()) throw new Error("approval reason is required");
@@ -767,7 +765,11 @@ export class SqliteLedger implements Ledger {
     });
   }
 
-  #recordGoalChange(snapshot:GoalSnapshot,previous:GoalSnapshot|null,actor:string,wakeId?:string,change?:GoalChangeMetadata):EventRecord{const derivedOperation=goalOperation(previous,snapshot);if(change&&change.operation!==derivedOperation)throw new Error("Goal change operation does not match its state transition");const operation=change?.operation??derivedOperation;if(change&&!change.reason.trim())throw new Error("Goal change reason is required");const evidence=change?.evidence??[];if(evidence.length)this.#assertEvidenceExists(evidence);const expectedAuthority=this.#goalAuthority(snapshot.parentId,actor);if(change?.authority&&!isDeepStrictEqual(change.authority,expectedAuthority))throw new Error("Goal change authority does not match the authenticated actor");const authority=change?.authority??expectedAuthority;if(change?.sourceTurnId&&!this.turn(change.sourceTurnId))throw new Error("Goal change source Turn does not exist");const sourceWakeId=change?.sourceWakeId??wakeId;if(sourceWakeId&&!this.wake(sourceWakeId))throw new Error("Goal change source Wake does not exist");const data:GoalChangedData={version:1,projection:"goals",operation,previousRevision:previous?.revision??null,snapshot,reason:change?.reason?.trim()||defaultGoalReason(operation),evidence,authority,...(change?.sourceTurnId?{sourceTurnId:change.sourceTurnId}:{}),...(sourceWakeId?{sourceWakeId}:{}),...(change?.idempotencyKey?{idempotencyKey:change.idempotencyKey}:{})};const event=this.#insertEvent({streamId:goalStream(snapshot.id),ts:this.#now(),actor,type:"goal.changed",data:data as unknown as JsonValue});this.#faultInjector?.("after_event_before_projection");this.#applyProjection("goals",snapshot,event.seq);return event;}
+  #recordGoalChange(snapshot:GoalSnapshot,previous:GoalSnapshot|null,actor:string,wakeId?:string,change?:GoalChangeMetadata):EventRecord{const derivedOperation=goalOperation(previous,snapshot);if(change&&change.operation!==derivedOperation)throw new Error("Goal change operation does not match its state transition");const operation=change?.operation??derivedOperation;if(change&&!change.reason.trim())throw new Error("Goal change reason is required");const evidence=change?.evidence??[];if(evidence.length)this.#assertEvidenceExists(evidence);const expectedAuthority=this.#goalAuthority(snapshot.parentId,actor);if(change?.authority&&!isDeepStrictEqual(change.authority,expectedAuthority))throw new Error("Goal change authority does not match the authenticated actor");const authority=change?.authority??expectedAuthority;const sourceWakeId=change?.sourceWakeId??wakeId;this.#assertGoalProvenance(snapshot,actor,authority,change?.sourceTurnId,sourceWakeId);if(change?.idempotencyKey&&this.db.prepare("SELECT 1 FROM events WHERE type='goal.changed' AND actor=? AND json_extract(data,'$.idempotencyKey')=?").get(actor,change.idempotencyKey))throw new Error("Goal idempotency key is already committed");const data:GoalChangedData={version:1,projection:"goals",operation,previousRevision:previous?.revision??null,snapshot,reason:change?.reason?.trim()||defaultGoalReason(operation),evidence,authority,...(change?.sourceTurnId?{sourceTurnId:change.sourceTurnId}:{}),...(sourceWakeId?{sourceWakeId}:{}),...(change?.idempotencyKey?{idempotencyKey:change.idempotencyKey}:{})};const event=this.#insertEvent({streamId:goalStream(snapshot.id),ts:this.#now(),actor,type:"goal.changed",data:data as unknown as JsonValue});this.#faultInjector?.("after_event_before_projection");this.#applyProjection("goals",snapshot,event.seq);return event;}
+
+  #replayGoalChange(event:EventRecord,keys:Set<string>):void{if(event.type!=="goal.changed")throw new Error(`event ${event.seq} is not an authoritative Goal change`);const data=event.data as unknown as GoalChangedData;if(data.version!==1||data.projection!=="goals")throw new Error(`goal.changed ${event.seq} has an unsupported format`);const snapshot=normalizeGoal(data.snapshot);assertGoalSnapshot(snapshot);if(event.streamId!==goalStream(snapshot.id))throw new Error(`goal.changed ${event.seq} uses the wrong stream`);const previous=this.#getGoal(snapshot.id);if(data.previousRevision!==(previous?.revision??null)||snapshot.revision!==(previous?previous.revision+1:0)||data.operation!==goalOperation(previous,snapshot))throw new Error(`goal.changed ${event.seq} breaks the Goal revision chain`);if(!data.reason.trim())throw new Error(`goal.changed ${event.seq} has no reason`);for(const seq of data.evidence)if(!Number.isInteger(seq)||seq<=0||seq>=event.seq)throw new Error(`goal.changed ${event.seq} has invalid evidence`);const expected=this.#goalAuthority(snapshot.parentId,event.actor);if(!isDeepStrictEqual(data.authority,expected))throw new Error(`goal.changed ${event.seq} has invalid authority`);this.#assertGoalProvenance(snapshot,event.actor,data.authority,data.sourceTurnId,data.sourceWakeId);if(data.idempotencyKey){const key=`${event.actor}\u0000${data.idempotencyKey}`;if(keys.has(key))throw new Error(`goal.changed ${event.seq} reuses an idempotency key`);keys.add(key);}this.#applyProjection("goals",snapshot,event.seq);}
+
+  #assertGoalProvenance(snapshot:GoalSnapshot,actor:string,authority:GoalChangeAuthority,sourceTurnId?:string,sourceWakeId?:string):void{if(sourceWakeId&&!sourceTurnId)throw new Error("Goal change source Wake requires its source Turn");const turn=sourceTurnId?this.turn(sourceTurnId):null;if(sourceTurnId&&!turn)throw new Error("Goal change source Turn does not exist");if(turn){if(turn.status!=="in_progress")throw new Error("Goal change source Turn is not active");const thread=this.thread(turn.threadId);if(!thread)throw new Error("Goal change source Turn has no Thread");if(authority.kind==="human"){if(turn.source!=="human"||thread.agent!=="ceo"||turn.goalId!==null&&turn.goalId!==snapshot.id)throw new Error("Goal change source Turn does not carry Human authority");}else if(authority.kind==="parent_goal"){if(thread.agent!==actor||turn.goalId!==authority.goalId||turn.goalRevision!==authority.goalRevision)throw new Error("Goal change source Turn is not bound to the authorizing parent Goal");}else if(thread.agent!==actor)throw new Error("Goal change source Turn actor does not match");}if(sourceWakeId){const wake=this.wake(sourceWakeId);if(!wake)throw new Error("Goal change source Wake does not exist");if(wake.status!=="consumed"||sourceTurnId&&wake.turnId!==sourceTurnId)throw new Error("Goal change source Wake does not match its Turn");if(authority.kind==="parent_goal"&&(wake.agent!==actor||wake.goalId!==authority.goalId||wake.goalRevision!==authority.goalRevision))throw new Error("Goal change source Wake is not bound to the authorizing parent Goal");}}
 
   #goalAuthority(parentId:string|null,actor:string):GoalChangeAuthority{if(parentId===null)return actor==="human"?{kind:"human"}:{kind:"system",reason:`root mutation by ${actor}`};const parent=this.#getGoal(parentId);if(!parent)throw new Error("parent goal does not exist");return{kind:"parent_goal",goalId:parent.id,goalRevision:parent.revision};}
 
@@ -821,6 +823,7 @@ export class SqliteLedger implements Ledger {
   }
 
   #assertTurnLease(turn: TurnSnapshot, leaseToken: string): void { if (turn.leaseToken !== leaseToken) throw new Error("stale Turn lease token"); }
+  #assertRawEvent(input:EventInput):void{const data=input.data&&typeof input.data==="object"&&!Array.isArray(input.data)?input.data as Record<string,JsonValue>:null;if(data&&Object.hasOwn(data,"projection")||input.type==="goal.changed")throw new Error("projection-driving events must use a typed Ledger domain API");}
 
   #getGoal(id: string): GoalSnapshot | null { const row = this.db.prepare("SELECT * FROM goals WHERE id=?").get(id) as Row | undefined; return row ? mapGoal(row) : null; }
   #requiredTurn(id: string): TurnSnapshot { const value = this.turn(id); if (!value) throw new Error(`turn not found: ${id}`); return value; }
@@ -905,6 +908,7 @@ function initialWorkRecord(): string { return "# Current State\n\nGoal created. 
 function goalOperation(previous:GoalSnapshot|null,next:GoalSnapshot):GoalChangeMetadata["operation"]{if(!previous)return"create";if(previous.phase!==next.phase){if(next.phase==="paused")return"pause";if(next.phase==="active")return"resume";if(next.phase==="blocked")return"block";if(next.phase==="complete")return"complete";}return previous.owner!==next.owner?"reassign":"revise";}
 function defaultGoalReason(operation:GoalChangeMetadata["operation"]):string{return `Goal ${operation}`;}
 function withoutSourceTurn<T extends {sourceTurnId?:string}>(value:T):Omit<T,"sourceTurnId">{const{sourceTurnId:_,...semantic}=value;return semantic;}
+function projectionForEvent(type:string):ProjectionName|null{if(type==="thread.put")return"threads";if(type.startsWith("turn."))return"turns";if(type.startsWith("item."))return"turn_items";if(type==="goal.changed")return"goals";if(type==="schedule.put")return"schedule";if(type.startsWith("wake."))return"wakes";if(type.startsWith("mail."))return"mailbox";if(type.startsWith("action."))return"actions";if(type==="work_record.created"||type==="work_record.updated")return"work_records";return null;}
 function lineDiff(from: string, to: string): string {
   const before = from.split("\n"); const after = to.split("\n"); const lines: string[] = [];
   for (let index = 0; index < Math.max(before.length, after.length); index += 1) {

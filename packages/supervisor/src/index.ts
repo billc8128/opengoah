@@ -17,6 +17,7 @@ import {
   type ConnectorQueryResult,
   type DelegationRequest,
   type DelegationResult,
+  type EventRecord,
   type GoalSnapshot,
   type GoalCompletionRequest,
   type GoalHandoff,
@@ -219,6 +220,7 @@ export class Supervisor {
   #turnHistory(turnId: string): string { const items=this.ledger.turnItems(turnId).map((item)=>{const data=item.data as {text?:unknown;tool?:unknown;result?:unknown};if(item.type==="user_message")return `Human: ${String(data.text??"")}`;if(item.type==="assistant_message")return `Assistant: ${String(data.text??"")}`;if(item.type==="tool_call")return `Tool call: ${String(data.tool??"")} ${JSON.stringify(item.data)}`;if(item.type==="tool_result")return `Tool result: ${JSON.stringify(data.result??item.data)}`;return `${item.type}: ${JSON.stringify(item.data)}`;});const facts=this.ledger.readStream(`turn:${turnId}`).filter((event)=>event.type==="ceo.motion_invalid"||event.type==="turn.retry_started").map((event)=>`${event.type}: ${JSON.stringify(event.data)}`);return [...items,...facts].join("\n"); }
 
   #failTurn(turnId: string, reason: string): void { const current=this.ledger.turn(turnId);if(!current||current.status!=="in_progress")return;this.ledger.finishTurn(turnId,"failed",{message:reason},this.#now(),"supervisor"); }
+  #preemptGoalTurn(goalId:string,reason:string):void{const turn=this.ledger.turns().find((candidate)=>candidate.status==="in_progress"&&candidate.goalId===goalId);if(!turn)return;this.ledger.finishTurn(turn.id,"interrupted",{message:reason},this.#now(),"supervisor");const handle=this.#handles.get(turn.id);if(handle)void this.#terminateHandle(turn.id,handle).finally(()=>this.#handles.delete(turn.id));}
   async #terminateHandle(turnId:string,handle:RunnerHandle):Promise<void>{try{await handle.terminate();}catch(error){this.#recordCleanupFailure(turnId,error);}}
   #recordCleanupFailure(turnId:string,error:unknown):void{this.ledger.appendEvent({streamId:`turn:${turnId}`,ts:this.#now(),actor:"supervisor",type:"runner.cleanup_failed",data:{message:error instanceof Error?error.message:String(error)},ignorable:true});}
 
@@ -250,9 +252,10 @@ export class Supervisor {
   delegate(request: DelegationRequest, actor = "ceo", wakeId?: string): DelegationResult { return this.ledger.commitDelegation(request, actor, wakeId); }
   async reassignGoal(request: ReassignmentRequest, actor = "ceo", wakeId?: string): Promise<ReassignmentResult> {const goal=this.#goal(request.goalId);const thread=this.ledger.threads().find((candidate)=>candidate.agent===goal.owner);const active=thread?this.ledger.activeTurn(thread.id):null;if(active?.goalId===goal.id)await this.interruptTurn(active.id);return this.ledger.commitReassignment(request, actor, wakeId); }
   teamList(now = this.#now()): TeamMemberView[] { return deriveTeam(this.ledger, now); }
-  updateGoal(id: string, patch: Partial<Pick<GoalSnapshot, "objective" | "observationMethod" | "verificationMethod" | "owner">>, actor = "human",change?:{reason:string;evidence:number[];sourceTurnId?:string;sourceWakeId?:string}): GoalSnapshot {
-    if (patch.objective === undefined && patch.observationMethod === undefined && patch.verificationMethod === undefined && patch.owner === undefined) throw new Error("goal update requires objective, observation method, verification method, or owner");
+  updateGoal(id: string, patch: Partial<Pick<GoalSnapshot, "objective" | "observationMethod" | "verificationMethod">>, actor = "human",change?:{reason:string;evidence:number[];sourceTurnId?:string;sourceWakeId?:string}): GoalSnapshot {
+    if (patch.objective === undefined && patch.observationMethod === undefined && patch.verificationMethod === undefined) throw new Error("goal update requires objective, observation method, or verification method");
     const current = this.#goal(id);
+    this.#assertGoalMutationAuthority(current,actor);
     if (patch.objective !== undefined && patch.objective !== current.objective && current.parentId !== null && (patch.observationMethod === undefined || patch.verificationMethod === undefined)) throw new Error("child objective revision requires replacement observation and verification methods");
     const next = {
       ...current,
@@ -261,7 +264,7 @@ export class Supervisor {
       ...(patch.objective !== undefined && patch.objective !== current.objective && current.parentId === null && patch.verificationMethod === undefined ? { verificationMethod: null } : {}),
       revision: current.revision + 1,
     };
-    this.ledger.putGoal(next,actor,change?.sourceWakeId,{operation:"revise",reason:change?.reason??"Goal definition revised",evidence:change?.evidence??[],...(change?.sourceTurnId?{sourceTurnId:change.sourceTurnId}:{}),...(change?.sourceWakeId?{sourceWakeId:change.sourceWakeId}:{})});
+    this.#preemptGoalTurn(current.id,"Goal definition changed");this.ledger.putGoal(next,actor,change?.sourceWakeId,{operation:"revise",reason:change?.reason??"Goal definition revised",evidence:change?.evidence??[],...(change?.sourceTurnId?{sourceTurnId:change.sourceTurnId}:{}),...(change?.sourceWakeId?{sourceWakeId:change.sourceWakeId}:{})});
     if (next.parentId === null && next.owner === "ceo" && actor === "human") this.#enqueueTrigger("ceo", `root:${id}:revised:${next.revision}`,{goalId:next.id,goalRevision:next.revision});
     return next;
   }
@@ -280,16 +283,18 @@ export class Supervisor {
   }
   completeGoal(request: GoalCompletionRequest, actor = "human", wakeId?: string): GoalSnapshot {
     const goal = this.ledger.completeGoal(request, actor, wakeId);
+    this.#preemptGoalTurn(goal.id,"Goal completed");
     this.#suppressQueuedWake(goal.owner, `goal:${goal.id}:complete`,goal.id);
     if (goal.parentId && actor !== "ceo") {const root=this.#activeRoot();if(root)this.#enqueueTrigger("ceo", `goal:${goal.id}:complete:${goal.revision}`,{goalId:root.id,goalRevision:root.revision});}
     return goal;
   }
   transitionGoal(id: string, phase: GoalPhase, actor = "human",scheduleMotion=true,sourceTurnId?:string): GoalSnapshot {
     const current = this.#goal(id);
+    this.#assertGoalMutationAuthority(current,actor);
     if (current.phase === phase) return current;
     if (phase === "complete") throw new Error("goal completion requires reason and evidence");
     const next = { ...current, phase, revision: current.revision + 1 };
-    const operation=phase==="paused"?"pause":phase==="blocked"?"block":"resume";this.ledger.putGoal(next,actor,undefined,{operation,reason:`Goal ${operation} requested by ${actor}`,evidence:[],...(sourceTurnId?{sourceTurnId}:{})});
+    const operation=phase==="paused"?"pause":phase==="blocked"?"block":"resume";this.#preemptGoalTurn(current.id,`Goal ${operation}`);this.ledger.putGoal(next,actor,undefined,{operation,reason:`Goal ${operation} requested by ${actor}`,evidence:[],...(sourceTurnId?{sourceTurnId}:{})});
     if (phase === "paused") this.#suppressQueuedWake(next.owner, `goal:${id}:${phase}`,next.id);
     if (phase === "active"&&scheduleMotion) this.#enqueueTrigger(next.owner, `${next.parentId ? "goal" : "root"}:${id}:resumed:${next.revision}`,{goalId:next.id,goalRevision:next.revision});
     if (next.parentId && actor !== "ceo" && phase === "blocked") {const root=this.#activeRoot();if(root)this.#enqueueTrigger("ceo", `goal:${id}:${phase}:${next.revision}`,{goalId:root.id,goalRevision:root.revision});}
@@ -549,13 +554,10 @@ export class Supervisor {
   #wake(id: string): WakeSnapshot { const value = this.ledger.wake(id); if (!value) throw new Error(`wake not found: ${id}`); return value; }
   #action(id: string): ActionSnapshot { const value = this.ledger.action(id); if (!value) throw new Error(`action not found: ${id}`); return value; }
   #goal(id: string): GoalSnapshot { const value = this.ledger.goal(id); if (!value) throw new Error(`goal not found: ${id}`); return value; }
+  #assertGoalMutationAuthority(goal:GoalSnapshot,actor:string):void{if(goal.parentId===null){if(actor!=="human")throw new Error("only human may modify a root goal");return;}const parent=this.ledger.goal(goal.parentId);if(parent?.owner!==actor)throw new Error("only the parent goal owner may modify a child goal");}
   #goalRevisionWarning(goal: GoalSnapshot): string[] {
     if (goal.parentId === null || goal.phase === "complete") return [];
-    let root = this.#goal(goal.parentId);
-    while (root.parentId !== null) root = this.#goal(root.parentId);
-    const rootSeq = this.ledger.readStream(goalStream(root.id)).filter((event) => event.type === "goal.changed").at(-1)?.seq ?? 0;
-    const goalSeq = this.ledger.readStream(goalStream(goal.id)).filter((event) => event.type === "goal.changed").at(-1)?.seq ?? 0;
-    return rootSeq > goalSeq ? [`Goal ${goal.id} predates root revision ${root.revision}; CEO must revise its objective/observation method before new gated actions.`] : [];
+    const definitionChange=(event:EventRecord)=>event.type==="goal.changed"&&typeof event.data==="object"&&event.data!==null&&!Array.isArray(event.data)&&["create","revise"].includes(String((event.data as Record<string,JsonValue>).operation));const goalSeq=this.ledger.readStream(goalStream(goal.id)).filter(definitionChange).at(-1)?.seq??0;let ancestor=this.#goal(goal.parentId);let newest={goal:ancestor,seq:this.ledger.readStream(goalStream(ancestor.id)).filter(definitionChange).at(-1)?.seq??0};while(ancestor.parentId!==null){ancestor=this.#goal(ancestor.parentId);const seq=this.ledger.readStream(goalStream(ancestor.id)).filter(definitionChange).at(-1)?.seq??0;if(seq>newest.seq)newest={goal:ancestor,seq};}return newest.seq>goalSeq?[`Goal ${goal.id} predates ancestor ${newest.goal.id} revision ${newest.goal.revision}; revise its objective and methods before new gated actions.`]:[];
   }
   #assertAgentGoalsCurrent(agent: string): void {
     const warnings = this.ledger.goalsForOwner(agent).flatMap((goal) => this.#goalRevisionWarning(goal));
@@ -567,6 +569,7 @@ export class Supervisor {
 
   async #agentRpcForTurn(turnId: string, agent: string, context: TurnContext, method: AgentCapability, params: JsonValue, sourceWakeId?:string): Promise<JsonValue> {
     const execution = this.ledger.turn(turnId); if (!execution || execution.status !== "in_progress" || !execution.leaseToken || !execution.leaseUntil || execution.leaseUntil < this.#now()) throw new Error("stale Turn RPC rejected");
+    if(context.goalBinding){const goal=this.ledger.goal(context.goalBinding.goalId);const thread=this.ledger.thread(execution.threadId);if(!goal||goal.phase!=="active"||goal.revision!==context.goalBinding.goalRevision||goal.owner!==agent||execution.goalId!==goal.id||execution.goalRevision!==goal.revision||thread?.agent!==agent)throw new Error("stale Goal-bound Turn RPC rejected");}
     const profile = this.#profiles.get(agent) ?? { agent, role: "child" as const }; const allowed = new Set(profile.capabilities ?? defaultCapabilities(profile.role)); if (!allowed.has(method)) throw new Error(`${profile.role} agent is not allowed to call ${method}`);
     if (!context.goalBinding && goalBoundCapability(method)) throw new Error(`${method} requires a Goal-bound Turn`);
     this.ledger.appendEvent({ streamId: `turn:${turnId}`, ts: this.#now(), actor: agent, type: `rpc.${method}`, data: params, ignorable:true }); const input = asRecord(params);

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Local Console rejects non-canonical Host headers before setting its auth cookie; generic goal-update no longer bypasses atomic ownership reassignment.
 - Console organization views now consume the authoritative `goal.changed` operation envelope.
 - Drained terminal Turn events exactly once, exposed Handoffs consistently, separated Console thinking from assistant prose, restored assistant history, and removed Referer-based local API authorization.
 - Updated control, TUI, Thread inspection, Console, doctor, and exports for Turn-owned execution; fixed duplicate answers, cross-Agent welcome history, and fencing-token redaction.

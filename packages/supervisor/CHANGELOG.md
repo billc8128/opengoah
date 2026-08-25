@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Goal mutations fence active older Turns, every Goal-bound RPC rechecks its binding, and definition staleness ignores phase-only events across the full ancestor chain.
 - Supplies reason, evidence, authority, source Turn/Wake, and idempotency provenance to the unified Goal change protocol.
 - Serialized Human admission, made multi-Goal scheduling target-safe, made Runner cleanup failure non-blocking, and restored kill-before-recovery through persisted Runner Profile routing.
 - Unified Human and Goal work on one Turn executor and RPC path with Human-priority scheduling, same-Turn provider retry, canonical Transcript terminals, Turn recovery, and identical Goal completion policy.

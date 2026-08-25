@@ -16,7 +16,7 @@ export type ControlRequest =
   | { op: "turn.steer"; message: string }
   | { op: "turn.interrupt"; turnId: string }
   | { op: "goal.start"; objective: string; id?: string }
-  | { op: "goal.update"; id: string; objective?: string; observationMethod?: string | null; verificationMethod?: string | null; owner?: string }
+  | { op: "goal.update"; id: string; objective?: string; observationMethod?: string | null; verificationMethod?: string | null }
   | { op: "goal.observe"; id: string; observationMethod: string }
   | { op: "goal.transition"; id: string; phase: "paused" | "active" }
   | { op: "goal.complete"; id: string; reason: string; evidence: number[] }
@@ -137,7 +137,7 @@ async function dispatch(request: ControlRequest, socket: Socket, supervisor: Sup
   } else if (request.op === "ping") value = "pong";
   else if (request.op === "status") value = snapshot(ledger, supervisor);
   else if (request.op === "goal.start") value = supervisor.startGoal(request.objective, request.id);
-  else if (request.op === "goal.update") value = supervisor.updateGoal(request.id, { ...(request.objective !== undefined ? { objective: request.objective } : {}), ...(request.observationMethod !== undefined ? { observationMethod: request.observationMethod } : {}), ...(request.verificationMethod !== undefined ? { verificationMethod: request.verificationMethod } : {}), ...(request.owner !== undefined ? { owner: request.owner } : {}) }, "human");
+  else if (request.op === "goal.update") value = supervisor.updateGoal(request.id, { ...(request.objective !== undefined ? { objective: request.objective } : {}), ...(request.observationMethod !== undefined ? { observationMethod: request.observationMethod } : {}), ...(request.verificationMethod !== undefined ? { verificationMethod: request.verificationMethod } : {}) }, "human");
   else if (request.op === "goal.observe") value = supervisor.confirmObservationMethod(request.id, request.observationMethod);
   else if (request.op === "goal.transition") value = supervisor.transitionGoal(request.id, request.phase, "human");
   else if (request.op === "goal.complete") value = supervisor.completeGoal({ goalId: request.id, revision: requiredGoal(ledger, request.id).revision, reason: request.reason, evidence: request.evidence }, "human");

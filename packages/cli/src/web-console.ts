@@ -73,9 +73,11 @@ export async function runWebConsole(
   options: { host?: string; port?: number; onListening?: (metadata: ConsoleMetadata) => void } = {},
 ): Promise<void> {
   const host = options.host ?? "127.0.0.1"
+  if(!["127.0.0.1","localhost","::1"].includes(host))throw new Error("Goah Console only binds to loopback hosts")
   const token = randomUUID()
+  let allowedHost=""
   const server = createServer((request, response) => {
-    route(request, response, supervisor, ledger, token).catch((error: unknown) => {
+    route(request, response, supervisor, ledger, token,allowedHost).catch((error: unknown) => {
       const message = { error: error instanceof Error ? error.message : String(error) }
       if (response.headersSent) response.end(`data: ${JSON.stringify({ ...message, type: "error" })}\n\n`)
       else sendJson(response, 500, message)
@@ -84,7 +86,8 @@ export async function runWebConsole(
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(options.port ?? 0, host, resolve) })
   const address = server.address()
   if (!address || typeof address === "string") throw new Error("console server did not bind a TCP port")
-  const metadata: ConsoleMetadata = { url: `http://${host}:${address.port}/`, host, port: address.port, pid: process.pid, token }
+  const metadata: ConsoleMetadata = { url: `http://${host.includes(":")?`[${host}]`:host}:${address.port}/`, host, port: address.port, pid: process.pid, token }
+  allowedHost=new URL(metadata.url).host
   const metadataPath = consoleMetadataPath(stateDir)
   writeFileSync(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, { mode: 0o600 })
   if (process.platform !== "win32") chmodSync(metadataPath, 0o600)
@@ -96,8 +99,9 @@ export async function runWebConsole(
   rmSync(metadataPath, { force: true })
 }
 
-async function route(request: IncomingMessage, response: ServerResponse, supervisor: Supervisor, ledger: Ledger, token: string): Promise<void> {
+async function route(request: IncomingMessage, response: ServerResponse, supervisor: Supervisor, ledger: Ledger, token: string,allowedHost:string): Promise<void> {
   setHeaders(response)
+  if(request.headers.host!==allowedHost){sendJson(response,403,{error:"console host is not allowed"});return}
   const url = new URL(request.url ?? "/", "http://127.0.0.1")
   if (url.pathname.startsWith("/api/")) {
     if (!authorized(request, url, token)) { sendJson(response, 403, { error: "console authorization failed" }); return }

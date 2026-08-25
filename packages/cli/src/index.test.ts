@@ -225,7 +225,8 @@ test("CLI exposes the complete goal lifecycle with revisioned transitions", () =
   assert.equal(completed.goal.phase, "complete");
   assert.equal(completed.goal.revision, 4);
   assert.match(invokeFailure(directory, "goal-resume", "lifecycle"), /completed goal/);
-  assert.match(invokeFailure(directory, "goal-update", "lifecycle"), /requires objective, observation method, verification method, or owner/);
+  assert.match(invokeFailure(directory, "goal-update", "lifecycle"), /requires objective, observation method, or verification method/);
+  assert.match(invokeFailure(directory,"goal-update","lifecycle","--owner","other"),/atomic CEO reassignment/);
 });
 
 test("CLI runs a local operations goal without Git", () => {

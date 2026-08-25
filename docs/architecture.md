@@ -55,7 +55,7 @@ Current projections are rebuilt from events:
 
 Handoff remains an event-level control result rather than a current-state projection.
 
-Every Goal lifecycle mutation has exactly one authoritative `goal.changed` event. The event carries operation, previous revision, complete next snapshot, reason, evidence, authority, and optional source Turn/Wake/idempotency key; the Goal table is rebuilt directly from those same events. Operation-specific events such as `delegation.created` remain workflow facts, not competing Goal state authorities.
+Every Goal lifecycle mutation has exactly one authoritative `goal.changed` event. The event carries operation, previous revision, complete next snapshot, reason, evidence, authority, and optional source Turn/Wake/idempotency key; the Goal table is rebuilt directly from those same events. Raw and Runner events cannot carry projection writes. Replay validates event type, revision chain, evidence order, authority, causal Turn/Wake binding, and idempotency keys before applying a snapshot. Operation-specific events such as `delegation.created` remain workflow facts, not competing Goal state authorities.
 
 ### Supervisor
 
@@ -95,6 +95,7 @@ Legacy narrative Handoffs and `memory.appended` facts remain readable. Schema v9
 ## Failure model
 
 - A stale Goal or Work Record revision is rejected.
+- Every Goal-bound RPC revalidates current phase, owner, revision, Agent Thread, and Turn binding; a Human or parent Goal mutation fences an older active Turn before it can perform more tools or Actions.
 - A Goal Turn without a current-Turn Work Record update is abnormal.
 - Failed/interrupted Turns do not consume undelivered asynchronous Mail.
 - Committed Work Record versions survive later Turn failure.

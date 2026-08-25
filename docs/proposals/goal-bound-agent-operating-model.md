@@ -306,7 +306,6 @@ interface UpdateGoalRequest {
     objective?: string;
     observationMethod?: string | null;
     verificationMethod?: string | null;
-    owner?: string;
     phase?: GoalPhase;
   };
   reason: string;
@@ -336,7 +335,7 @@ interface GoalChangedData {
   evidence: number[];
   authority:
     | { kind: "human" }
-    | { kind: "parent_goal"; goalId: string; revision: number }
+    | { kind: "parent_goal"; goalId: string; goalRevision: number }
     | { kind: "system"; reason: string };
   sourceTurnId?: string;
   sourceWakeId?: string;
@@ -744,7 +743,7 @@ Hide by default:
 
 ## 18. Migration
 
-This development release has no external users, so schema v14 does not migrate schemas 1–13. Development workspaces are recreated. Goal and Work Record semantics remain the target schema; authoritative Goal changes, execution ownership, Goal-targeted scheduling, and conversation storage are replaced together.
+This development release has no external users, so schema v15 does not migrate schemas 1–14. Development workspaces are recreated. Goal and Work Record semantics remain the target schema; authoritative Goal changes, fail-closed replay, execution ownership, Goal-targeted scheduling, and conversation storage are replaced together.
 
 ## 19. Implementation sequence
 
