@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.3
+
+- Normalized ANSI output in setup rendering tests so the redesigned TUI passes identically with and without terminal color.
+
 ## 0.11.2
 
 - Replaced the log-like TUI with a full-screen branded conversation surface, Markdown output, bordered editor, compact Goal state, restrained progress feedback, and the maintained `@earendil-works/pi-tui` runtime.

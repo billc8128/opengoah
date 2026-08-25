@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.3
+
+- Made TUI snapshot assertions deterministic in ANSI-enabled CI environments; includes the 0.11.2 terminal redesign.
+
 ## 0.11.2
 
 - Rebuilt the terminal UI around a fixed brand rail, compact Goal-aware welcome, Markdown conversation rendering, bottom composer, scrollable alternate-screen viewport, quiet tool states, and maintained Pi TUI package.
