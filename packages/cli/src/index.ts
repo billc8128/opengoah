@@ -294,7 +294,7 @@ export function statusSnapshot(ledger: SqliteLedger): object {
   const goals = ledger.goals().map((goal) => ({ ...goal, evaluation: [...events].reverse().find((event) => event.streamId === `metric:${goal.id}` && event.type === "metric.evaluated")?.data ?? null }));
   const handoffs = events.filter((event) => event.type === "handoff.recorded").slice(-20).map((event) => ({ seq: event.seq, ts: event.ts, agent: event.actor, streamId: event.streamId, handoff: event.data }));
   const modelCapabilities = [...events].reverse().find((event) => event.type === "session.started")?.data ?? null;
-  return { seq: events.at(-1)?.seq ?? 0, goals, wakes, actions: ledger.actions(), modelCapabilities, recentHandoffs: handoffs };
+  return { seq: events.at(-1)?.seq ?? 0, sessions: ledger.sessions(), turns: ledger.turns(), goals, wakes, actions: ledger.actions(), modelCapabilities, recentHandoffs: handoffs };
 }
 
 function defaultModel(provider: string): string {

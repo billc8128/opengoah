@@ -110,17 +110,17 @@ async function route(request: IncomingMessage, response: ServerResponse, supervi
       return
     }
     if (request.method === "GET" && url.pathname.startsWith("/api/sessions/")) {
-      const wakeId = decodeURIComponent(url.pathname.slice("/api/sessions/".length))
-      const wake = ledger.wake(wakeId)
-      if (!wake) { sendJson(response, 404, { error: "wake not found" }); return }
-      sendJson(response, 200, redactValue({ wake, events: ledger.eventsForWake(wakeId) }))
+      const sessionId = decodeURIComponent(url.pathname.slice("/api/sessions/".length))
+      const session = ledger.session(sessionId)
+      if (!session) { sendJson(response, 404, { error: "session not found" }); return }
+      const turns = ledger.turns(sessionId); sendJson(response, 200, redactValue({ session, turns: turns.map((turn) => ({ ...turn, items: ledger.turnItems(turn.id) })) }))
       return
     }
     if (request.method === "POST" && url.pathname === "/api/ceo") {
       const body = await readBody(request)
       const message = typeof body.message === "string" ? body.message.trim() : ""
       if (!message) { sendJson(response, 400, { error: "message is required" }); return }
-      sendJson(response, 202, supervisor.interactWithCeo(message))
+      sendJson(response, 202, await supervisor.startHumanTurn(message))
       return
     }
     if (request.method === "POST" && url.pathname === "/api/chat") {

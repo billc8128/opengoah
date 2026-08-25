@@ -56,8 +56,8 @@ export function welcomeSnapshot(stateDir: string, runner: RunnerDisplay): Welcom
         return [{ agent: row.actor, result }];
       } catch { return [{ agent: row.actor, result: "" }]; }
     });
-    const conversationRows = db.prepare("SELECT actor, type, data FROM events WHERE type IN ('mail.put','handoff.recorded','interaction.completed') ORDER BY seq DESC LIMIT 30").all() as unknown as Array<{ actor: string; type: string; data: string }>;
-    const conversation = conversationRows.reverse().flatMap((row) => conversationLine(row)).slice(-WELCOME_CONVERSATION_SLOTS);
+    const itemRows = db.prepare("SELECT type,data FROM turn_items WHERE type IN ('user_message','assistant_message') ORDER BY rowid DESC LIMIT 30").all() as unknown as Array<{ type: string; data: string }>;
+    const conversation = itemRows.reverse().flatMap((row) => { try { const data = JSON.parse(row.data) as { text?: unknown }; return typeof data.text === "string" ? [{ speaker: row.type === "user_message" ? "You" : "Goah", text: shorten(data.text) }] : []; } catch { return []; } }).slice(-WELCOME_CONVERSATION_SLOTS);
     return { root: root ? { id: root.id, objective: root.objective, phase: root.phase } : null, team, handoffs, conversation, runner: runner.runner, target: runner.target };
   } finally { db.close(); }
 }

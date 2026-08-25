@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifyTuiInput, findLiveInteractionWakeId, renderFrame, renderTuiHeader, renderUserMessage } from "./tui.js";
+import { classifyTuiInput, findLiveTurnId, renderFrame, renderTuiHeader, renderUserMessage } from "./tui.js";
 import { stripAnsi } from "./tui-theme.js";
 
 test("TUI routes ordinary text, queued follow-ups, and approvals", () => {
@@ -19,8 +19,8 @@ test("TUI routes ordinary text, queued follow-ups, and approvals", () => {
 });
 
 test("TUI reconnect selects the newest live Human interaction only", () => {
-  assert.equal(findLiveInteractionWakeId([{ id: "goal", agent: "ceo", status: "running", triggerRef: "root:g" }, { id: "human", agent: "ceo", status: "queued", triggerRef: "interaction:mail" }]), "human");
-  assert.equal(findLiveInteractionWakeId([{ id: "done", agent: "ceo", status: "done", triggerRef: "interaction:mail" }]), null);
+  assert.equal(findLiveTurnId([{ id: "goal", source: "goal", status: "in_progress" }, { id: "human", source: "human", status: "in_progress" }]), "human");
+  assert.equal(findLiveTurnId([{ id: "done", source: "human", status: "completed" }]), null);
 });
 
 test("TUI renders streamed assistant text and tool completion", () => {

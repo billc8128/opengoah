@@ -1,31 +1,20 @@
 import { homedir } from "node:os";
-import { replaySession, wakeStream, type EventRecord, type JsonValue, type ReplayedSession, type RequestSnapshot, type WakeSnapshot } from "goah-ledger-contract";
+import { type EventRecord, type JsonValue, type RequestSnapshot, type TurnItemSnapshot, type TurnSnapshot } from "goah-ledger-contract";
 import type { SqliteLedger } from "goah-ledger-sqlite";
 
 export interface SessionListItem {
-  wakeId: string;
-  streamId: string;
+  sessionId: string;
   agent: string;
-  wakeStatus: WakeSnapshot["status"];
-  sessionStatus: ReplayedSession["status"] | WakeSnapshot["status"];
-  triggerRef: string;
-  eventCount: number;
-  firstSeq: number | null;
-  lastSeq: number | null;
-  provider: string | null;
-  model: string | null;
-  formatVersion: number | null;
-  messageCount: number;
+  status: "idle" | "in_progress";
+  turnCount: number;
+  itemCount: number;
   toolCalls: number;
-  compactions: number;
+  updatedAt: string;
 }
 
 export interface SessionDetail {
   session: SessionListItem;
-  eventTypes: Record<string, number>;
-  replay: { status: ReplayedSession["status"]; messageCount: number; openToolCalls: ReplayedSession["openToolCalls"] };
-  requests: number;
-  activeContext: SessionContextSnapshot | null;
+  turns: Array<TurnSnapshot & { items: TurnItemSnapshot[] }>;
 }
 
 export interface SessionContextSnapshot {
@@ -41,42 +30,29 @@ export interface SessionContextSnapshot {
 }
 
 export interface SessionExport {
-  format: "goah.session-export.v1";
+  format: "goah.session-export.v2";
   exportedAt: string;
   redacted: boolean;
   session: SessionListItem;
-  context: SessionContextSnapshot | null;
-  replay: ReplayedSession;
   events: EventRecord[];
 }
 
 export function listSessions(ledger: SqliteLedger): SessionListItem[] {
-  return ledger.wakes().map((wake) => summarize(ledger, wake)).sort((a, b) => (b.lastSeq ?? 0) - (a.lastSeq ?? 0));
+  return ledger.sessions().map((session) => summarizeSession(ledger, session.id)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
-export function showSession(ledger: SqliteLedger, wakeId: string): SessionDetail {
-  const wake = requiredWake(ledger, wakeId);
-  const events = ledger.eventsForWake(wakeId);
-  const replay = replaySession(events);
-  const eventTypes: Record<string, number> = {};
-  for (const event of events) eventTypes[event.type] = (eventTypes[event.type] ?? 0) + 1;
-  return {
-    session: summarize(ledger, wake),
-    eventTypes,
-    replay: { status: replay.status, messageCount: replay.messages.length, openToolCalls: replay.openToolCalls },
-    requests: eventTypes["request.prepared"] ?? 0,
-    activeContext: contextSnapshot(events),
-  };
+export function showSession(ledger: SqliteLedger, sessionId: string): SessionDetail {
+  if (!ledger.session(sessionId)) throw new Error(`session not found: ${sessionId}`);
+  return { session: summarizeSession(ledger, sessionId), turns: ledger.turns(sessionId).map((turn) => ({ ...turn, items: ledger.turnItems(turn.id) })) };
 }
 
-export function replayWakeSession(ledger: SqliteLedger, wakeId: string): ReplayedSession {
-  requiredWake(ledger, wakeId);
-  return replaySession(ledger.eventsForWake(wakeId));
+export function replayWakeSession(ledger: SqliteLedger, sessionId: string): SessionDetail {
+  return showSession(ledger, sessionId);
 }
 
 export function showSessionContext(ledger: SqliteLedger, wakeId: string): SessionContextSnapshot | null {
-  requiredWake(ledger, wakeId);
-  return contextSnapshot(ledger.eventsForWake(wakeId));
+  if (!ledger.turn(wakeId)) throw new Error(`turn not found: ${wakeId}`);
+  return contextSnapshot(ledger.readStream(`turn:${wakeId}`));
 }
 
 export function streamEvents(ledger: SqliteLedger, streamId: string, fromStreamSeq = 1): EventRecord[] {
@@ -85,16 +61,14 @@ export function streamEvents(ledger: SqliteLedger, streamId: string, fromStreamS
   return ledger.readStream(streamId, fromStreamSeq);
 }
 
-export function exportSession(ledger: SqliteLedger, wakeId: string, options: { raw?: boolean; now?: string } = {}): SessionExport {
-  const detail = showSession(ledger, wakeId);
+export function exportSession(ledger: SqliteLedger, sessionId: string, options: { raw?: boolean; now?: string } = {}): SessionExport {
+  const detail = showSession(ledger, sessionId);
   const value: SessionExport = {
-    format: "goah.session-export.v1",
+    format: "goah.session-export.v2",
     exportedAt: options.now ?? new Date().toISOString(),
     redacted: !options.raw,
     session: detail.session,
-    context: detail.activeContext,
-    replay: replaySession(ledger.eventsForWake(wakeId)),
-    events: ledger.eventsForWake(wakeId),
+    events: ledger.turns(sessionId).flatMap((turn) => ledger.readStream(`turn:${turn.id}`)).sort((a,b) => a.seq-b.seq),
   };
   return options.raw ? value : redactValue(value) as unknown as SessionExport;
 }
@@ -111,27 +85,9 @@ export function redactValue(value: unknown, key = ""): unknown {
     .replace(/((?:api[_-]?key|token|secret|password|authorization)\s*[=:]\s*)[^\s,;"']+/gi, "$1[REDACTED]");
 }
 
-function summarize(ledger: SqliteLedger, wake: WakeSnapshot): SessionListItem {
-  const events = ledger.eventsForWake(wake.id);
-  const replay = replaySession(events);
-  const started = events.find((event) => event.type === "session.started")?.data as Record<string, unknown> | undefined;
-  return {
-    wakeId: wake.id,
-    streamId: wakeStream(wake.id),
-    agent: wake.agent,
-    wakeStatus: wake.status,
-    sessionStatus: replay.status === "running" && ["done", "abnormal", "merge_blocked"].includes(wake.status) ? wake.status : replay.status,
-    triggerRef: wake.triggerRef,
-    eventCount: events.length,
-    firstSeq: events[0]?.seq ?? null,
-    lastSeq: events.at(-1)?.seq ?? null,
-    provider: typeof started?.provider === "string" ? started.provider : null,
-    model: typeof started?.model === "string" ? started.model : null,
-    formatVersion: typeof started?.formatVersion === "number" ? started.formatVersion : started ? 0 : null,
-    messageCount: replay.messages.length,
-    toolCalls: events.filter((event) => event.type === "tool.called").length,
-    compactions: events.filter((event) => event.type === "context.compacted").length,
-  };
+function summarizeSession(ledger: SqliteLedger, sessionId: string): SessionListItem {
+  const session = ledger.session(sessionId); if (!session) throw new Error(`session not found: ${sessionId}`); const turns = ledger.turns(sessionId); const items = turns.flatMap((turn) => ledger.turnItems(turn.id));
+  return { sessionId,agent:session.agent,status:turns.some((turn) => turn.status === "in_progress") ? "in_progress" : "idle",turnCount:turns.length,itemCount:items.length,toolCalls:items.filter((item) => item.type === "tool_call").length,updatedAt:session.updatedAt };
 }
 
 function contextSnapshot(events: EventRecord[]): SessionContextSnapshot | null {
@@ -149,12 +105,6 @@ function contextSnapshot(events: EventRecord[]): SessionContextSnapshot | null {
     messageCount: request.messages.length,
     modelConfig: request.modelConfig,
   };
-}
-
-function requiredWake(ledger: SqliteLedger, wakeId: string): WakeSnapshot {
-  const wake = ledger.wake(wakeId);
-  if (!wake) throw new Error(`wake not found: ${wakeId}`);
-  return wake;
 }
 
 const SENSITIVE_KEY = /^(?:api[_-]?key|token|secret|password|authorization|cookie|set-cookie)$/i;

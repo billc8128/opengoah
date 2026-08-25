@@ -13,6 +13,9 @@ export type ControlRequest =
   | { op: "status" }
   | { op: "interact"; message: string }
   | { op: "interaction.attach"; wakeId: string }
+  | { op: "turn.attach"; turnId: string }
+  | { op: "turn.steer"; message: string }
+  | { op: "turn.interrupt"; turnId: string }
   | { op: "goal.start"; objective: string; id?: string }
   | { op: "goal.update"; id: string; objective?: string; observationMethod?: string | null; verificationMethod?: string | null; owner?: string }
   | { op: "goal.observe"; id: string; observationMethod: string }
@@ -121,6 +124,7 @@ async function serve(socket: Socket, supervisor: Supervisor, ledger: Ledger, rel
 async function dispatch(request: ControlRequest, socket: Socket, supervisor: Supervisor, ledger: Ledger, reloadRuntime?: (configPath: string) => Promise<RuntimeSwap | undefined>, stop?: () => void): Promise<void> {
   if (request.op === "interact") { await interact(request.message, socket, supervisor, ledger); return; }
   if (request.op === "interaction.attach") { for await (const frame of interactionWakeFrames(request.wakeId, ledger, () => !socket.destroyed)) write(socket, frame); socket.end(); return; }
+  if (request.op === "turn.attach") { for await (const frame of turnFrames(request.turnId, ledger, () => !socket.destroyed)) write(socket, frame); socket.end(); return; }
   let value: unknown;
   if (request.op === "daemon.stop") {
     value = { stopping: true };
@@ -152,6 +156,8 @@ async function dispatch(request: ControlRequest, socket: Socket, supervisor: Sup
   else if (request.op === "action.approve") value = await supervisor.approveAction(request.id, "human", request.reason, request.evidence);
   else if (request.op === "action.reject") value = await supervisor.rejectAction(request.id, "human", request.reason, request.evidence);
   else if (request.op === "wake.stop") value = await supervisor.stopAgentWake(request.agent);
+  else if (request.op === "turn.interrupt") value = await supervisor.interruptTurn(request.turnId);
+  else if (request.op === "turn.steer") value = await supervisor.startHumanTurn(request.message);
   else value = { unknown: String(request) };
   write(socket, { type: "result", value: value as JsonValue });
   socket.end();
@@ -165,9 +171,20 @@ async function interact(message: string, socket: Socket, supervisor: Supervisor,
 /** Shared CEO interaction stream used by the interactive shell and the web Console. */
 export async function* interactFrames(message: string, supervisor: Supervisor, ledger: Ledger, isActive: () => boolean = () => true): AsyncGenerator<ControlFrame> {
   if (!message.trim()) throw new Error("message is required");
-  const accepted = await supervisor.interactWithCeoNow(message);
-  yield { type: "accepted", wakeId: accepted.wake.id, value: accepted as unknown as JsonValue };
-  yield* interactionWakeFrames(accepted.wake.id, ledger, isActive, accepted.streamAfterSeq ?? 0);
+  const accepted = await supervisor.startHumanTurn(message);
+  yield { type: "accepted", wakeId: accepted.turnId, value: accepted as unknown as JsonValue };
+  yield* turnFrames(accepted.turnId, ledger, isActive);
+}
+
+async function* turnFrames(turnId: string, ledger: Ledger, isActive: () => boolean): AsyncGenerator<ControlFrame> {
+  let lastSeq = 0; const turn = ledger.turn(turnId); if (!turn) throw new Error("Turn not found");
+  while (true) {
+    if (!isActive()) return;
+    for (const event of ledger.readStream(`turn:${turnId}`)) { if (event.seq <= lastSeq) continue; lastSeq = event.seq; if (event.type.startsWith("message.") || event.type.startsWith("tool.") || event.type.startsWith("item.") || event.type.startsWith("turn.")) yield { type: "event", event: event as unknown as JsonValue }; }
+    const current = ledger.turn(turnId); if (!current) throw new Error("Turn disappeared");
+    if (current.status !== "in_progress") { const answer = ledger.turnItems(turnId).filter((item) => item.type === "assistant_message").at(-1); yield { type: "result", value: { turn: current, ...(answer ? { response: { content: String((answer.data as { text?: unknown }).text ?? "") } } : {}) } as unknown as JsonValue }; return; }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 }
 
 async function* interactionWakeFrames(wakeId: string, ledger: Ledger, isActive: () => boolean, afterSeq = 0): AsyncGenerator<ControlFrame> {
@@ -207,7 +224,7 @@ async function* interactionWakeFrames(wakeId: string, ledger: Ledger, isActive: 
 function interactionMailIdFromTrigger(triggerRef: string): string | null { return triggerRef.startsWith("interaction:") ? triggerRef.slice("interaction:".length).split(":redelivery:", 1)[0]! : null; }
 
 function snapshot(ledger: Ledger, supervisor: Supervisor): JsonValue {
-  return { seq: ledger.events().at(-1)?.seq ?? 0, goals: ledger.goals(), team: supervisor.teamList(), wakes: ledger.wakes(), actions: ledger.actions() } as unknown as JsonValue;
+  return { seq: ledger.events().at(-1)?.seq ?? 0, sessions: ledger.sessions(), turns: ledger.turns(), goals: ledger.goals(), team: supervisor.teamList(), wakes: ledger.wakes(), actions: ledger.actions() } as unknown as JsonValue;
 }
 function ceoStatus(ledger: Ledger, supervisor: Supervisor): JsonValue {
   return { roots: ledger.goals().filter((goal) => goal.parentId === null && goal.owner === "ceo"), team: supervisor.teamList(), pendingHuman: ledger.unreadMail("human"), recentCeoHandoffs: ledger.eventsSince(0, ["handoff.recorded"]).filter((event) => event.actor === "ceo").slice(-10) } as unknown as JsonValue;

@@ -32,6 +32,7 @@ test("local Console serves assets, redacted snapshots, and CEO control through S
     body: JSON.stringify({ message: "Launch a profitable store" }),
   })
   assert.equal(ceoResponse.status, 202)
+  const accepted = await ceoResponse.json() as { sessionId: string; turnId: string }
   assert.equal(runtime.ledger.goals().length, 0)
 
   const snapshotResponse = await fetch(`${metadata.url}api/snapshot?token=${metadata.token}`)
@@ -47,12 +48,13 @@ test("local Console serves assets, redacted snapshots, and CEO control through S
   assert.ok(trajectory.items.length > 0)
   assert.ok(trajectory.items.every((item, index, items) => index === 0 || items[index - 1]!.event.seq > item.event.seq))
 
-  const wakeId = runtime.ledger.wakes()[0]!.id
-  const sessionResponse = await fetch(`${metadata.url}api/sessions/${encodeURIComponent(wakeId)}?token=${metadata.token}`)
+  const sessionResponse = await fetch(`${metadata.url}api/sessions/${encodeURIComponent(accepted.sessionId)}?token=${metadata.token}`)
   assert.equal(sessionResponse.status, 200)
-  const session = await sessionResponse.json() as { wake: { id: string }; events: Array<{ streamId: string }> }
-  assert.equal(session.wake.id, wakeId)
-  assert.ok(session.events.every((event) => event.streamId === `wake:${wakeId}`))
+  const session = await sessionResponse.json() as { session: { id: string }; turns: Array<{ id: string; items: unknown[] }> }
+  assert.equal(session.session.id, accepted.sessionId)
+  assert.equal(session.turns[0]?.id, accepted.turnId)
+
+  while (runtime.ledger.turn(accepted.turnId)?.status === "in_progress") await new Promise((resolve) => setTimeout(resolve, 5))
 
   controller.abort()
   await server
@@ -84,14 +86,11 @@ test("Console chat streams a CEO interaction and decisions resolve gated actions
     })
     assert.equal(chatResponse.status, 200)
     assert.match(chatResponse.headers.get("content-type") ?? "", /text\/event-stream/)
-    const wakeRun = runtime.supervisor.tick()
     const frames: Array<{ type: string; event?: { type: string } }> = []
     const text = await chatResponse.text()
     for (const chunk of text.split("\n\n")) {
       if (chunk.startsWith("data: ")) frames.push(JSON.parse(chunk.slice(6)))
     }
-    const finished = await wakeRun
-    assert.equal(finished?.status, "done")
     assert.equal(frames.at(-1)?.type, "result")
     assert.ok(frames.some((frame) => frame.type === "accepted"))
     assert.equal(frames.some((frame) => frame.type === "event" && frame.event?.type === "handoff.recorded"), false)
@@ -105,7 +104,7 @@ test("Console chat streams a CEO interaction and decisions resolve gated actions
     const firstChunk = new TextDecoder().decode((await reader.read()).value)
     assert.equal(firstChunk.includes('"accepted"'), true)
     await reader.cancel()
-    assert.ok(runtime.ledger.mailbox().some((mail) => mail.to === "ceo" && mail.from === "human"))
+    assert.ok(runtime.ledger.turns().some((turn) => turn.source === "human"))
 
     const seed = runtime.ledger.appendEvent({ streamId: "control:test", ts: new Date().toISOString(), actor: "worker", type: "fact", data: { text: "evidence" } })
     await runtime.supervisor.submitAction({ id: "web-action", agent: "worker", kind: "publish", payload: {}, reason: "publish needs review", evidence: [seed.seq], auditAdvice: null, adviceAcked: false }, "missing-connector")

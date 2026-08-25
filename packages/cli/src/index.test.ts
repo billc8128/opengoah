@@ -113,9 +113,6 @@ test("interactive stream follows redelivery wakes through recovery", async () =>
   const runner: Runner = { isolation: "process", prepare: (request) => { const attempt = ++attempts; return { pid: null, begin: () => { if (attempt > 1) { request.emit({ type: "message.assistant.delta", data: { delta: { type: "text_delta", delta: "recovered response" } } }); request.emit({ type: "message.assistant.completed", data: { message: { role: "assistant", content: [{ type: "text", text: "recovered response" }] } } }); } }, result: Promise.resolve(attempt === 1 ? { outcome: "abnormal", reason: "temporary provider failure" } : { outcome: "response", response: { content: "recovered response" } }), terminate: async () => undefined }; }, terminateProcess: async () => undefined };
   const supervisor = new Supervisor(ledger, runner, clock, { interactionRetryPolicy: { maxAttempts: 3, baseDelayMs: 0 } });
   const framesPromise = (async () => { const frames = []; for await (const frame of interactFrames("hello", supervisor, ledger)) frames.push(frame); return frames; })();
-  await new Promise((resolveWait) => setTimeout(resolveWait, 0));
-  assert.equal((await supervisor.tick())?.status, "abnormal");
-  assert.equal((await supervisor.tick())?.status, "done");
   const frames = await framesPromise;
   assert.equal(frames.filter((frame) => frame.type === "accepted").length, 1);
   assert.equal(frames.some((frame) => frame.type === "event" && (frame.event as { type?: string }).type === "message.assistant.completed"), true);
@@ -123,19 +120,18 @@ test("interactive stream follows redelivery wakes through recovery", async () =>
   ledger.close();
 });
 
-test("interactive stream terminates when a Human turn completes by handoff", async () => {
+test("interactive stream terminates when a Human turn completes", async () => {
   const clock: Clock = { now: () => new Date("2026-08-25T00:00:00.000Z") }; const ledger = new SqliteLedger(":memory:", { clock });
-  const runner: Runner = { isolation: "process", prepare: () => ({ pid: null, begin: () => undefined, result: Promise.resolve({ outcome: "handoff", output: { handoff: { observations: [], results: ["goal created"], nextSteps: [] }, mail: [], nextWakeAt: null } }), terminate: async () => undefined }), terminateProcess: async () => undefined };
+  const runner: Runner = { isolation: "process", prepare: () => ({ pid: null, begin: () => undefined, result: Promise.resolve({ outcome: "response", response: { content: "normal answer" } }), terminate: async () => undefined }), terminateProcess: async () => undefined };
   const supervisor = new Supervisor(ledger, runner, clock);
   const framesPromise = (async () => { const frames = []; for await (const frame of interactFrames("create a goal", supervisor, ledger)) frames.push(frame); return frames; })();
-  await new Promise((resolveWait) => setTimeout(resolveWait, 0)); assert.equal((await supervisor.tick())?.status, "done");
-  const result = (await framesPromise).findLast((frame) => frame.type === "result") as unknown as { value: { handoff: { results: string[] } } };
-  assert.deepEqual(result.value.handoff.results, ["goal created"]); ledger.close();
+  const result = (await framesPromise).findLast((frame) => frame.type === "result") as unknown as { value: { response: { content: string } } };
+  assert.equal(result.value.response.content, "normal answer"); ledger.close();
 });
 
 test("welcome snapshot restores ordinary Human conversation", async () => {
   const state = mkdtempSync(join(tmpdir(), "goah-welcome-conversation-")); const clock: Clock = { now: () => new Date("2026-08-25T00:00:00.000Z") }; const ledger = new SqliteLedger(join(state, "ledger.sqlite"), { clock });
-  const runner: Runner = { isolation: "process", prepare: () => ({ pid: null, begin: () => undefined, result: Promise.resolve({ outcome: "response", response: { content: "restored answer" } }), terminate: async () => undefined }), terminateProcess: async () => undefined }; const supervisor = new Supervisor(ledger, runner, clock); supervisor.interactWithCeo("remember this question"); assert.equal((await supervisor.tick())?.status, "done"); ledger.close();
+  const runner: Runner = { isolation: "process", prepare: () => ({ pid: null, begin: () => undefined, result: Promise.resolve({ outcome: "response", response: { content: "restored answer" } }), terminate: async () => undefined }), terminateProcess: async () => undefined }; const supervisor = new Supervisor(ledger, runner, clock); const accepted = await supervisor.startHumanTurn("remember this question"); while (ledger.turn(accepted.turnId)?.status === "in_progress") await new Promise((resolveWait) => setTimeout(resolveWait, 1)); ledger.close();
   assert.deepEqual(welcomeSnapshot(state, { runner: "pi", target: "test/model" }).conversation.map((row) => row.text), ["remember this question", "restored answer"]);
 });
 
@@ -168,21 +164,20 @@ test("CLI runs the install-to-first-handoff path with the faux provider", () => 
   assert.equal(status.modelCapabilities.provider, "faux");
   assert.equal(status.recentHandoffs.length, 1);
   const sessions = JSON.parse(invoke(directory, "session", "list"));
-  assert.equal(sessions[0].wakeId, wakeId);
-  assert.equal(sessions[0].sessionStatus, "completed");
-  assert.equal(sessions[0].formatVersion, 1);
-  const detail = JSON.parse(invoke(directory, "session", "show", "--config", "goah.config.json", wakeId));
-  assert.equal(detail.eventTypes["request.prepared"], 2);
-  assert.ok(detail.replay.messageCount > 0);
+  assert.equal(sessions[0].turnCount, 1);
+  assert.equal(sessions[0].status, "idle");
+  const sessionId = sessions[0].sessionId;
+  const detail = JSON.parse(invoke(directory, "session", "show", "--config", "goah.config.json", sessionId));
+  assert.ok(detail.turns[0].items.length > 0);
   assert.equal(JSON.stringify(detail).includes("apiKey"), false);
   const context = JSON.parse(invoke(directory, "context", "show", wakeId));
   assert.match(context.text, /Complete the first handoff/);
   const events = JSON.parse(invoke(directory, "events", "--stream", `wake:${wakeId}`));
   assert.equal(events.at(-1).type, "wake.done");
   const exportedPath = join(directory, "session.json");
-  const exported = JSON.parse(invoke(directory, "session", "export", wakeId, "--output", exportedPath));
+  const exported = JSON.parse(invoke(directory, "session", "export", sessionId, "--output", exportedPath));
   assert.equal(exported.redacted, true);
-  assert.equal(JSON.parse(readFileSync(exportedPath, "utf8")).format, "goah.session-export.v1");
+  assert.equal(JSON.parse(readFileSync(exportedPath, "utf8")).format, "goah.session-export.v2");
   const queued = JSON.parse(invoke(directory, "wake", "worker", "--reason", "manual follow-up"));
   assert.equal(queued.wake.status, "queued");
   assert.equal(JSON.parse(invoke(directory, "run-once")).wake.status, "done");

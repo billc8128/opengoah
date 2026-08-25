@@ -126,8 +126,8 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   const welcome = renderWelcome(snapshot, Boolean(snapshot.root || snapshot.handoffs.length || snapshot.conversation.length));
   await ensureDaemon(configPath, stateDir);
   const liveSnapshot = await requestControl(stateDir, { op: "status" }).catch(() => null);
-  const liveWakes = liveSnapshot && typeof liveSnapshot === "object" && !Array.isArray(liveSnapshot) && Array.isArray(liveSnapshot.wakes) ? liveSnapshot.wakes as Array<Record<string, unknown>> : [];
-  const liveInteractionWakeId = findLiveInteractionWakeId(liveWakes);
+  const liveTurns = liveSnapshot && typeof liveSnapshot === "object" && !Array.isArray(liveSnapshot) && Array.isArray(liveSnapshot.turns) ? liveSnapshot.turns as Array<Record<string, unknown>> : [];
+  const liveInteractionWakeId = findLiveTurnId(liveTurns);
   const terminal = new ProcessTerminal();
   const tui = new TuiAltScreen(terminal, true, undefined, { mouse: true });
   terminal.setTitle(`Goah · ${runner.target}`);
@@ -194,7 +194,7 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
     activeInteractionWakeId = wakeId;
     const controller = new AbortController(); activeStream = controller;
     statusView.setText(statusText("queued", 1));
-    try { await streamControl(stateDir, { op: "interaction.attach", wakeId }, (frame) => { if (frame.type === "result" || frame.type === "error") activeInteractionWakeId = null; renderFrame(frame, push, appendLive, commitLive, pushResponse, updateTool, updateThinking, setWakeState, () => commitLive("")); }, controller.signal); }
+    try { await streamControl(stateDir, { op: "turn.attach", turnId: wakeId }, (frame) => { if (frame.type === "result" || frame.type === "error") activeInteractionWakeId = null; renderFrame(frame, push, appendLive, commitLive, pushResponse, updateTool, updateThinking, setWakeState, () => commitLive("")); }, controller.signal); }
     catch (error) { if (!controller.signal.aborted) push(errorLine(error)); }
     finally {
       if (activeStream === controller) activeStream = null;
@@ -213,10 +213,9 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   };
   const steer = async (message: string): Promise<void> => {
     try {
-      const outcome = await requestControl(stateDir, { op: "ceo.steer", message });
-      const queuedBySupervisor = Boolean(outcome && typeof outcome === "object" && !Array.isArray(outcome) && outcome.queued === true);
-      if (queuedBySupervisor && outcome && typeof outcome === "object" && !Array.isArray(outcome) && outcome.wake && typeof outcome.wake === "object" && !Array.isArray(outcome.wake) && typeof outcome.wake.id === "string" && !queuedWakeIds.includes(outcome.wake.id)) queuedWakeIds.push(outcome.wake.id);
-      statusView.setText(queuedBySupervisor ? statusText("queued", 1) : `${tuiTheme.accent("working")}  ${tuiTheme.muted("your update is steering this turn · /stop cancels")}`);
+      await requestControl(stateDir, { op: "turn.steer", message });
+      const queuedBySupervisor = false;
+      statusView.setText(`${tuiTheme.accent("working")}  ${tuiTheme.muted("your update is steering this turn · /stop cancels")}`);
       tui.requestRender();
       if (queuedBySupervisor && !busy.active) continuePending();
     } catch (error) {
@@ -311,8 +310,8 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   await exited;
 }
 
-export function findLiveInteractionWakeId(wakes: Array<Record<string, unknown>>): string | null {
-  const id = [...wakes].reverse().find((wake) => wake.agent === "ceo" && ["queued", "leased", "running"].includes(String(wake.status)) && String(wake.triggerRef).startsWith("interaction:"))?.id;
+export function findLiveTurnId(turns: Array<Record<string, unknown>>): string | null {
+  const id = [...turns].reverse().find((turn) => turn.status === "in_progress" && turn.source === "human")?.id;
   return typeof id === "string" ? id : null;
 }
 
@@ -462,8 +461,9 @@ async function printRecords(text: string, stateDir: string, push: (line: string)
 
 async function stopCeoWake(stateDir: string, push: (line: string) => void): Promise<void> {
   try {
-    const wake = await requestControl(stateDir, { op: "wake.stop", agent: "ceo" });
-    push(wake ? `${tuiTheme.warning("stopping")}  Current run will close as interrupted.` : tuiTheme.muted("No active run."));
+    const snapshot = await requestControl(stateDir, { op: "status" }); const turns = snapshot && typeof snapshot === "object" && !Array.isArray(snapshot) && Array.isArray(snapshot.turns) ? snapshot.turns as Array<Record<string, unknown>> : []; const turnId = findLiveTurnId(turns);
+    if (!turnId) { push(tuiTheme.muted("No active Turn.")); return; }
+    await requestControl(stateDir, { op: "turn.interrupt", turnId }); push(`${tuiTheme.warning("stopping")}  Current Turn was interrupted.`);
   } catch (error) { push(errorLine(error)); }
 }
 
