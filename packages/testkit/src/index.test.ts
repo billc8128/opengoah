@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { getEventListeners } from "node:events";
 import test from "node:test";
-import { CONTRACT_VERSION, controlStream, wakeStream, type Clock, type EventInput, type GoalSnapshot, type JsonValue, type Runner, type TurnSnapshot, type WakeSnapshot } from "goah-ledger-contract";
+import { CONTRACT_VERSION, controlStream, wakeStream, type Clock, type EventInput, type GoalSnapshot, type JsonValue,type RunRequest, type Runner, type TurnSnapshot, type WakeSnapshot } from "goah-ledger-contract";
 import { piWorkerPath, ProcessRunner, verificationWorkerPath } from "goah-runner-pi";
 import { calibrateVerificationThreshold, evaluateVerification, ProcessVerifierModel, renderDashboard, runSupervisorDaemon, Supervisor, VerificationPlane, type SupervisorOptions, type VerifierModel } from "goah-supervisor";
 import { assertLedgerConformance, createMemoryLedger, fauxRunnerWorkerPath, MockConnector, SimulatedClock } from "./index.js";
@@ -69,6 +69,8 @@ test("a Human Turn can create a Root Goal and become Goal-bound through tools", 
   ledger.close();
 });
 
+test("a direct Human Root resume binds the current Turn without queuing a duplicate Wake",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});ledger.putGoal({id:"root",parentId:null,objective:"resume",observationMethod:"observe",verificationMethod:"verify",owner:"ceo",phase:"active",revision:0},"human");ledger.putGoal({...ledger.goal("root")!,phase:"paused",revision:1},"human");const supervisor=new Supervisor(ledger,fauxRunner([{rpc:{method:"goal.resume",params:{goalId:"root"}}},{rpc:{method:"work_record.update",params:{expectedRevision:0,content:"# Current State\n\nResumed.\n",reason:"resume",evidence:["$LATEST_SOURCE_SEQ"]}}},{handoff:{handoff:{observations:[],results:["resumed"],nextSteps:[],blocker:"waiting"},mail:[],nextWakeAt:null}}]),clock);const accepted=await supervisor.startHumanTurn("resume");while(ledger.turn(accepted.turnId)?.status==="in_progress")await new Promise((resolve)=>setTimeout(resolve,1));assert.equal(ledger.turn(accepted.turnId)?.status,"completed");assert.equal(ledger.wakes().filter((wake)=>wake.status==="queued").length,0);ledger.close();});
+
 test("a Human interaction interrupts active automatic CEO work", async () => {
   const clock = new SimulatedClock();
   const ledger = createMemoryLedger({ clock });
@@ -98,6 +100,10 @@ test("a Human interaction interrupts active automatic CEO work", async () => {
 });
 
 test("an active Human Turn blocks queued automatic Wakes",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const pending=Promise.withResolvers<{outcome:"response";response:{content:string}}>();const runner:Runner={isolation:"process",prepare:()=>({pid:null,begin:()=>undefined,result:pending.promise,terminate:async()=>pending.resolve({outcome:"response",response:{content:"stopped"}})}),terminateProcess:async()=>undefined};const supervisor=new Supervisor(ledger,runner,clock);supervisor.createRootGoal("background","root");supervisor.planWake("ceo",clock.now().toISOString(),"automatic");const human=await supervisor.startHumanTurn("hello");assert.equal(await supervisor.tick(),null);assert.equal(ledger.wakes()[0]?.status,"queued");await supervisor.interruptTurn(human.turnId);ledger.close();});
+
+test("concurrent Human submissions are serialized without losing either message",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const pending=Promise.withResolvers<{outcome:"abnormal";reason:string}>();let prepared=0;const runner:Runner={isolation:"process",prepare:()=>{prepared+=1;if(prepared===1)return{pid:null,begin:()=>undefined,result:pending.promise,terminate:async()=>pending.resolve({outcome:"abnormal",reason:"stopped"})};return{pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"response" as const,response:{content:"ok"}}),terminate:async()=>undefined}},terminateProcess:async()=>undefined};const supervisor=new Supervisor(ledger,runner,clock);supervisor.createRootGoal("background","root");supervisor.planWake("ceo",clock.now().toISOString(),"automatic");const automatic=supervisor.tick();await new Promise((resolve)=>setImmediate(resolve));const results=await Promise.all([supervisor.startHumanTurn("one"),supervisor.startHumanTurn("two")]);await automatic;assert.equal(results.length,2);assert.deepEqual(ledger.turns(supervisor.threadFor("ceo").id).flatMap((turn)=>ledger.turnItems(turn.id)).filter((item)=>item.type==="user_message").map((item)=>(item.data as {text:string}).text),["one","two"]);ledger.close();});
+
+test("a Goal-targeted Wake binds the requested Goal when one Agent owns several",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});let binding:unknown;const runner:Runner={isolation:"process",prepare:(request:RunRequest)=>{binding=request.turn.goalBinding;return{pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"abnormal",reason:"observed"}),terminate:async()=>undefined}},terminateProcess:async()=>undefined};const supervisor=new Supervisor(ledger,runner,clock,{turnRetryPolicy:{maxAttempts:1,baseDelayMs:1}});ledger.putGoal({id:"root",parentId:null,objective:"root",observationMethod:null,verificationMethod:null,owner:"ceo",phase:"active",revision:0},"human");for(const id of ["a","z"])ledger.putGoal({id,parentId:"root",objective:id,observationMethod:"observe",verificationMethod:"verify",owner:"worker",phase:"active",revision:0},"ceo");ledger.enqueueWake({...queuedWake("wake-z","worker","goal:z"),goalId:"z",goalRevision:0},"supervisor");await supervisor.tick();assert.deepEqual(binding,{goalId:"z",goalRevision:0});ledger.close();});
 
 test("an ordinary source-Wake response atomically acknowledges delivered Mail",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const runner:Runner={isolation:"process",prepare:()=>({pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"response" as const,response:{content:"reply"}}),terminate:async()=>undefined}),terminateProcess:async()=>undefined};const supervisor=new Supervisor(ledger,runner,clock);const sent=supervisor.sendToCeo({message:"async hello"});const wake=await supervisor.tick();assert.equal(wake?.id,sent.wake.id);assert.equal(ledger.turn(wake!.turnId!)?.status,"completed");assert.equal(ledger.unreadMail("ceo").length,0);ledger.close();});
 
@@ -134,6 +140,8 @@ test("rejected steering starts a fresh Turn without duplicating a completed user
 test("steering that loses the Turn completion race starts a fresh Turn",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const firstResult=Promise.withResolvers<{outcome:"response";response:{content:string}}>();const steerResult=Promise.withResolvers<void>();let prepared=0;const runner:Runner={isolation:"process",prepare:()=>{prepared+=1;if(prepared===1)return{pid:null,begin:()=>undefined,result:firstResult.promise,steer:()=>steerResult.promise,terminate:async()=>undefined};return{pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"response" as const,response:{content:"fresh answer"}}),terminate:async()=>undefined}},terminateProcess:async()=>undefined};const supervisor=new Supervisor(ledger,runner,clock);const first=await supervisor.startHumanTurn("first");await new Promise((resolve)=>setImmediate(resolve));const follow=supervisor.startHumanTurn("second");firstResult.resolve({outcome:"response",response:{content:"stale answer"}});while(ledger.turn(first.turnId)?.status==="in_progress")await new Promise((resolve)=>setTimeout(resolve,1));steerResult.resolve();const second=await follow;assert.equal(second.steered,false);assert.notEqual(second.turnId,first.turnId);while(ledger.turn(second.turnId)?.status==="in_progress")await new Promise((resolve)=>setTimeout(resolve,1));assert.equal(ledger.turn(second.turnId)?.status,"completed");assert.deepEqual(ledger.turnItems(second.turnId).filter((item)=>item.type==="user_message").map((item)=>item.data),[{text:"second"}]);ledger.close();});
 
 test("reasoning deltas become a durable reasoning Item",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const runner:Runner={isolation:"process",prepare:(request)=>({pid:null,begin:()=>{request.emit({type:"message.assistant.delta",data:{messageId:"m",delta:{type:"thinking_start"}}});request.emit({type:"message.assistant.delta",data:{messageId:"m",delta:{type:"thinking_delta",delta:"inspect state"}}});request.emit({type:"message.assistant.delta",data:{messageId:"m",delta:{type:"thinking_end"}}});},result:Promise.resolve({outcome:"response",response:{content:"done"}}),terminate:async()=>undefined}),terminateProcess:async()=>undefined};const supervisor=new Supervisor(ledger,runner,clock);const accepted=await supervisor.startHumanTurn("test");while(ledger.turn(accepted.turnId)?.status==="in_progress")await new Promise((resolve)=>setTimeout(resolve,1));const reasoning=ledger.turnItems(accepted.turnId).find((item)=>item.type==="reasoning");assert.equal(reasoning?.status,"completed");assert.deepEqual(reasoning?.data,{text:"inspect state"});ledger.close();});
+
+test("Runner cleanup failure is recorded without leaving the Turn active",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const runner:Runner={isolation:"process",prepare:()=>({pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"response" as const,response:{content:"ok"}}),terminate:async()=>{throw new Error("cleanup failed")}}),terminateProcess:async()=>undefined};const supervisor=new Supervisor(ledger,runner,clock);const accepted=await supervisor.startHumanTurn("hello");while(ledger.turn(accepted.turnId)?.status==="in_progress")await new Promise((resolve)=>setTimeout(resolve,1));assert.equal(ledger.turn(accepted.turnId)?.status,"completed");assert.equal(ledger.readStream(`turn:${accepted.turnId}`).some((event)=>event.type==="runner.cleanup_failed"),true);ledger.close();});
 
 test("interrupting a Human Turn terminates it without Mail or Wake", async () => {
   const clock = new SimulatedClock(); const ledger = createMemoryLedger({ clock }); const result = Promise.withResolvers<{ outcome: "abnormal"; reason: string }>();
@@ -199,7 +207,7 @@ test("crashed wake keeps emergency mail and local partial work for recovery", as
   const crashing = fauxRunner([{ write: { path: "partial.txt", content: "keep\n" } }, { crash: "boom" }], undefined, repo);
   const first = new Supervisor(ledger, crashing, clock);
   first.createGoal(goal());
-  ledger.putMail({ id: "urgent", to: "worker", from: "human", level: "emergency", body: { alert: true }, readAt: null }, "human");
+  ledger.putMail({ id: "urgent", to: "worker", from: "human", level: "emergency", body: { alert: true,goalId:"root" }, readAt: null }, "human");
   first.planWake("worker", clock.now().toISOString(), "crash");
   const abnormal = await first.tick();
   assert.equal(abnormal?.status, "consumed");assert.equal(ledger.turn(abnormal!.turnId!)?.status,"failed");
@@ -208,7 +216,7 @@ test("crashed wake keeps emergency mail and local partial work for recovery", as
 
   const recoveryContext = join(mkdtempSync(join(tmpdir(), "goah-context-")), "context.json");
   const recovering = fauxRunner([{ handoff: { handoff: { observations: [], results: [], nextSteps: [] }, mail: [], nextWakeAt: null } }], recoveryContext, repo);
-  ledger.enqueueWake(queuedWake("recovery", "worker", `recovery:${abnormal!.turnId}`), "supervisor");
+  ledger.enqueueWake({...queuedWake("recovery", "worker", `recovery:${abnormal!.turnId}`),goalId:"root",goalRevision:0}, "supervisor");
   const second = new Supervisor(ledger, recovering, clock);
   assert.equal((await second.tick())?.status, "consumed");
   const context = JSON.parse(readFileSync(recoveryContext, "utf8")) as { text: string };
@@ -317,7 +325,7 @@ test("schedule, mail, and metric triggers are durable and coalesced", async () =
   const evaluation = supervisor.recordMetric({ goalId: "root", source: "test", observedAt: clock.now().toISOString(), value: 0 });
   assert.equal(evaluation.status, "missed");
   await supervisor.tick();
-  assert.equal(ledger.wakes().filter((wake) => wake.agent === "worker").length, 1);
+  assert.equal(ledger.wakes().filter((wake) => wake.agent === "worker").length, 2);
   assert.equal(ledger.events().some((event) => event.type === "wake.trigger_coalesced"), true);
   ledger.close();
 });
@@ -524,10 +532,10 @@ test("CEO role delegates atomically and receives its dedicated operating policy"
   const root = { id: "ceo-root", parentId: null, objective: "build organization", observationMethod: null, verificationMethod: null, owner: "ceo", phase: "active", revision: 0 } as const;
   ledger.putGoal(root, "human");
   const evidence = ledger.appendEvent({ ...event("ceo", "organization.observed", { independent: true }), ts: clock.now().toISOString() });
-  assert.throws(() => ledger.commitDelegation({ id: "self-delegation", parentGoalId: "ceo-root", childGoal: { id: "self-child", objective: "vague", observationMethod: "none", verificationMethod: "none", owner: "ceo" }, brief: {}, reason: "self", evidence: [evidence.seq] }, "ceo"), /distinct worker agent/);
+  assert.throws(() => ledger.commitDelegation({ id: "self-delegation", parentGoalId: "ceo-root",expectedParentRevision:0, childGoal: { id: "self-child", objective: "vague", observationMethod: "none", verificationMethod: "none", owner: "ceo" }, brief: {}, reason: "self", evidence: [evidence.seq] }, "ceo"), /distinct worker agent/);
   const contextFile = join(mkdtempSync(join(tmpdir(), "goah-ceo-")), "context.json");
   const supervisor = new Supervisor(ledger, fauxRunner([
-    { rpc: { method: "goal.delegate", params: { id: "delegation-1", parentGoalId: "ceo-root", childGoal: { id: "child", objective: "own metric", observationMethod: "Verify the objective through an evidence-backed handoff.", verificationMethod: "Verify the objective through an evidence-backed handoff.", owner: "worker" }, brief: { deliverable: "metric" }, reason: "independent result", evidence: [evidence.seq] } } },
+    { rpc: { method: "goal.delegate", params: { id: "delegation-1", parentGoalId: "ceo-root",expectedParentRevision:0, childGoal: { id: "child", objective: "own metric", observationMethod: "Verify the objective through an evidence-backed handoff.", verificationMethod: "Verify the objective through an evidence-backed handoff.", owner: "worker" }, brief: { deliverable: "metric" }, reason: "independent result", evidence: [evidence.seq] } } },
     { handoff: { handoff: { observations: [], results: ["delegated"], nextSteps: [] }, mail: [], nextWakeAt: null } },
   ], contextFile), clock, { profiles: [{ agent: "ceo", role: "ceo" }] });
   supervisor.planWake("ceo", clock.now().toISOString(), "replan");
@@ -553,8 +561,8 @@ test("human observation confirmation and root revision wake CEO without preservi
   const revised = supervisor.updateGoal("revenue", { objective: "grow retained net revenue" }, "human");
   assert.equal(revised.observationMethod, null);
   assert.equal(revised.revision, 2);
-  assert.equal(ledger.wake(started.wake.id)?.status, "queued");
-  assert.equal(ledger.eventsForWake(started.wake.id).some((event) => event.type === "wake.trigger_coalesced"), true);
+  assert.equal(ledger.wake(started.wake.id)?.status, "cancelled");
+  assert.equal(ledger.wakes().some((wake)=>wake.status==="queued"&&wake.goalId==="revenue"&&wake.goalRevision===2),true);
   ledger.close();
 });
 
@@ -565,7 +573,7 @@ test("root revision blocks stale child gated actions until CEO revises the child
   supervisor.startGoal("grow revenue", "revenue");
   supervisor.confirmObservationMethod("revenue", "Run the net revenue report every six hours.");
   const delegationEvidence = ledger.appendEvent({ ...event("ceo", "source.observed", { ok: true }), ts: clock.now().toISOString() });
-  supervisor.delegate({ id: "d", parentGoalId: "revenue", childGoal: { id: "baseline", objective: "establish baseline", observationMethod: "Run the baseline report.", verificationMethod: "Run the baseline report.", owner: "analyst" }, brief: {}, reason: "bounded evidence work", evidence: [delegationEvidence.seq] });
+  supervisor.delegate({ id: "d", parentGoalId: "revenue",expectedParentRevision:1, childGoal: { id: "baseline", objective: "establish baseline", observationMethod: "Run the baseline report.", verificationMethod: "Run the baseline report.", owner: "analyst" }, brief: {}, reason: "bounded evidence work", evidence: [delegationEvidence.seq] });
   supervisor.updateGoal("revenue", { objective: "grow retained net revenue" }, "human");
   const actionEvidence = ledger.appendEvent({ ...event("analyst", "analysis.observed", { ready: true }), ts: clock.now().toISOString() });
   const actionTurn=testTurn(ledger,"analyst","analyst-turn");await assert.rejects(() => supervisor.submitAction({ id: "stale", agent: "analyst", createdInTurn:actionTurn.id,kind: "external.write", payload: {}, reason: "publish", evidence: [actionEvidence.seq], auditAdvice: null, adviceAcked: false }, "missing"), /predates root revision/);
@@ -619,10 +627,10 @@ test("one root goal forms a two-agent organization and returns completion contro
   const clock = new SimulatedClock();
   const ledger = createMemoryLedger({ clock });
   const byTrigger = {
-    "root:company:created": [
+    "root:company:revised:1": [
       { rpc: { method: "team.list", params: {} } },
-      { rpc: { method: "goal.delegate", params: { id: "d-research", parentGoalId: "company", childGoal: { id: "market", objective: "validate demand", observationMethod: "Verify the objective through an evidence-backed handoff.", verificationMethod: "Verify the objective through an evidence-backed handoff.", owner: "research" }, brief: { deliverable: "evidence" }, reason: "independent evidence boundary", evidence: [1] } } },
-      { rpc: { method: "goal.delegate", params: { id: "d-operations", parentGoalId: "company", childGoal: { id: "operations", objective: "design fulfillment", observationMethod: "Verify the objective through an evidence-backed handoff.", verificationMethod: "Verify the objective through an evidence-backed handoff.", owner: "operator" }, brief: { deliverable: "plan" }, reason: "independent operating boundary", evidence: [1] } } },
+      { rpc: { method: "goal.delegate", params: { id: "d-research", parentGoalId: "company",expectedParentRevision:1, childGoal: { id: "market", objective: "validate demand", observationMethod: "Verify the objective through an evidence-backed handoff.", verificationMethod: "Verify the objective through an evidence-backed handoff.", owner: "research" }, brief: { deliverable: "evidence" }, reason: "independent evidence boundary", evidence: [1] } } },
+      { rpc: { method: "goal.delegate", params: { id: "d-operations", parentGoalId: "company",expectedParentRevision:1, childGoal: { id: "operations", objective: "design fulfillment", observationMethod: "Verify the objective through an evidence-backed handoff.", verificationMethod: "Verify the objective through an evidence-backed handoff.", owner: "operator" }, brief: { deliverable: "plan" }, reason: "independent operating boundary", evidence: [1] } } },
       { handoff: { handoff: { observations: ["team formed"], results: ["delegated"], nextSteps: ["review material handoffs"] }, mail: [], nextWakeAt: "2026-08-19T00:00:00.000Z" } },
     ],
     "child-handoff:": [

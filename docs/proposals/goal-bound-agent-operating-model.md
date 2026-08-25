@@ -740,7 +740,7 @@ Hide by default:
 
 ## 18. Migration
 
-This development release has no external users, so schema v12 does not migrate schemas 1–11. Development workspaces are recreated. Goal and Work Record semantics remain the target schema; execution ownership and conversation storage are replaced together.
+This development release has no external users, so schema v13 does not migrate schemas 1–12. Development workspaces are recreated. Goal and Work Record semantics remain the target schema; execution ownership, Goal-targeted scheduling, and conversation storage are replaced together.
 
 ## 19. Implementation sequence
 

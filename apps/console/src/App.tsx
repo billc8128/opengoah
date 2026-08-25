@@ -340,18 +340,18 @@ function SettingsView({ snapshot }: { snapshot: ConsoleSnapshot }) {
   return <Page title="Settings" description="Local Console runtime details. Agent and connector configuration remains authoritative in goah.config.json."><div className="settings-list"><div><span>Mode</span><strong>Local, loopback only</strong></div><div><span>Refresh</span><strong>Every 2 seconds</strong></div><div><span>Latest event</span><strong>Seq #{snapshot.seq}</strong></div><div><span>Event payloads</span><strong>Redacted by default</strong></div></div></Page>
 }
 
-type ChatExchange = { kind: "user" | "ceo"; seq: number; text: string; handoff?: { observations: string[]; results: string[]; nextSteps: string[]; blocker?: string } }
-type LiveChat = { status: "running" | "done" | "error"; text: string; lines: string[]; handoff: ChatExchange["handoff"] }
+type ChatExchange = { kind: "user" | "ceo"; seq: number; turnId?:string; text: string; handoff?: { observations: string[]; results: string[]; nextSteps: string[]; blocker?: string;goalId?:string;outcome?:string;recordRevision?:number } }
+type LiveChat = { status: "running" | "done" | "error";turnId:string|null;prompt:string; text: string; lines: string[]; handoff: ChatExchange["handoff"] }
 
 function chatHistory(snapshot: ConsoleSnapshot): ChatExchange[] {
   const items: ChatExchange[] = [];const ceoThreadIds=new Set(snapshot.threads.filter((thread)=>thread.agent==="ceo").map((thread)=>thread.id));const humanTurnIds=new Set(snapshot.turns.filter((turn)=>turn.source==="human"&&ceoThreadIds.has(turn.threadId)).map((turn)=>turn.id));const messageItems=new Map<string,{seq:number;item:Record<string,unknown>}>();
   for (const event of snapshot.events) {
     if(event.type.startsWith("item.user_message.")||event.type.startsWith("item.assistant_message.")){const item=record(record(event.data).snapshot);if(typeof item.id==="string")messageItems.set(item.id,{seq:event.seq,item});}
     else if (event.type === "handoff.recorded" && event.actor === "ceo") {
-      items.push({ kind: "ceo", seq: event.seq, text: "", handoff: handoffOf(event.data) })
+      items.push({ kind: "ceo", seq: event.seq,turnId:event.streamId.startsWith("turn:")?event.streamId.slice(5):undefined, text: "", handoff: handoffOf(event.data) })
     }
   }
-  for(const {seq,item} of messageItems.values()){if(item.status!=="completed"||!humanTurnIds.has(String(item.turnId)))continue;const data=record(item.data);if(typeof data.text==="string")items.push({kind:item.type==="user_message"?"user":"ceo",seq,text:data.text});}
+  for(const {seq,item} of messageItems.values()){if(item.status!=="completed"||!humanTurnIds.has(String(item.turnId)))continue;const data=record(item.data);if(typeof data.text==="string")items.push({kind:item.type==="user_message"?"user":"ceo",seq,turnId:String(item.turnId),text:data.text});}
   return items.sort((a, b) => a.seq - b.seq)
 }
 
@@ -366,7 +366,7 @@ function ChatView({ snapshot, onRefresh }: { snapshot: ConsoleSnapshot; onRefres
     const message = draft.trim()
     if (!message || live?.status === "running") return
     setDraft("")
-    setLive({ status: "running", text: "", lines: ["CEO Turn started"], handoff: undefined })
+    setLive({ status: "running",turnId:null,prompt:message, text: "", lines: ["CEO Turn started"], handoff: undefined })
     try {
       const response = await fetch("/api/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message }) })
       if (!response.ok || !response.body) throw new Error(`chat request failed (${response.status})`)
@@ -403,9 +403,10 @@ function ChatView({ snapshot, onRefresh }: { snapshot: ConsoleSnapshot; onRefres
       </header>
       <div className="chat-scroll">
         {history.length === 0 && !live && <p className="chat-empty">还没有对话。说一句话开始一个 durable CEO Turn。</p>}
-        {history.map((item) => item.kind === "user"
+        {history.filter((item)=>!live?.turnId||item.turnId!==live.turnId).map((item) => item.kind === "user"
           ? <article key={item.seq} className="chat-entry user"><p>{item.text}</p><small>You · #{item.seq}</small></article>
-          : <article key={item.seq} className="chat-entry ceo">{item.handoff && <HandoffBlock handoff={item.handoff} seq={item.seq} />}</article>)}
+          : <article key={item.seq} className="chat-entry ceo">{item.text&&<p>{item.text}</p>}{item.handoff && <HandoffBlock handoff={item.handoff} seq={item.seq} />}</article>)}
+        {live&&<article className="chat-entry user"><p>{live.prompt}</p><small>You</small></article>}
         {live && <article className="chat-entry ceo live">
           {live.lines.length > 0 && <div className="chat-activity">{live.lines.map((line) => <span key={line}>{line}</span>)}</div>}
           {live.text && <p className="chat-stream">{live.text}</p>}
@@ -428,12 +429,12 @@ function ChatView({ snapshot, onRefresh }: { snapshot: ConsoleSnapshot; onRefres
 type ChatFrame = { type: "accepted" | "result" | "error" | "event"; turnId?: string; value?: unknown; event?: EventView; error?: string }
 
 function applyFrame(frame: ChatFrame, setLive: Dispatch<SetStateAction<LiveChat | null>>): void {
-  if (frame.type === "accepted") return
+  if (frame.type === "accepted") {setLive((current)=>current&&{...current,turnId:frame.turnId??current.turnId});return}
   if (frame.type === "error") { setLive((current) => current && { ...current, status: "error", lines: [...current.lines, frame.error ?? "error"] }); return }
   if (frame.type === "result") {
     const value = record(frame.value)
     const turn = record(value.turn) as { status?: unknown }
-    setLive((current) => current && { ...current, status: turn.status==="failed"?"error":"done", lines: [...current.lines, `Turn ${String(turn.status ?? "finished")}`] })
+    const response=record(value.response);setLive((current) => current && { ...current, status: turn.status==="failed"||turn.status==="interrupted"?"error":"done",text:current.text||(typeof response.content==="string"?response.content:""), lines: [...current.lines, `Turn ${String(turn.status ?? "finished")}`] })
     return
   }
   const event = frame.event
@@ -443,7 +444,7 @@ function applyFrame(frame: ChatFrame, setLive: Dispatch<SetStateAction<LiveChat 
     if (text) setLive((current) => current && { ...current, text })
   } else if (event.type === "message.assistant.delta") {
     const delta = record(record(event.data).delta)
-    const text = typeof delta.delta === "string" ? delta.delta : null
+    const text = delta.type === "text_delta"&&typeof delta.delta === "string" ? delta.delta : null
     if (text) setLive((current) => current && { ...current, text: current.text + text })
   } else if (event.type === "tool.called") {
     const data = record(event.data)
@@ -458,6 +459,7 @@ function applyFrame(frame: ChatFrame, setLive: Dispatch<SetStateAction<LiveChat 
 function HandoffBlock({ handoff, seq }: { handoff: NonNullable<ChatExchange["handoff"]>; seq: number }) {
   return (
     <div className="chat-handoff">
+      {handoff.goalId&&<section><h3>{handoff.outcome?.replaceAll("_"," ")??"Goal updated"}</h3><p>{handoff.goalId}{handoff.recordRevision!==undefined?` · Work Record r${handoff.recordRevision}`:""}</p></section>}
       {handoff.observations.length > 0 && <section><h3>Observed</h3>{handoff.observations.map((value) => <p key={value}>{value}</p>)}</section>}
       {handoff.results.length > 0 && <section><h3>Completed</h3>{handoff.results.map((value) => <p key={value}>{value}</p>)}</section>}
       {handoff.nextSteps.length > 0 && <section><h3>Next</h3>{handoff.nextSteps.map((value) => <p key={value}>{value}</p>)}</section>}
@@ -559,6 +561,9 @@ function handoffOf(value: unknown): NonNullable<ChatExchange["handoff"]> {
     observations: stringList(handoff.observations),
     results: stringList(handoff.results),
     nextSteps: stringList(handoff.nextSteps),
+    ...(typeof handoff.goalId==="string"?{goalId:handoff.goalId}:{}),
+    ...(typeof handoff.outcome==="string"?{outcome:handoff.outcome}:{}),
+    ...(typeof handoff.recordRevision==="number"?{recordRevision:handoff.recordRevision}:{}),
     ...(typeof handoff.blocker === "string" && handoff.blocker ? { blocker: handoff.blocker } : {}),
   }
 }

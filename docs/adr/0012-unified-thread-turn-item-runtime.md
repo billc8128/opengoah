@@ -54,13 +54,13 @@ Provider retry remains inside the same Turn and is represented by `turn.retry_st
 
 ### Wake and Mail
 
-Wake is only a durable schedule for future Goal or system motion. Its state machine is `queued → claimed → consumed`, with `cancelled` for pending work that is suppressed. Claiming a Wake creates one Turn and links `wake.turnId` to it. Human input starts a Turn directly, and any in-progress Human Turn blocks automatic Wake claims globally.
+Wake is only a durable schedule for future Goal or system motion. Its state machine is `queued → claimed → consumed`, with `cancelled` for pending work that is suppressed. Goal Wakes and Schedules carry the exact Goal revision they target; one Agent may own several Goals without cross-Goal coalescing or cancellation. Claiming a Wake creates one matching Turn and links `wake.turnId` to it. Human input starts a Turn directly, and any in-progress Human Turn blocks automatic Wake claims globally.
 
 Mail is only asynchronous Agent-to-Agent or Agent/Human decision communication. Ordinary Human conversation, steering, retry, cancellation, and transcript history do not use Mail.
 
 ### Ownership and recovery
 
-Turn owns Runner lease, fencing token, process identity, terminal status, cancellation, and recovery. Wake no longer owns Runner execution state.
+Turn owns Runner lease, fencing token, process identity, opaque Runner Profile identity, terminal status, cancellation, and recovery. Wake no longer owns Runner execution state.
 
 `turn.interrupt(turnId)` is the sole cancellation operation. It revokes the Turn lease, records unknown outcomes for open tools, writes `interrupted`, and terminates the Runner. `goah --continue` rebuilds the CEO Thread and subscribes to its `in_progress` Human Turn.
 

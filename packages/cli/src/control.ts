@@ -172,24 +172,26 @@ export async function* interactFrames(message: string, supervisor: Supervisor, l
 }
 
 async function* turnFrames(turnId: string, ledger: Ledger, isActive: () => boolean): AsyncGenerator<ControlFrame> {
-  let lastSeq = 0; const turn = ledger.turn(turnId); if (!turn) throw new Error("Turn not found");
+  let nextStreamSeq = 1; const turn = ledger.turn(turnId); if (!turn) throw new Error("Turn not found");
+  const drain=async function*():AsyncGenerator<ControlFrame>{const events=ledger.readStream(`turn:${turnId}`,nextStreamSeq);for(const event of events){nextStreamSeq=event.streamSeq+1;if(isTurnPresentationEvent(event.type))yield{type:"event",event:event as unknown as JsonValue};}};
   while (true) {
     if (!isActive()) return;
-    for (const event of ledger.readStream(`turn:${turnId}`)) { if (event.seq <= lastSeq) continue; lastSeq = event.seq; if (event.type.startsWith("message.") || event.type.startsWith("tool.") || event.type.startsWith("item.") || event.type.startsWith("turn.")) yield { type: "event", event: event as unknown as JsonValue }; }
+    yield* drain();
     const current = ledger.turn(turnId); if (!current) throw new Error("Turn disappeared");
-    if (current.status !== "in_progress") { const answer = ledger.turnItems(turnId).filter((item) => item.type === "assistant_message").at(-1);const answerText=String((answer?.data as {text?:unknown}|undefined)?.text??"");const streamed=answerText!==""&&ledger.readStream(`turn:${turnId}`).some((event)=>event.type==="message.assistant.completed"&&assistantEventText(event.data)===answerText);yield { type: "result", value: { turn: current, ...(answer&&!streamed ? { response: { content: answerText } } : {}) } as unknown as JsonValue }; return; }
+    if (current.status !== "in_progress") {yield* drain();const answer = ledger.turnItems(turnId).filter((item) => item.type === "assistant_message").at(-1);const answerText=String((answer?.data as {text?:unknown}|undefined)?.text??"");const streamed=answerText!==""&&ledger.readStream(`turn:${turnId}`).some((event)=>event.type==="message.assistant.completed"&&assistantEventText(event.data)===answerText);yield { type: "result", value: { turn:{...current,leaseToken:null}, ...(answer&&!streamed ? { response: { content: answerText } } : {}) } as unknown as JsonValue }; return; }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
 
 function snapshot(ledger: Ledger, supervisor: Supervisor): JsonValue {
-  return { seq: ledger.events().at(-1)?.seq ?? 0, threads: ledger.threads(), turns: ledger.turns(), goals: ledger.goals(), team: supervisor.teamList(), wakes: ledger.wakes(), actions: ledger.actions() } as unknown as JsonValue;
+  return { seq: ledger.events().at(-1)?.seq ?? 0, threads: ledger.threads(), turns: ledger.turns().map((turn)=>({...turn,leaseToken:null})), goals: ledger.goals(), team: supervisor.teamList(), wakes: ledger.wakes(), actions: ledger.actions() } as unknown as JsonValue;
 }
 function ceoStatus(ledger: Ledger, supervisor: Supervisor): JsonValue {
   return { roots: ledger.goals().filter((goal) => goal.parentId === null && goal.owner === "ceo"), team: supervisor.teamList(), pendingHuman: ledger.unreadMail("human"), recentCeoHandoffs: ledger.eventsSince(0, ["handoff.recorded"]).filter((event) => event.actor === "ceo").slice(-10) } as unknown as JsonValue;
 }
 function requiredGoal(ledger: Ledger, id: string) { const goal = ledger.goal(id); if (!goal) throw new Error("goal not found"); return goal; }
 function assistantEventText(value:JsonValue):string{if(!value||typeof value!=="object"||Array.isArray(value)||!value.message||typeof value.message!=="object"||Array.isArray(value.message))return"";const content=value.message.content;if(typeof content==="string")return content;if(!Array.isArray(content))return"";return content.map((item)=>item&&typeof item==="object"&&!Array.isArray(item)&&item.type==="text"&&typeof item.text==="string"?item.text:"").filter(Boolean).join("\n");}
+export function isTurnPresentationEvent(type:string):boolean{return type.startsWith("message.")||type.startsWith("tool.")||type.startsWith("item.")||type.startsWith("turn.")||type==="handoff.recorded"||type==="transcript.interrupted"||type==="transcript.completed";}
 function write(socket: Socket, frame: ControlFrame): void { socket.write(`${JSON.stringify(frame)}\n`); }
 
 export interface RuntimeSwap { runner: ProcessRunner | import("goah-ledger-contract").Runner; ledger?: SqliteLedger; profiles?: import("goah-ledger-contract").RunnerProfile[] }

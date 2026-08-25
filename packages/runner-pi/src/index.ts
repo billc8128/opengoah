@@ -42,7 +42,7 @@ export class PiRunnerAdapter {
       begin: () => {
         if (started) return;
         started = true;
-        void this.#run(request).then(resolveResult);
+        void this.#run(request).then(resolveResult,(error)=>resolveResult({outcome:"abnormal",reason:error instanceof Error?error.message:String(error)}));
       },
       result,
       terminate: async () => undefined,
@@ -130,8 +130,10 @@ export class ProcessRunner implements Runner {
     const settle = (value: RunnerCandidateResult) => { if (!settled) { settled = true; resolveResult(value); } };
 
     child.stderr?.on("data", (chunk: Buffer) => { stderr = `${stderr}${chunk.toString()}`.slice(-65_536); });
+    let protocolLineBytes=0;child.stdout?.on("data",(chunk:Buffer)=>{for(const byte of chunk){if(byte===10)protocolLineBytes=0;else if(++protocolLineBytes>1_000_000&&!protocolError){protocolError="runner protocol line exceeded 1 MB";void terminate();break;}}});
     const lines = createInterface({ input: child.stdout! });
     lines.on("line", (line) => {
+      if(protocolError)return;
       try {
         const message = JSON.parse(line) as WorkerMessage;
         if (message.type === "trace") request.emit(message.event);

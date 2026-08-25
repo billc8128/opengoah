@@ -20,3 +20,5 @@ test("RunnerRouter selects by opaque Runner Profile without knowing provider or 
   handle.begin();
   assert.deepEqual(await handle.result, { outcome: "abnormal", reason: "worker-runner" });
 });
+
+test("RunnerRouter resolves persisted Runner Profile ownership after restart",async()=>{let terminated=0;const runner:Runner={...taggedRunner("worker"),terminateProcess:async(pid)=>{assert.equal(pid,42);terminated+=1;}};const router=new RunnerRouter(new Map([["worker",runner]]));await router.terminateProcess(42,"worker");assert.equal(terminated,1);});

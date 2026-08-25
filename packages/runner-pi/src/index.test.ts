@@ -38,6 +38,8 @@ function driver(steps: Array<{ stop?: boolean; response?: AssistantResponse; han
   };
 }
 
+test("PiRunnerAdapter turns session initialization failure into an abnormal result",async()=>{const runner=new PiRunnerAdapter({createRunnerSession:async()=>{throw new Error("session init failed")}});const handle=runner.prepare({...requestBase,turn:{source:{kind:"human"}},context:{},now:()=>execution.startedAt,emit:()=>undefined});handle.begin();assert.deepEqual(await handle.result,{outcome:"abnormal",reason:"session init failed"});});
+
 test("runner policy is external and a multi-step driver can hand off", async () => {
   const now = "2026-08-18T00:00:00.000Z";
   const faux = driver([
@@ -173,6 +175,8 @@ test("ProcessRunner bounds steering acknowledgement waits", async () => {
   await assert.rejects(handle.steer!("ignored"), /in time/);
   await handle.terminate();
 });
+
+test("ProcessRunner kills an oversized protocol line",async()=>{const runner=new ProcessRunner({command:process.execPath,args:["-e","process.stdout.write('x'.repeat(1100000));setInterval(()=>{},1000)"],killGraceMs:10});const handle=runner.prepare({...requestBase,turn:{source:{kind:"human"}},context:{},now:()=>execution.startedAt,emit:()=>undefined});handle.begin();const result=await handle.result;assert.equal(result.outcome,"abnormal");if(result.outcome==="abnormal")assert.match(result.reason,/protocol line exceeded 1 MB/);});
 
 test("the Pi worker accepts a pre-0.11 daemon request without Turn metadata", async () => {
   const runner = new ProcessRunner({ command: process.execPath, args: [piWorkerPath()], env: { GOAH_PI_PROVIDER: "faux", GOAH_PI_MODEL: "faux-goah", GOAH_PI_FAUX_HANDOFF: JSON.stringify({ observations: ["legacy"], results: [], nextSteps: [] }) } });

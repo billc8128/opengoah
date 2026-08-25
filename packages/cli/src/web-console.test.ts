@@ -25,6 +25,8 @@ test("local Console serves assets, redacted snapshots, and CEO control through S
   const page = await fetch(metadata.url)
   assert.equal(page.status, 200)
   assert.match(await page.text(), /Goah Console/)
+  const forgedReferer=await fetch(`${metadata.url}api/snapshot`,{headers:{referer:metadata.url}})
+  assert.equal(forgedReferer.status,403)
 
   const ceoResponse = await fetch(`${metadata.url}api/ceo?token=${metadata.token}`, {
     method: "POST",

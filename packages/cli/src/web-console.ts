@@ -182,8 +182,7 @@ function authorized(request: IncomingMessage, url: URL, token: string): boolean 
   if (supplied === token) return true
   const cookieToken = request.headers.cookie?.split(";").map((value) => value.trim()).find((value) => value.startsWith("goah_console="))?.slice("goah_console=".length)
   if (cookieToken === token) return true
-  const referer = request.headers.referer
-  return Boolean(referer && referer.startsWith(`http://${request.headers.host}/`))
+  return false
 }
 
 function serveFile(response: ServerResponse, path: string, head: boolean): void {

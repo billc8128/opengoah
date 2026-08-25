@@ -59,7 +59,7 @@ Handoff remains an event-level control result rather than a current-state projec
 
 The only Ledger writer in the resident process. It validates Turn ownership and terminal state, Goal and Work Record revisions, leases, capabilities, atomic delegation, Action gates, scheduling, recovery, and Human priority. Human input starts or steers a Turn directly. Mail is reserved for asynchronous Agent communication and Human decisions. Wake is reserved for future Goal/system motion.
 
-Wake status is scheduling-only: `queued → claimed → consumed`, with `cancelled` as the pending terminal path. Claiming is blocked while any Human Turn is active. Once the Turn is durably created, Wake records its `turnId` and no longer participates in execution.
+Wake status is scheduling-only: `queued → claimed → consumed`, with `cancelled` as the pending terminal path. Goal motion carries an explicit `goalId + goalRevision`; coalescing and suppression never cross Goal targets. Claiming is blocked while any Human Turn is active. Once the Turn is durably created, Wake records its `turnId` and no longer participates in execution.
 
 ### Runner
 
@@ -96,7 +96,7 @@ Legacy narrative Handoffs and `memory.appended` facts remain readable. Schema v9
 - A Goal Turn without a current-Turn Work Record update is abnormal.
 - Failed/interrupted Turns do not consume undelivered asynchronous Mail.
 - Committed Work Record versions survive later Turn failure.
-- Sliding lease expiry fences and terminates stale Runner ownership before recovery.
+- Turn persists the opaque Runner Profile id so sliding-lease recovery can terminate stale Runner ownership after a Supervisor restart.
 - An interrupted external side effect becomes `unknown`, never silently retried.
 - Delegation and reassignment are idempotent atomic transactions.
 

@@ -9,7 +9,7 @@ export type TurnSourceKind = "human" | "goal" | "system";
 export type TurnItemType = "user_message" | "assistant_message" | "reasoning" | "tool_call" | "tool_result" | "plan" | "handoff";
 export type TurnItemStatus = "in_progress" | "completed" | "failed";
 export interface ThreadSnapshot { id: string; agent: string; parentThreadId: string | null; createdAt: string; updatedAt: string }
-export interface TurnSnapshot { id: string; threadId: string; source: TurnSourceKind; goalId: string | null; goalRevision: number | null; status: TurnStatus; attempt: number; error: JsonValue | null; startedAt: string; endedAt: string | null; leaseUntil: string | null; leaseToken: string | null; runnerPid: number | null }
+export interface TurnSnapshot { id: string; threadId: string; source: TurnSourceKind; goalId: string | null; goalRevision: number | null; status: TurnStatus; attempt: number; error: JsonValue | null; startedAt: string; endedAt: string | null; leaseUntil: string | null; leaseToken: string | null; runnerPid: number | null; runnerProfileId?: string }
 export interface TurnItemSnapshot { id: string; turnId: string; ordinal: number; type: TurnItemType; status: TurnItemStatus; data: JsonValue; createdAt: string; completedAt: string | null }
 export interface GoalSnapshot { id: string; parentId: string | null; objective: string; observationMethod: string | null; verificationMethod: string | null; owner: string; phase: GoalPhase; revision: number }
 export interface WorkRecordSnapshot {
@@ -36,13 +36,14 @@ export interface WorkRecordUpdateRequest {
   sourceWakeId?: string;
 }
 export interface WorkRecordDiff { goalId: string; fromRevision: number; toRevision: number; text: string }
-export interface ScheduleSnapshot { id: string; agent: string; nextWakeAt: string; reason: string; setBy: string }
-export interface WakeSnapshot { id: string; agent: string; triggerRef: string; status: WakeStatus; attempt: number; enqueuedSeq: number; claimedAt: string | null; consumedAt: string | null; turnId: string | null }
+export interface ScheduleSnapshot { id: string; agent: string; nextWakeAt: string; reason: string; setBy: string; goalId?: string; goalRevision?: number }
+export interface WakeSnapshot { id: string; agent: string; triggerRef: string; status: WakeStatus; attempt: number; enqueuedSeq: number; claimedAt: string | null; consumedAt: string | null; turnId: string | null; goalId?: string; goalRevision?: number }
 export type MailLevel = "fyi" | "decision" | "emergency";
 export interface MailSnapshot { id: string; to: string; from: string; level: MailLevel; body: JsonValue; readAt: string | null }
 export interface DelegationRequest {
   id: string;
   parentGoalId: string;
+  expectedParentRevision: number;
   childGoal: { id: string; objective: string; observationMethod: string; verificationMethod: string; owner: string };
   brief: JsonValue;
   reason: string;
@@ -52,6 +53,7 @@ export interface DelegationResult { delegationId: string; goal: GoalSnapshot; ma
 export interface ReassignmentRequest {
   id: string;
   goalId: string;
+  expectedGoalRevision: number;
   newOwner: string;
   brief: JsonValue;
   reason: string;
@@ -111,7 +113,7 @@ export interface AssistantResponse { content: string }
 export interface RunRequest { agent: string; execution: TurnSnapshot; sourceWake?: WakeSnapshot; turn: TurnContext; context: JsonValue; now(): string; emit(event: RunnerTraceEvent): void; rpc?(method: AgentCapability, params: JsonValue): Promise<JsonValue> }
 export type RunnerCandidateResult = { outcome: "response"; response: AssistantResponse } | { outcome: "handoff"; output: TurnOutput } | { outcome: "abnormal"; reason: string };
 export interface RunnerHandle { pid: number | null; begin(): void; result: Promise<RunnerCandidateResult>; steer?(message: string): Promise<void>; terminate(): Promise<void> }
-export interface Runner { readonly isolation: "process"; prepare(request: RunRequest): RunnerHandle; terminateProcess(pid: number): Promise<void> }
+export interface Runner { readonly isolation: "process"; prepare(request: RunRequest): RunnerHandle; terminateProcess(pid: number, runnerProfileId?: string): Promise<void> }
 
 export interface ConnectorCapability { kind: string; nativeIdempotency: boolean; query: "by_idempotency_key" | "by_external_ref" | "none"; automaticRetry: boolean; risk: "reversible" | "gated" | "irreversible" }
 export interface ConnectorManifest { contractVersion: typeof CONTRACT_VERSION; connector: string; dryRun: boolean; capabilities: ConnectorCapability[] }

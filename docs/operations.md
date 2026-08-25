@@ -25,7 +25,7 @@ Runner RPC is bidirectional but fenced by the active Turn lease. `sourceWake` is
 
 Thread inspection is read-only and does not resolve provider or connector secrets. `goah thread` restores a durable Thread containing multiple Turns and Items; `--continue` subscribes to its in-progress Turn. Inspectors address `threadId`, `turnId`, and `itemId` rather than treating a Wake stream as the conversation. Raw model requests and tool results remain sensitive and exports are redacted by default.
 
-Schemas 1–11 predate Turn-owned execution and are intentionally not migrated. Recreate the local Goah state before starting a build that uses schema 12; `goah doctor` reports this incompatibility directly.
+Schemas 1–12 predate Goal-targeted scheduling and persisted Runner recovery identity and are intentionally not migrated. Recreate the local Goah state before starting a build that uses schema 13; `goah doctor` reports this incompatibility directly.
 
 Set `GOAH_GUARD_REPO`, `GOAH_GUARD_STATE`, and optionally `GOAH_GUARD_TEST_COMMAND`. To use a real Pi worker, explicitly pass `GOAH_PI_MODEL`, `GOAH_PI_PROVIDER`, and the matching provider key. Without them the example uses the faux process worker and has no network dependency.
 
