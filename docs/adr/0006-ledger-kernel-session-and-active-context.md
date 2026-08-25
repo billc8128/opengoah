@@ -1,6 +1,6 @@
 # ADR 0006: Separate the ledger kernel, replayable sessions, and active context
 
-Status: accepted
+Status: accepted; Session/Wake identity superseded by ADR 0012
 
 ## Context
 
@@ -24,7 +24,7 @@ The layers remain source modules and public contract sections inside the existin
 
 ## Consequences
 
-- One wake is one Session stream by default. Cross-wake continuity uses durable Goal, Handoff, Mailbox, Action, and Active Context rather than silently resuming a provider thread.
+- Superseded by ADR 0012: a Session contains multiple Turns and Items; a Goal Wake may create one Turn. The retained invariant is that Goah Session history, not a provider thread, is the replay authority.
 - Raw deltas remain auditable while completed messages drive conversation replay.
 - Compaction changes only the active surface; original events remain immutable.
 - The SQLite schema moves to version 6 and migrates versions 1 through 5.

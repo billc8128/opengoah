@@ -1,7 +1,7 @@
 # Goah Goal-bound Agent Operating Model
 
-Status: implemented on `main`; operational validation pending
-Version: 1.0
+Status: v1.1 accepted; implementation in progress
+Version: 1.1
 Date: 2026-08-25
 
 This document defines the implemented architecture for making Goah feel like a normal interactive Agent without weakening its long-running, goal-oriented operating model.
@@ -10,7 +10,7 @@ This model supersedes the interaction and continuity model in [Goah CEO Agent Op
 
 ## 1. Decision summary
 
-Goah has two operating surfaces over one durable runtime:
+Goah has two operating surfaces over one Session/Turn/Item runtime:
 
 1. **Ordinary interaction** — CEO behaves like a normal coding Agent. Greetings, questions, inspections, and bounded work do not require a Goal, Work Record, organization, or Handoff.
 2. **Goal-bound operation** — a Turn explicitly bound to a Goal enters Goah's strict operating protocol: durable Work Record update, observation and verification methods, evidence, Goal Handoff, scheduling, and CEO-managed child Agents.
@@ -18,20 +18,17 @@ Goah has two operating surfaces over one durable runtime:
 The distinction is mechanical. A Turn's producer and its Goal binding are separate facts:
 
 ```ts
-interface TurnContext {
-  source:
-    | { kind: "human" }
-    | { kind: "goal_driver"; round: number }
-    | { kind: "system"; reason: string };
-
-  goalBinding?: {
-    goalId: string;
-    goalRevision: number;
-  };
+interface Turn {
+  id: string;
+  sessionId: string;
+  source: "human" | "goal" | "system";
+  goalId: string | null;
+  goalRevision: number | null;
+  status: "in_progress" | "completed" | "failed" | "interrupted";
 }
 ```
 
-A Human Turn may become Goal-bound when CEO translates a durable human objective into a successful Goal tool call. Its source remains `human`; authority provenance is never rewritten as model initiative.
+A Human Turn may become Goal-bound when CEO translates a durable human objective into a successful Goal tool call. Its source remains `human`; authority provenance is never rewritten as model initiative. Human, Goal, and Child work all use this same Turn agent loop.
 
 ## 2. Architectural invariants
 
@@ -79,7 +76,7 @@ The change is not a move from a Goal-oriented system to a task-oriented Agent. I
 | Observation method | Goal execution still defines how current reality is inspected | Separately reconstructed Turns must not silently change their source of truth |
 | Human root authority | Human still authorizes Root purpose and final completion | CEO may operationalize intent but cannot acquire authority by writing prose |
 | Atomic delegation and reassignment | Child Goal, ownership, communication, Work Record, and Wake commit together | A partially created organization is not recoverable or trustworthy |
-| Wake, sliding lease, fencing, and kill-before-recovery | Automatic Goal work continues through the same bounded ownership machinery | Process failure and duplicate ownership remain control-plane problems |
+| Sliding lease, fencing, and kill-before-recovery | Turn owns Runner execution; Wake only schedules a future Goal Turn | Process failure and duplicate ownership remain control-plane problems without making Wake an execution identity |
 | Evidence-backed Action state machine | `unknown`, query-based reconciliation, capability gates, and approval remain unchanged | Interaction improvements must not weaken external side-effect safety |
 | Runner-owned execution and configuration | Provider/model registry, authentication, compaction, and local execution remain inside each Runner | Different Runners have different execution and provider semantics |
 | Revisioned Goal lifecycle | Goal changes remain CAS-protected and phases remain mechanically validated | Stale Agents must not overwrite current purpose or lifecycle state |
@@ -152,12 +149,12 @@ This proposal does not introduce generic task Sub-agents, relax Child Goal obser
 
 ```text
 Human / TUI
-    │
+    │ turn.start / turn.steer / turn.interrupt
     ▼
 CEO Agent Session
-    ├── ordinary Human Turn ──────────────── normal response
-    │
-    └── Goal-bound Turn
+    └── Turn + Items
+          ├── ordinary Human Turn ───────── normal response
+          └── optional Goal binding
           │
           ├── Goal Service
           ├── Work Record FS
@@ -172,7 +169,7 @@ CEO Agent Session
               Runner Profile
                   │
                   ▼
-        Runner-owned Agent loop,
+        one Runner-owned Agent loop,
         provider/model registry and auth
 ```
 
@@ -182,12 +179,14 @@ CEO is the only normal Human-facing Agent. It is a capable ordinary Agent first 
 
 ### 6.1 Ordinary Human Turn
 
-An ordinary message begins without a Goal binding:
+An ordinary message creates a Turn directly, without Mail, Wake, or Goal binding:
 
 ```ts
 {
-  source: { kind: "human" },
-  goalBinding: undefined
+  source: "human",
+  goalId: null,
+  goalRevision: null,
+  status: "in_progress"
 }
 ```
 
@@ -260,12 +259,16 @@ GoalDriver creates:
 
 ```ts
 {
-  source: { kind: "goal_driver", round },
-  goalBinding: { goalId, goalRevision }
+  source: "goal",
+  goalId,
+  goalRevision,
+  status: "in_progress"
 }
 ```
 
 Human steering always has priority over automatic continuation.
+
+GoalDriver does not run a second execution protocol. It creates a Goal-bound Turn in the owner Agent's Session. Provider retry remains inside that Turn and never creates a Wake or another Turn.
 
 ## 7. Goal model
 
@@ -598,7 +601,7 @@ Failure produces a policy violation rather than a successful Goal Turn. Ordinary
 
 ## 12. Goal Handoff
 
-Detailed narrative lives in Work Record. Goal Handoff is a compact control-plane result:
+Detailed narrative lives in Work Record. Goal Handoff is a compact Turn Item and control-plane fact:
 
 ```ts
 interface GoalHandoff {
@@ -611,11 +614,10 @@ interface GoalHandoff {
     | "blocked"
     | "completion_proposed";
   evidence: number[];
-  nextWakeAt: string | null;
 }
 ```
 
-Agent supplies `outcome`, evidence, and optional next-Wake suggestion. Supervisor injects Goal and record revisions from current state, validates them, and atomically commits Handoff, Mail acknowledgement, outgoing Mail, scheduling, and Wake completion.
+Agent supplies `outcome` and evidence. Supervisor injects Goal and record revisions, validates them, and commits the Handoff Item. Asynchronous Mail and future scheduling remain separate tool operations. A source Wake links to the Turn and is consumed; it is not the execution identity.
 
 Ordinary unbound Turns return a normal assistant response and do not create Goal Handoff.
 
@@ -738,27 +740,16 @@ Hide by default:
 
 ## 18. Migration
 
-1. Add `verification_method` to Goal storage and contract.
-2. Add Work Record event vocabulary and projection.
-3. For each existing incomplete Goal, create revision-zero Work Record from:
-   - current Goal;
-   - latest valid Handoff;
-   - relevant agent memory;
-   - unresolved blocker and next Wake.
-4. Preserve old events without rewriting them.
-5. Treat the migrated observation method as the initial verification method only until CEO/Human confirms or replaces it.
-6. Stop writing Goal continuity into `memory.appended` after the new model is active.
-7. Continue reading legacy Handoffs and memory for audit and recovery.
-8. Remove the global requirement that ordinary Human Turns produce Handoff.
+This development release has no external users, so the Session/Turn/Item transition does not migrate local pre-v2 data. Development workspaces are recreated. Goal and Work Record semantics remain the target schema; only interaction/session storage is replaced.
 
 ## 19. Implementation sequence
 
-### Phase A — ordinary interaction
+### Phase A — unified runtime
 
-- add Turn source and optional Goal binding;
-- make ordinary CEO input Goal-free;
-- keep read-only Goal inspection unbound;
-- return normal assistant responses without Handoff.
+- add durable Session, Turn, and Turn Item projections;
+- move lease, fencing, cancellation, retry, and recovery to Turn;
+- start Human Turns directly and keep provider retry inside the Turn;
+- make Wake create future Goal Turns and reserve Mail for asynchronous communication.
 
 ### Phase B — Goal and Work Record contracts
 
@@ -786,6 +777,7 @@ Hide by default:
 - add record browsing commands;
 - suppress internal protocol noise in the default TUI;
 - expose complete audit detail through explicit commands.
+- rebuild and subscribe to complete Session/Turn/Item history by stable ids.
 
 ### Phase F — migration and documentation
 

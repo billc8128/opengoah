@@ -1,6 +1,6 @@
 # ADR 0011: Goal-bound Turns and the Work Record filesystem
 
-Status: accepted
+Status: accepted; interaction transport superseded by ADR 0012
 Date: 2026-08-25
 
 ## Context
@@ -25,7 +25,7 @@ Turn source and Goal binding are independent facts. A Human message begins unbou
 
 A successful `create_goal` or `work_on_goal` call attaches `{ goalId, goalRevision }` to the open Human Turn without changing its Human provenance. GoalDriver creates explicitly Goal-bound continuation Turns. Goal-bound Turns must finish through the strict Goal protocol.
 
-Human input owns the CEO foreground. A new Human interaction preempts an active automatic Goal wake; a follow-up during an active Human Turn is persisted as Mail and steered into the same Runner Session at the next safe agent-loop boundary. During retry backoff it is durably attached to the pending interaction and delivered in the next retry context instead of waiting in the TUI. Queued Human interactions have priority over queued automatic Goal work and preserve FIFO. Responses and Handoffs acknowledge only the explicit Mail IDs delivered to that Turn; abnormal or rejected execution leaves them unread for fenced redelivery.
+Human input owns the CEO foreground. ADR 0012 supersedes the original Mail/Wake transport from this paragraph: Human input now starts or steers a durable Turn directly, retry remains inside that Turn, and interruption addresses the Turn id. The invariant remains that an in-progress Human Turn prevents automatic Goal continuation from taking the foreground.
 
 ### Work Record filesystem
 

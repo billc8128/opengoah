@@ -3,7 +3,7 @@
 Status: current
 Date: 2026-08-25
 
-Goah is a Goal-oriented Agent Harness with a normal interactive CEO surface. The complete Goal operating model, schemas, authority matrix, migration, and acceptance tests are defined in [Goal-bound Agent Operating Model](./proposals/goal-bound-agent-operating-model.md). [ADR 0011](./adr/0011-goal-bound-turns-and-work-record-filesystem.md) records the transition from the previous Wake-first interaction model.
+Goah is a Goal-oriented Agent Harness with a normal interactive CEO surface. The complete Goal operating model is defined in [Goal-bound Agent Operating Model](./proposals/goal-bound-agent-operating-model.md). [ADR 0012](./adr/0012-unified-session-turn-item-runtime.md) defines the unified Session/Turn/Item runtime; [ADR 0011](./adr/0011-goal-bound-turns-and-work-record-filesystem.md) defines Goal binding and Work Records.
 
 ## Product boundary
 
@@ -11,21 +11,20 @@ Goah does not replace an Agent Runner. Runner owns its Agent loop, provider/mode
 
 ```text
 Human / TUI
-    │
+    │ turn.start / turn.steer / turn.interrupt
     ▼
-CEO Agent
-    ├── ordinary Turn ─────────────── response
-    └── Goal-bound Turn
-          ├── Goal lifecycle
-          ├── Work Record revision
-          ├── Child Goal organization
-          └── compact Goal Handoff
-                    │
-                    ▼
-          Supervisor + Ledger
-                    │
-                    ▼
-                  Runner
+CEO Session
+    └── Turn
+        ├── user / reasoning / assistant Items
+        ├── tool call / result Items
+        └── optional Goal binding
+              ├── Work Record revision
+              ├── Child Goal organization
+              └── compact Goal Handoff
+
+Goal ── Wake ──► Goal-bound Turn in the owner's Session
+
+Supervisor + Ledger ──► Runner-owned agent loop
 ```
 
 Ordinary interaction is not weakened Goal execution; it is an unbound surface. Once a Turn acquires a Goal binding, strict Goal invariants apply.
@@ -36,14 +35,17 @@ Ordinary interaction is not weakened Goal execution; it is an unbound surface. O
 
 Append-only typed events with global `seq`, per-stream `streamSeq`, atomic append, replay, and future-version refusal. It does not decide Goal or Runner policy.
 
-### Replayable Session
+### Replayable Session, Turn, and Item
 
-Normalized user, assistant, tool, request, compaction, completion, and interruption events reconstruct what the model saw and did. Open tool calls become explicit `unknown` outcomes after interruption.
+Session is a durable Goah transcript, not a provider thread. Turns are the sole execution identity. Normalized user, assistant, reasoning, tool, request, compaction, completion, and interruption Items reconstruct what the model saw and did. Open tool calls become explicit `unknown` outcomes after interruption.
 
 ### Execution modules
 
-Six current projections are rebuilt from events:
+Current projections are rebuilt from events:
 
+- Sessions
+- Turns
+- Turn Items
 - Goals
 - Work Records
 - Schedule
@@ -55,13 +57,11 @@ Handoff remains an event-level control result rather than a current-state projec
 
 ### Supervisor
 
-The only Ledger writer in the resident process. It validates authority, Goal and Work Record revisions, leases, capabilities, atomic delegation, Action gates, Mail acknowledgement, scheduling, recovery, and Human interaction priority. Human input preempts automatic CEO work; follow-ups steer an active Human Turn through an optional RunnerHandle channel while remaining durable Mail.
-
-Human interaction Mail is decision-level control input. Accepted steering is attached to the active Turn; a follow-up received between retry attempts is durably attached to the pending interaction and included in its next context. Rejected, timed-out, or abnormal interaction Mail is redelivered through a new fenced Wake without creating a second primary Mail record. Delivery uses bounded exponential backoff; exhaustion leaves the original Mail unread and creates one Human decision notification instead of hot-looping.
+The only Ledger writer in the resident process. It validates Turn ownership and terminal state, Goal and Work Record revisions, leases, capabilities, atomic delegation, Action gates, scheduling, recovery, and Human priority. Human input starts or steers a Turn directly. Mail is reserved for asynchronous Agent communication and Human decisions. Wake is reserved for future Goal/system motion.
 
 ### Runner
 
-Receives a `RunRequest` containing immutable Turn source, optional Goal binding, bounded context, Runner Profile, trace sink, and role-scoped RPC. It returns ordinary response, Goal Handoff, or abnormal result.
+Receives a `RunRequest` containing Turn identity, source, optional Goal binding, bounded context, Runner Profile, trace sink, and role-scoped RPC. It emits normalized Turn Items and runner terminal events. Supervisor validates policy and commits the Turn terminal status.
 
 ## Core invariants
 
@@ -72,7 +72,7 @@ Receives a `RunRequest` containing immutable Turn source, optional Goal binding,
 5. Human authorizes Root purpose and final completion.
 6. CEO controls Child Goal decomposition, ownership, verification, and completion.
 7. Goal Handoff points to Work Record revision instead of duplicating semantic prose.
-8. Human interaction Wakes outrank queued automatic Goal Wakes.
+8. An in-progress Human Turn prevents new automatic Goal Turns from starting.
 9. External Actions preserve evidence, approval, `unknown`, and query-based reconciliation semantics.
 10. Provider/model/auth semantics stay inside each Runner.
 
@@ -82,7 +82,7 @@ Receives a `RunRequest` containing immutable Turn source, optional Goal binding,
 Ledger events     exact facts and global history
 Goal projection   current objective, methods, owner, phase, revision
 Work Record FS    current semantic understanding plus version timeline
-Session events    exact model conversation and tool trace
+Session/Turn Items exact model conversation and tool trace
 Handoff           Goal/record revision, outcome, evidence, next motion
 ```
 
@@ -92,7 +92,7 @@ Legacy narrative Handoffs and `memory.appended` facts remain readable. Schema v9
 
 - A stale Goal or Work Record revision is rejected.
 - A Goal Turn without a current-Turn Work Record update is abnormal.
-- Abnormal execution does not acknowledge Mail.
+- Failed/interrupted Turns do not consume undelivered asynchronous Mail.
 - Committed Work Record versions survive later Turn failure.
 - Sliding lease expiry fences and terminates stale Runner ownership before recovery.
 - An interrupted external side effect becomes `unknown`, never silently retried.

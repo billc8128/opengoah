@@ -23,7 +23,7 @@ Goal operators can inspect and revise lifecycle state with `goal-show`, `goal-up
 
 Runner RPC is bidirectional but fenced by the active wake lease. Default child capabilities cover ledger search, mail, scheduling, actions, and advice acknowledgement. Only CEO profiles can write child goals; verifier/audit profiles can write audit advice.
 
-Session inspection is read-only and does not resolve provider or connector secrets. Use `goah session list`, `session show`, `session replay`, `context show`, and `events --stream` to inspect the exact wake stream. `session export` writes a redacted `goah.session-export.v1` bundle by default; use `--raw` only when the destination is trusted because raw model requests and tool results may contain sensitive data.
+Session inspection is read-only and does not resolve provider or connector secrets. `goah session` restores a durable Session containing multiple Turns and Items; `--continue` subscribes to its in-progress Turn. Inspectors address `sessionId`, `turnId`, and `itemId` rather than treating a Wake stream as the conversation. Raw model requests and tool results remain sensitive and exports are redacted by default.
 
 Set `GOAH_GUARD_REPO`, `GOAH_GUARD_STATE`, and optionally `GOAH_GUARD_TEST_COMMAND`. To use a real Pi worker, explicitly pass `GOAH_PI_MODEL`, `GOAH_PI_PROVIDER`, and the matching provider key. Without them the example uses the faux process worker and has no network dependency.
 
