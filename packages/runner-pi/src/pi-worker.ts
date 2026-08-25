@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
+import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { Agent, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxText, fauxToolCall, Type, type Message } from "@earendil-works/pi-ai";
@@ -21,7 +23,7 @@ export function compactMessages(messages: AgentMessage[], maxRecent = 8): AgentM
 }
 
 export async function runPiWorker(): Promise<void> {
-  await runProcessWorker(async (request, emit, rpc): Promise<RunnerResult> => {
+  await runProcessWorker(async (request, emit, rpc, controls): Promise<RunnerResult> => {
     const contextRecord = typeof request.context === "object" && request.context !== null && !Array.isArray(request.context) ? request.context : {};
     const legacyRequest = request.turn === undefined;
     const binding = request.turn?.goalBinding;
@@ -34,6 +36,7 @@ export async function runPiWorker(): Promise<void> {
     const configured = createPiModel(provider, modelId);
     const { models } = configured;
     const privateAuth = request.runtime && typeof request.runtime === "object" && !Array.isArray(request.runtime) ? request.runtime as Record<string, unknown> : {};
+    const protectedPaths = Array.isArray(privateAuth.protectedPaths) ? privateAuth.protectedPaths.filter((value): value is string => typeof value === "string").map((path) => resolve(path)) : [];
     const model = typeof privateAuth.baseUrl === "string" ? { ...configured.model, baseUrl: privateAuth.baseUrl } : configured.model;
     if (provider === "faux") {
       const faux = configured.faux!;
@@ -76,7 +79,7 @@ export async function runPiWorker(): Promise<void> {
       ? new Set(contextRecord.capabilities.filter((value): value is AgentCapability => typeof value === "string"))
       : undefined;
     if (contextRecord.workRecord && typeof contextRecord.workRecord === "object" && !Array.isArray(contextRecord.workRecord) && typeof contextRecord.workRecord.recordRevision === "number") goalState.recordRevision = contextRecord.workRecord.recordRevision;
-    const tools = createTools(root, (value) => { output = value; }, rpc, request.wake.startedAt, capabilities, goalState);
+    const tools = createTools(root, (value) => { output = value; }, rpc, request.wake.startedAt, capabilities, goalState, protectedPaths);
     const contextPolicy = resolveContextPolicy(model.contextWindow, process.env);
     emit({ type: "session.started", data: { formatVersion: SESSION_FORMAT_VERSION, provider, model: modelId, runner: "pi", contextWindowTokens: model.contextWindow, maxOutputTokensPerTurn: model.maxTokens } });
     const suppliedPrompt = typeof contextRecord.systemPrompt === "string" ? contextRecord.systemPrompt : undefined;
@@ -126,6 +129,12 @@ export async function runPiWorker(): Promise<void> {
       shouldStopAfterTurn: () => output !== null,
       toolExecution: "sequential",
     });
+    let acceptingSteering = true;
+    controls.onSteer((message) => {
+      if (!acceptingSteering) return false;
+      agent.steer({ role: "user", content: message, timestamp: Date.now() });
+      return true;
+    });
     agent.subscribe((event) => {
       if (event.type === "turn_start") emit({ type: "turn.started", data: {} });
       else if (event.type === "message_start" && event.message.role === "user") {
@@ -142,7 +151,16 @@ export async function runPiWorker(): Promise<void> {
       else if (event.type === "turn_end") emit({ type: "turn.completed", data: {} });
       else if (event.type === "agent_end") emit({ type: "session.completed", data: {} });
     });
-    await agent.prompt(`Wake started at: ${request.wake.startedAt ?? "unknown"}\n\n${activeContext}\n\nRunner root: ${root}. Manage local files directly when the goal requires them.`);
+    const abortAgent = () => agent.abort();
+    process.once("SIGTERM", abortAgent);
+    process.once("SIGINT", abortAgent);
+    try {
+      await agent.prompt(`Wake started at: ${request.wake.startedAt ?? "unknown"}\n\n${activeContext}\n\nRunner root: ${root}. Manage local files directly when the goal requires them.`);
+    } finally {
+      acceptingSteering = false;
+      process.off("SIGTERM", abortAgent);
+      process.off("SIGINT", abortAgent);
+    }
     if (!goalState.bound) return response ? { outcome: "response", response: { content: response } } : { outcome: "abnormal", reason: responseFailure || "Pi worker exited without a response" };
     if (responseFailure) return { outcome: "abnormal", reason: responseFailure };
     if (!output) return { outcome: "abnormal", reason: "Pi worker exited without a valid handoff" };
@@ -170,7 +188,7 @@ function sessionMessage(message: AgentMessage, id: string): SessionMessage {
   return { id, role, content: (value.content ?? value) as JsonValue, ...(value.usage !== undefined ? { usage: value.usage as JsonValue } : {}), ...(typeof value.stopReason === "string" ? { stopReason: value.stopReason } : {}), ...(typeof value.errorMessage === "string" ? { errorMessage: value.errorMessage } : {}) };
 }
 
-function createTools(root: string, handoff: (output: WakeOutput) => void, rpc: WorkerRpc, wakeStartedAt: string | null, capabilities: ReadonlySet<AgentCapability> | undefined, goalState: { bound: boolean; binding?: { goalId: string; goalRevision: number }; recordRevision?: number }): AgentTool<any>[] {
+function createTools(root: string, handoff: (output: WakeOutput) => void, rpc: WorkerRpc, wakeStartedAt: string | null, capabilities: ReadonlySet<AgentCapability> | undefined, goalState: { bound: boolean; binding?: { goalId: string; goalRevision: number }; recordRevision?: number }, protectedPaths: string[] = []): AgentTool<any>[] {
   const handoffTool: AgentTool<any> = {
     name: "handoff",
     label: "Handoff",
@@ -205,19 +223,19 @@ function createTools(root: string, handoff: (output: WakeOutput) => void, rpc: W
   const readTool: AgentTool<any> = {
     name: "read", label: "Read", description: "Read a UTF-8 file inside the current working directory.",
     parameters: Type.Object({ path: Type.String() }),
-    execute: async (_id, params) => { const input = params as { path: string }; return { content: [{ type: "text", text: await readFile(scoped(root, input.path), "utf8") }], details: {} }; },
+    execute: async (_id, params) => { const input = params as { path: string }; return { content: [{ type: "text", text: await readFile(scopedRunnerPath(root, input.path, protectedPaths), "utf8") }], details: {} }; },
   };
   const writeTool: AgentTool<any> = {
     name: "write", label: "Write", description: "Create or replace a UTF-8 file inside the current working directory.",
     parameters: Type.Object({ path: Type.String(), content: Type.String() }),
-    execute: async (_id, params) => { const input = params as { path: string; content: string }; const path = scoped(root, input.path); await mkdir(dirname(path), { recursive: true }); await writeFile(path, input.content); return { content: [{ type: "text", text: "written" }], details: {} }; },
+    execute: async (_id, params) => { const input = params as { path: string; content: string }; const path = scopedRunnerPath(root, input.path, protectedPaths); await mkdir(dirname(path), { recursive: true }); await writeFile(path, input.content); return { content: [{ type: "text", text: "written" }], details: {} }; },
   };
   const editTool: AgentTool<any> = {
     name: "edit", label: "Edit", description: "Replace one exact text occurrence in a UTF-8 file inside the current working directory.",
     parameters: Type.Object({ path: Type.String(), oldText: Type.String(), newText: Type.String() }),
     execute: async (_id, params) => {
       const input = params as { path: string; oldText: string; newText: string };
-      const path = scoped(root, input.path);
+      const path = scopedRunnerPath(root, input.path, protectedPaths);
       const source = await readFile(path, "utf8");
       const first = source.indexOf(input.oldText);
       if (first < 0) throw new Error("edit oldText was not found");
@@ -230,7 +248,7 @@ function createTools(root: string, handoff: (output: WakeOutput) => void, rpc: W
     name: "bash", label: "Bash",
     description: "Run a shell command inside the local runner root. The command's process group is killed after the timeout; declare timeoutMs explicitly for builds, installs, or deployment waits that need longer.",
     parameters: Type.Object({ command: Type.String(), timeoutMs: Type.Optional(Type.Number()) }), executionMode: "sequential",
-    execute: async (_id, params, signal) => runBashCommand(root, params as { command: string; timeoutMs?: number }, signal),
+    execute: async (_id, params, signal) => runBashCommand(root, params as { command: string; timeoutMs?: number }, signal, protectedPaths),
   };
   return [readTool, writeTool, editTool, bashTool, ...rpcTools, handoffTool];
 }
@@ -244,9 +262,12 @@ export function bashTimeoutMs(requested: number | undefined, env: NodeJS.Process
 }
 
 /** Shell execution with a process-group timeout: a hung command becomes a model-visible tool error instead of a stalled wake. */
-export async function runBashCommand(root: string, input: { command: string; timeoutMs?: number }, signal?: AbortSignal): Promise<{ content: Array<{ type: "text"; text: string }>; details: unknown; isError?: boolean }> {
+export async function runBashCommand(root: string, input: { command: string; timeoutMs?: number }, signal?: AbortSignal, protectedPaths: string[] = []): Promise<{ content: Array<{ type: "text"; text: string }>; details: unknown; isError?: boolean }> {
   const timeoutMs = bashTimeoutMs(input.timeoutMs);
-  const child = spawn("/bin/sh", ["-lc", input.command], { cwd: root, env: toolEnvironment(), detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+  const sandboxTemp = protectedPaths.length ? mkdtempSync(join(tmpdir(), "goah-bash-")) : null;
+  const launch = sandboxedShell(input.command, root, protectedPaths, sandboxTemp);
+  if (!launch) { if (sandboxTemp) rmSync(sandboxTemp, { recursive: true, force: true }); return { content: [{ type: "text", text: "Bash is unavailable because this platform cannot isolate Goah credential and control state." }], details: { command: input.command }, isError: true }; }
+  const child = spawn(launch.command, launch.args, { cwd: root, env: toolEnvironment(sandboxTemp), detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";
   let stderr = "";
   let timedOut = false;
@@ -266,10 +287,12 @@ export async function runBashCommand(root: string, input: { command: string; tim
     const result = await close;
     if (timedOut) return { content: [{ type: "text", text: `Command timed out after ${timeoutMs}ms and its process group was killed. Declare a larger timeoutMs for long-running commands.` }], details: { command: input.command, timedOutAfterMs: timeoutMs }, isError: true };
     if (signal?.aborted) return { content: [{ type: "text", text: "Command aborted with the wake." }], details: { command: input.command }, isError: true };
-    return { content: [{ type: "text", text: `${stdout}${stderr}`.slice(-50_000) }], details: { command: input.command, exitCode: result.code, signal: result.signal, ...(outputOverflow ? { outputOverflow: true } : {}) }, ...(outputOverflow ? { isError: true } : {}) };
+    const failed = outputOverflow || result.code !== 0 || result.signal !== null;
+    return { content: [{ type: "text", text: `${stdout}${stderr}`.slice(-50_000) }], details: { command: input.command, exitCode: result.code, signal: result.signal, ...(outputOverflow ? { outputOverflow: true } : {}) }, ...(failed ? { isError: true } : {}) };
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener("abort", onAbort);
+    if (sandboxTemp) rmSync(sandboxTemp, { recursive: true, force: true });
   }
 }
 
@@ -352,14 +375,46 @@ function createRpcTools(rpc: WorkerRpc, allowed?: ReadonlySet<AgentCapability>, 
   return definitions.filter(([capability]) => !allowed || allowed.has(capability)).map(([, value]) => value);
 }
 
-function scoped(root: string, path: string): string {
-  const resolved = resolve(root, path);
-  if (resolved !== root && !resolved.startsWith(`${root}${sep}`)) throw new Error("path escapes runner root");
+export function scopedRunnerPath(root: string, path: string, protectedPaths: string[] = []): string {
+  const resolved = canonicalPath(resolve(root, path));
+  const canonicalRoot = canonicalPath(root);
+  if (resolved !== canonicalRoot && !resolved.startsWith(`${canonicalRoot}${sep}`)) throw new Error("path escapes runner root");
+  if (protectedPaths.map(canonicalPath).some((privatePath) => resolved === privatePath || resolved.startsWith(`${privatePath}${sep}`))) throw new Error("path is protected Goah state");
   return resolved;
 }
-function toolEnvironment(): NodeJS.ProcessEnv {
+function sandboxedShell(command: string, root: string, protectedPaths: string[], sandboxTemp: string | null): { command: string; args: string[] } | null {
+  if (!protectedPaths.length) return { command: "/bin/sh", args: ["-lc", command] };
+  if (process.platform === "darwin" && existsSync("/usr/bin/sandbox-exec")) {
+    const workspacePaths = sandboxWorkspacePaths(canonicalPath(root), protectedPaths.map(canonicalPath));
+    const workspaceAncestors = pathAncestors(canonicalPath(root));
+    const readable = ["/System", "/usr", "/bin", "/sbin", "/Library", "/etc", "/dev", "/private/etc", "/private/var/select", ...workspacePaths, ...(sandboxTemp ? [sandboxTemp] : [])].map(canonicalPath);
+    const writable = [...workspacePaths, ...(sandboxTemp ? [sandboxTemp] : []), "/dev"].map(canonicalPath);
+    const rules = ["(version 1)", "(deny default)", "(import \"system.sb\")", "(allow process*)", "(allow signal)", "(allow network*)", "(allow sysctl-read)", "(allow mach-lookup)", ...workspaceAncestors.map((path) => `(allow file-read* (literal ${JSON.stringify(path)}))`), ...readable.map((path) => `(allow file-read* (subpath ${JSON.stringify(path)}))`), ...writable.map((path) => `(allow file-write* (subpath ${JSON.stringify(path)}))`)];
+    return { command: "/usr/bin/sandbox-exec", args: ["-p", rules.join(" "), "/bin/sh", "-lc", command] };
+  }
+  if (process.platform === "linux") {
+    const bwrap = ["/usr/bin/bwrap", "/bin/bwrap"].find(existsSync);
+    if (bwrap) return { command: bwrap, args: ["--bind", "/", "/", "--dev", "/dev", "--proc", "/proc", ...protectedPaths.flatMap((path) => ["--tmpfs", path]), "--chdir", root, "/bin/sh", "-lc", command] };
+  }
+  return null;
+}
+function sandboxWorkspacePaths(root: string, protectedPaths: string[]): string[] {
+  if (!protectedPaths.some((path) => path === root || path.startsWith(`${root}${sep}`))) return [root];
+  return readdirSync(root).map((name) => join(root, name)).filter((candidate) => !protectedPaths.some((path) => path === candidate || path.startsWith(`${candidate}${sep}`) || candidate.startsWith(`${path}${sep}`)));
+}
+function canonicalPath(path: string): string {
+  let current = resolve(path); const suffix: string[] = [];
+  while (!existsSync(current)) { const parent = dirname(current); if (parent === current) break; suffix.unshift(current.slice(parent.length + 1)); current = parent; }
+  return resolve(realpathSync(current), ...suffix);
+}
+function pathAncestors(path: string): string[] {
+  const values: string[] = []; let current = resolve(path);
+  while (true) { values.unshift(current); const parent = dirname(current); if (parent === current) return values; current = parent; }
+}
+function toolEnvironment(sandboxTemp: string | null = null): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const name of ["PATH", "HOME", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "SHELL", "TERM", "USER"]) if (process.env[name] !== undefined) env[name] = process.env[name];
+  if (sandboxTemp) { env.TMPDIR = sandboxTemp; env.TMP = sandboxTemp; env.TEMP = sandboxTemp; }
   return env;
 }
 function estimateMessages(messages: AgentMessage[]): number { return Math.ceil(JSON.stringify(messages).length / 4); }

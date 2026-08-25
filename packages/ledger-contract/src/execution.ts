@@ -88,9 +88,11 @@ export interface RunnerSetupInteraction {
 export interface RunnerManifest { id: string; name: string; description: string; commands?: Array<{ name: string; description: string }> }
 export interface RunnerDiagnostic { ok: boolean; name: string; detail: string }
 export interface RunnerCommandResult { config?: JsonValue; output: string[] }
+export interface RunnerSetupTransaction { commit(): Promise<void>; rollback(): Promise<void> }
 export interface RunnerConfigurator {
   describe(): RunnerManifest;
   setup(current: JsonValue | null, interaction: RunnerSetupInteraction): Promise<JsonValue | null>;
+  beginSetup?(current: JsonValue | null): Promise<RunnerSetupTransaction>;
   doctor(config: JsonValue, context?: { root: string }): Promise<RunnerDiagnostic[]>;
   summarize?(config: JsonValue): Array<{ label: string; value: string }>;
   runCommand?(command: string, args: string[], config: JsonValue, interaction: RunnerSetupInteraction): Promise<RunnerCommandResult>;
@@ -101,7 +103,7 @@ export interface TurnContext { source: TurnSource; goalBinding?: GoalBinding }
 export interface AssistantResponse { content: string }
 export interface RunRequest { wake: WakeSnapshot; turn: TurnContext; context: JsonValue; now(): string; emit(event: RunnerTraceEvent): void; rpc?(method: AgentCapability, params: JsonValue): Promise<JsonValue> }
 export type RunnerResult = { outcome: "response"; response: AssistantResponse } | { outcome: "handoff"; output: WakeOutput } | { outcome: "abnormal"; reason: string };
-export interface RunnerHandle { pid: number | null; begin(): void; result: Promise<RunnerResult>; terminate(): Promise<void> }
+export interface RunnerHandle { pid: number | null; begin(): void; result: Promise<RunnerResult>; steer?(message: string): Promise<void>; terminate(): Promise<void> }
 export interface Runner { readonly isolation: "process"; prepare(request: RunRequest): RunnerHandle; terminateProcess(pid: number): Promise<void> }
 
 export interface ConnectorCapability { kind: string; nativeIdempotency: boolean; query: "by_idempotency_key" | "by_external_ref" | "none"; automaticRetry: boolean; risk: "reversible" | "gated" | "irreversible" }
@@ -110,7 +112,7 @@ export interface ConnectorDispatchResult { status: "confirmed" | "failed"; exter
 export interface ConnectorQueryResult { status: "confirmed" | "failed" | "pending"; externalRef?: string }
 export interface ConnectorProcessSpec { manifest: ConnectorManifest; command: string; args: string[]; env?: Record<string, string>; timeoutMs?: number }
 export interface HandoffCommit { agent: string; wakeId: string; ts: string; output: WakeOutput; outgoingMail: MailSnapshot[]; schedule: ScheduleSnapshot | null }
-export interface InteractionCommit { agent: string; wakeId: string; mailId: string; ts: string; response: AssistantResponse }
+export interface InteractionCommit { agent: string; wakeId: string; mailId: string; mailIds?: string[]; ts: string; response: AssistantResponse }
 
 /** Standard execution modules composed on top of the generic event store. */
 export interface Ledger extends EventStore {

@@ -1,5 +1,7 @@
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import { dirname } from "node:path";
+import { chmod, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import type { JsonValue, RunnerCommandResult, RunnerConfigurator, RunnerDiagnostic, RunnerSetupInteraction } from "goah-ledger-contract";
 import { ProcessRunner, piWorkerPath, resolveEnvSpec } from "./index.js";
 import { JsonCredentialStore } from "./credential-store.js";
@@ -22,10 +24,28 @@ export interface PiRunnerConfig {
 export function piRunnerConfigurator(): RunnerConfigurator {
   return {
     describe: () => ({ id: "pi", name: "Pi", description: "Direct multi-provider model runner", commands: [{ name: "model", description: "List or switch provider/model" }, { name: "auth", description: "Inspect, login, or logout provider credentials" }] }),
+    beginSetup: beginPiSetup,
     setup: setupPi,
     doctor: doctorPi,
     summarize: summarizePi,
     runCommand: runPiCommand,
+  };
+}
+
+async function beginPiSetup(current: JsonValue | null) {
+  const before = current ? piConfig(current) : null;
+  const paths = [...new Set([defaultAuthFile(), before?.authFile].filter((value): value is string => Boolean(value)))];
+  const snapshots = await Promise.all(paths.map(async (path) => ({ path, content: await readFile(path).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? null : Promise.reject(error)) })));
+  let settled = false;
+  return {
+    commit: async () => { settled = true; },
+    rollback: async () => {
+      if (settled) return; settled = true;
+      for (const snapshot of snapshots) {
+        if (snapshot.content === null) await unlink(snapshot.path).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; });
+        else { await mkdir(dirname(snapshot.path), { recursive: true }); await writeFile(snapshot.path, snapshot.content, { mode: 0o600 }); await chmod(snapshot.path, 0o600); }
+      }
+    },
   };
 }
 
@@ -37,18 +57,20 @@ export function createPiProcessRunner(configValue: JsonValue, root: string): Pro
     command: process.execPath,
     args: [piWorkerPath()],
     cwd: root,
+    steering: true,
     envSpec: workerEnvironment(config),
     prepareRuntime: async () => {
       const resolved = resolveEnvSpec(privateEnv, { root });
       const configured = createPiModel(config.provider, config.model, resolved);
       const auth = await configured.models.getAuth(config.provider);
       if (!auth && config.provider !== "faux" && !["ollama", "lm-studio", "llama.cpp"].includes(config.provider)) throw new Error(`No credentials for ${config.provider}. Run \`goah auth login ${config.provider}\` or configure ${config.apiKeyEnv ?? defaultApiKeyEnv(config.provider)}.`);
-      return (auth?.auth ?? {}) as unknown as JsonValue;
+      const authFile = config.authFile ?? defaultAuthFile();
+      return { ...(auth?.auth ?? {}), protectedPaths: [...new Set([dirname(defaultAuthFile()), dirname(authFile)])] } as unknown as JsonValue;
     },
   });
 }
 
-async function setupPi(current: JsonValue | null, interaction: RunnerSetupInteraction): Promise<JsonValue | null> {
+async function setupPi(current: JsonValue | null, interaction: RunnerSetupInteraction, scope: "full" | "model" = "full"): Promise<JsonValue | null> {
   const legacyCredential = Boolean(current && typeof current === "object" && !Array.isArray(current) && typeof current.apiKeyEnv === "string" && !isShellIdentifier(current.apiKeyEnv));
   const before = current ? piConfig(current) : null;
   const providers = [...providerCatalog(), { id: "custom", name: "Custom endpoint", modelCount: 0, oauth: false, apiKey: true, local: false }, { id: "faux", name: "Offline demo", modelCount: 1, oauth: false, apiKey: false, local: true }];
@@ -59,15 +81,17 @@ async function setupPi(current: JsonValue | null, interaction: RunnerSetupIntera
   const catalog = ["ollama", "lm-studio", "llama.cpp"].includes(providerId) ? await discoverLocalModels(providerId) : modelCatalog(providerId);
   const selected = catalog.length ? await interaction.select({ title: "Choose a model", description: `${providerId} · search by model name or ID.`, progress: { current: 3, total: 5 }, choices: [...catalog.map((model) => ({ value: model.id, label: model.name, description: `${model.id} · ${Math.round(model.contextWindow / 1000)}k${model.reasoning ? " · reasoning" : ""}` })), { value: "__custom__", label: "Custom model…" }, { value: "__back__", label: "Back to providers" }] }) : "__custom__";
   if (!selected) return null;
-  if (selected === "__back__") return setupPi(current, interaction);
+  if (selected === "__back__") return setupPi(current, interaction, scope);
   const model = selected === "__custom__" ? await interaction.input({ title: "Model ID", description: `Enter the model identifier accepted by ${providerId}.`, prompt: "Model", progress: { current: 3, total: 5 }, ...(before?.provider === providerId ? { initial: before.model } : {}) }) : selected;
   if (!model) return null;
+  if (scope === "model" && before?.provider === providerId) return { ...before, model } as unknown as JsonValue;
   const config: PiRunnerConfig = { provider: providerId, model, thinking: before?.thinking ?? (providerId === "faux" ? "off" : "medium"), authFile: defaultAuthFile(), authMode: providerId === "faux" || ["ollama", "lm-studio", "llama.cpp"].includes(providerId) ? "local" : "unconfigured" };
 
   const descriptor = providers.find((entry) => entry.id === provider)!;
   if (!descriptor.local && provider !== "faux") {
-    const auth = await configureAuthentication(providerId, descriptor, config.authFile!, interaction, legacyCredential);
-    if (auth === "back") return setupPi(current, interaction);
+    const existing = scope === "model" ? await new JsonCredentialStore(config.authFile!).read(providerId) : null;
+    const auth = existing ? { authMode: existing.type === "oauth" ? "oauth" as const : "stored-key" as const } : await configureAuthentication(providerId, descriptor, config.authFile!, interaction, legacyCredential);
+    if (auth === "back") return setupPi(current, interaction, scope);
     Object.assign(config, auth);
   }
 
@@ -86,15 +110,15 @@ async function setupPi(current: JsonValue | null, interaction: RunnerSetupIntera
   return config as unknown as JsonValue;
 }
 
-async function configureAuthentication(provider: string, descriptor: { oauth: boolean; apiKey: boolean }, authFile: string, interaction: RunnerSetupInteraction, legacyCredential: boolean): Promise<Partial<PiRunnerConfig> | "back"> {
+async function configureAuthentication(provider: string, descriptor: { oauth: boolean; apiKey: boolean }, authFile: string, interaction: RunnerSetupInteraction, legacyCredential: boolean, allowLater = true, allowEnvironment = true): Promise<Partial<PiRunnerConfig> | "back"> {
   const store = new JsonCredentialStore(authFile);
   const existing = await store.read(provider);
   const choices = [
     ...(existing ? [{ value: "existing", label: "Use saved credentials", description: existing.type === "oauth" ? "OAuth session" : "Stored API key" }] : []),
     ...(descriptor.oauth ? [{ value: "oauth", label: "Sign in with OAuth", description: "Opens the provider login flow" }] : []),
     ...(descriptor.apiKey ? [{ value: "key", label: "Paste an API key", description: "Stored privately and masked while typing" }] : []),
-    { value: "env", label: "Use an environment variable", description: `Default: ${defaultApiKeyEnv(provider)}` },
-    { value: "later", label: "Configure later", description: "Save now; runs will remain blocked" },
+    ...(allowEnvironment ? [{ value: "env", label: "Use an environment variable", description: `Default: ${defaultApiKeyEnv(provider)}` }] : []),
+    ...(allowLater ? [{ value: "later", label: "Configure later", description: "Save now; runs will remain blocked" }] : []),
     { value: "back", label: "Back to providers" },
   ];
   const description = legacyCredential ? "A pasted key was found in the old environment-variable field. It will be removed from config; rotate that key, then authenticate again here." : "Choose how this runner should authenticate. Secrets never enter goah.config.json.";
@@ -144,28 +168,70 @@ function summarizePi(value: JsonValue): Array<{ label: string; value: string }> 
 async function runPiCommand(command: string, args: string[], value: JsonValue, interaction: RunnerSetupInteraction): Promise<RunnerCommandResult> {
   const config = piConfig(value);
   if (command === "model") {
-    if (!args.length || args[0] === "list") {
-      const provider = args[1] ?? config.provider;
-      return { output: modelCatalog(provider).map((model) => `${provider}/${model.id}`) };
+    if (!args.length) {
+      const selected = await setupPi(value, interaction, "model");
+      return selected === null ? { output: ["No change."] } : { config: selected, output: [`Pi target changed to ${piConfig(selected).provider}/${piConfig(selected).model}`] };
     }
-    const target = args[0]!;
+    if (args[0] === "list") {
+      const provider = args[1] ?? config.provider;
+      if (provider === "faux") return { output: [`faux/${config.provider === "faux" ? config.model : "faux-goah"}`] };
+      if (provider === config.provider && config.baseUrl && !providerCatalog().some((entry) => entry.id === provider)) return { output: [`${provider}/${config.model}`] };
+      const models = ["ollama", "lm-studio", "llama.cpp"].includes(provider) ? await discoverLocalModels(provider) : modelCatalog(provider);
+      return { output: models.map((model) => `${provider}/${model.id}`) };
+    }
+    const explicitProvider = args[0] === "use";
+    const target = explicitProvider ? args[1] : args[0];
+    if (!target) throw new Error("usage: goah model use PROVIDER/MODEL");
     const slash = target.indexOf("/");
-    const provider = slash > 0 && providerCatalog().some((entry) => entry.id === target.slice(0, slash)) ? target.slice(0, slash) : config.provider;
-    const model = provider === config.provider && slash < 0 ? target : target.slice(slash + 1);
-    createPiModel(provider, model, piEnvironment({ ...config, provider, model }));
-    return { config: { ...config, provider, model } as unknown as JsonValue, output: [`Pi target changed to ${provider}/${model}`] };
+    if (explicitProvider && slash <= 0) throw new Error("usage: goah model use PROVIDER/MODEL");
+    const provider = explicitProvider ? target.slice(0, slash) : slash > 0 && providerCatalog().some((entry) => entry.id === target.slice(0, slash)) ? target.slice(0, slash) : config.provider;
+    const model = explicitProvider || provider !== config.provider || slash >= 0 ? target.slice(slash + 1) : target;
+    const knownProvider = provider === "faux" || providerCatalog().some((entry) => entry.id === provider);
+    if (provider !== config.provider && !knownProvider) throw new Error(`Unknown provider: ${provider}. Use \`goah model\` to configure a custom endpoint.`);
+    const existing = provider === config.provider || provider === "faux" || ["ollama", "lm-studio", "llama.cpp"].includes(provider) ? undefined : await new JsonCredentialStore(config.authFile ?? defaultAuthFile()).read(provider);
+    const next: PiRunnerConfig = provider === config.provider
+      ? { ...config, model }
+      : { provider, model, thinking: config.thinking ?? (provider === "faux" ? "off" : "medium"), authFile: config.authFile ?? defaultAuthFile(), authMode: provider === "faux" || ["ollama", "lm-studio", "llama.cpp"].includes(provider) ? "local" : existing?.type === "oauth" ? "oauth" : existing ? "stored-key" : "unconfigured" };
+    createPiModel(provider, model, piEnvironment(next));
+    return { config: next as unknown as JsonValue, output: [`Pi target changed to ${provider}/${model}`] };
   }
   if (command === "auth") {
-    const action = args[0] ?? "status";
-    const provider = args[1] ?? config.provider;
     const store = new JsonCredentialStore(config.authFile ?? defaultAuthFile());
+    const catalog = providerCatalog();
+    if (!catalog.some((entry) => entry.id === config.provider)) catalog.unshift({ id: config.provider, name: config.provider === "faux" ? "Offline demo" : config.provider, oauth: false, apiKey: config.provider !== "faux", local: config.provider === "faux", modelCount: config.provider === "faux" ? 1 : 0 });
+    let action = args[0];
+    if (!action) action = await interaction.select({ title: "Authentication", description: "Credentials are stored by the Pi Runner, outside workspace config.", choices: [{ value: "login", label: "Add or sign in", description: "OAuth, API key, or environment variable" }, { value: "logout", label: "Sign out or remove", description: "Remove stored credentials" }, { value: "status", label: "View status", description: "Inspect configured providers" }] }) ?? "cancel";
+    if (action === "cancel") return { output: ["No change."] };
+    if (action === "add") action = "login";
+    if (action === "remove") action = "logout";
+    let provider = args[1];
+    if (!provider && (action === "login" || action === "logout")) {
+      const saved = new Set((await store.list()).map((item) => item.providerId));
+      const choices = catalog.filter((entry) => action === "login" ? !entry.local : saved.has(entry.id)).map((entry) => ({ value: entry.id, label: entry.name, description: `${entry.id}${saved.has(entry.id) ? " · signed in" : entry.oauth ? " · OAuth available" : " · API key"}` }));
+      if (!choices.length) return { output: ["No stored credentials."] };
+      provider = await interaction.select({ title: action === "login" ? "Sign in to a provider" : "Sign out of a provider", choices }) ?? undefined;
+      if (!provider) return { output: ["No change."] };
+    }
+    provider ??= config.provider;
+    const descriptor = catalog.find((item) => item.id === provider);
+    if (!descriptor) throw new Error(`Unknown provider: ${provider}`);
     if (action === "status" || action === "list") {
       const saved = new Set((await store.list()).map((item) => item.providerId));
-      const rows = providerCatalog().filter((item) => action === "list" || saved.has(item.id)).map((item) => `${saved.has(item.id) ? "✓" : "·"} ${item.id}${item.oauth ? " · OAuth" : ""}`);
-      return { output: rows.length ? rows : ["No stored OAuth credentials."] };
+      const rows = catalog.filter((item) => action === "list" || item.id === provider).map((item) => `${saved.has(item.id) || (item.id === config.provider && config.authMode === "environment") ? "✓" : "·"} ${item.id}${item.id === config.provider && config.authMode === "environment" ? ` · env:${config.apiKeyEnv ?? defaultApiKeyEnv(item.id)}` : item.oauth ? " · OAuth available" : ""}`);
+      return { output: rows.length ? rows : ["No configured credentials."] };
     }
-    if (action === "login") { await oauthLogin(provider, config.authFile ?? defaultAuthFile(), interaction); return { output: [`Signed in to ${provider}`] }; }
-    if (action === "logout") { await store.delete(provider); return { output: [`Signed out of ${provider}`] }; }
+    if (action === "login") {
+      if (descriptor.local) return { output: [`${provider} is local and does not require authentication.`] };
+      const auth = await configureAuthentication(provider, descriptor, config.authFile ?? defaultAuthFile(), interaction, false, false, provider === config.provider);
+      if (auth === "back") return { output: ["No change."] };
+      return { ...(provider === config.provider ? { config: { ...config, ...auth } as unknown as JsonValue } : {}), output: [`Authentication configured for ${provider}`] };
+    }
+    if (action === "logout") {
+      if (descriptor.local) return { output: [`${provider} is local and does not use stored credentials.`] };
+      if (provider === config.provider && config.authMode === "environment") return { output: [`${provider} uses ${config.apiKeyEnv ?? defaultApiKeyEnv(provider)} from your environment; unset it in your shell to sign out.`] };
+      await store.delete(provider);
+      return { ...(provider === config.provider ? { config: { ...config, authMode: "unconfigured", apiKeyEnv: undefined } as unknown as JsonValue } : {}), output: [`Removed stored credentials for ${provider}. Environment variables, if set, remain available to the provider.`] };
+    }
     throw new Error(`Unknown Pi auth command: ${action}`);
   }
   throw new Error(`Unknown Pi runner command: ${command}`);

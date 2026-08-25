@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { renderSetupHeader } from "./setup-wizard.js";
-import { renderWelcome, type WelcomeSnapshot } from "./welcome.js";
+import { GOAH_TERMINAL_MARK, renderWelcome, type WelcomeSnapshot } from "./welcome.js";
 import { stripAnsi } from "./tui-theme.js";
 
 test("setup header shows an explicit step and concise task title", () => {
@@ -11,10 +11,18 @@ test("setup header shows an explicit step and concise task title", () => {
   assert.match(rendered, /Choose a provider/);
 });
 
+test("scoped configuration surfaces have distinct identities", () => {
+  assert.match(stripAnsi(renderSetupHeader("Choose a model", "", undefined, "MODEL")), /GOAH\s+MODEL/);
+  assert.doesNotMatch(stripAnsi(renderSetupHeader("Choose a model", "", undefined, "MODEL")), /SETUP|\d\/\d/);
+  assert.match(stripAnsi(renderSetupHeader("Authentication", "", undefined, "AUTH")), /GOAH\s+AUTH/);
+});
+
 test("fresh-workspace welcome is compact and has no placeholder rows", () => {
   const snapshot: WelcomeSnapshot = { root: null, team: [], handoffs: [], conversation: [], runner: "pi", target: "zai/glm" };
   const rendered = renderWelcome(snapshot, false).join("\n");
-  assert.match(rendered, /Chat normally, or use \/goal/);
+  assert.match(rendered, /Chat normally · \/goal for durable work · \/help/);
+  assert.ok(GOAH_TERMINAL_MARK.some((line) => line.includes("████")));
+  assert.match(stripAnsi(rendered), /zai\/glm\s+· pi/);
   assert.doesNotMatch(rendered, /Agents:|Recent work:|Conversation:|  ·/);
 });
 

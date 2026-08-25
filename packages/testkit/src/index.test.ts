@@ -68,6 +68,108 @@ test("a Human Turn can create a Root Goal and become Goal-bound through tools", 
   ledger.close();
 });
 
+test("a Human interaction interrupts active automatic CEO work", async () => {
+  const clock = new SimulatedClock();
+  const ledger = createMemoryLedger({ clock });
+  const first = Promise.withResolvers<{ outcome: "abnormal"; reason: string }>();
+  let prepared = 0;
+  let terminated = false;
+  const runner: Runner = {
+    isolation: "process",
+    prepare: () => {
+      prepared += 1;
+      if (prepared === 1) return { pid: null, begin: () => undefined, result: first.promise, terminate: async () => { terminated = true; first.resolve({ outcome: "abnormal", reason: "interrupted by Human" }); } };
+      return { pid: null, begin: () => undefined, result: Promise.resolve({ outcome: "response" as const, response: { content: "你好" } }), terminate: async () => undefined };
+    },
+    terminateProcess: async () => undefined,
+  };
+  const supervisor = new Supervisor(ledger, runner, clock);
+  supervisor.createRootGoal("background Goal", "root");
+  supervisor.planWake("ceo", clock.now().toISOString(), "automatic review");
+  const automatic = supervisor.tick();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const accepted = await supervisor.interactWithCeoNow("你好");
+  assert.equal(terminated, true);
+  assert.equal((await automatic)?.status, "abnormal");
+  assert.equal((await supervisor.tick())?.status, "done");
+  assert.equal(ledger.eventsForWake(accepted.wake.id).some((event) => event.type === "interaction.completed"), true);
+  ledger.close();
+});
+
+test("a follow-up steers the active Human turn and both messages commit together", async () => {
+  const clock = new SimulatedClock();
+  const ledger = createMemoryLedger({ clock });
+  const response = Promise.withResolvers<{ outcome: "response"; response: { content: string } }>();
+  let steered = "";
+  const runner: Runner = {
+    isolation: "process",
+    prepare: () => ({
+      pid: null,
+      begin: () => undefined,
+      result: response.promise,
+      steer: async (message) => { steered = message; },
+      terminate: async () => undefined,
+    }),
+    terminateProcess: async () => undefined,
+  };
+  const supervisor = new Supervisor(ledger, runner, clock);
+  const original = supervisor.interactWithCeo("first request");
+  const running = supervisor.tick();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const followUp = await supervisor.steerCeo("correct the budget");
+  assert.equal(steered, "correct the budget");
+  assert.equal(followUp?.wake.id, original.wake.id);
+  assert.equal(await supervisor.tick(), null);
+  assert.equal(ledger.wakes().length, 1);
+  response.resolve({ outcome: "response", response: { content: "revised answer" } });
+  assert.equal((await running)?.status, "done");
+  assert.equal(ledger.unreadMail("ceo").length, 0);
+  const completed = ledger.eventsForWake(original.wake.id).find((event) => event.type === "interaction.completed")!;
+  assert.deepEqual((completed.data as { mailIds: string[] }).mailIds, [original.mail.id, followUp!.mail.id]);
+  ledger.close();
+});
+
+test("a rejected late steer is queued once and redelivered", async () => {
+  const clock = new SimulatedClock(); const ledger = createMemoryLedger({ clock });
+  const response = Promise.withResolvers<{ outcome: "response"; response: { content: string } }>();
+  const runner: Runner = {
+    isolation: "process",
+    prepare: () => ({ pid: null, begin: () => undefined, result: response.promise, steer: async () => { throw new Error("runner is no longer accepting steering messages"); }, terminate: async () => undefined }),
+    terminateProcess: async () => undefined,
+  };
+  const supervisor = new Supervisor(ledger, runner, clock);
+  const original = supervisor.interactWithCeo("first request"); const running = supervisor.tick();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const followUp = await supervisor.steerCeo("late correction");
+  assert.equal(followUp?.queued, true);
+  response.resolve({ outcome: "response", response: { content: "first answer" } });
+  assert.equal((await running)?.status, "done");
+  assert.equal(ledger.unreadMail("ceo").length, 1);
+  const completed = ledger.eventsForWake(original.wake.id).find((event) => event.type === "interaction.completed")!;
+  assert.deepEqual((completed.data as { mailIds: string[] }).mailIds, [original.mail.id]);
+  assert.equal((await supervisor.tick())?.status, "done");
+  assert.equal(ledger.unreadMail("ceo").length, 0);
+  assert.equal(ledger.wakes().length, 2);
+  ledger.close();
+});
+
+test("an abnormal Human interaction is redelivered from unread Mail", async () => {
+  const clock = new SimulatedClock(); const ledger = createMemoryLedger({ clock }); let prepared = 0;
+  const runner: Runner = {
+    isolation: "process",
+    prepare: () => ({ pid: null, begin: () => undefined, result: Promise.resolve(++prepared === 1 ? { outcome: "abnormal" as const, reason: "provider failed" } : { outcome: "response" as const, response: { content: "recovered" } }), terminate: async () => undefined }),
+    terminateProcess: async () => undefined,
+  };
+  const supervisor = new Supervisor(ledger, runner, clock);
+  supervisor.interactWithCeo("hello");
+  assert.equal((await supervisor.tick())?.status, "abnormal");
+  assert.equal(ledger.unreadMail("ceo").length, 1);
+  assert.equal((await supervisor.tick())?.status, "done");
+  assert.equal(ledger.unreadMail("ceo").length, 0);
+  assert.equal(ledger.wakes().length, 2);
+  ledger.close();
+});
+
 test("a Goal-bound Turn cannot hand off without updating its Work Record", async () => {
   const clock = new SimulatedClock();
   const ledger = createMemoryLedger({ clock });

@@ -8,13 +8,16 @@ import { createInterface, type Interface as ReadlineInterface } from "node:readl
 export function lineQueue(input: ReadlineInterface): ((prompt: string) => Promise<string>) & { close(): void } {
   const buffered: string[] = [];
   const waiters: Array<(line: string) => void> = [];
+  let ended = false;
   input.on("line", (line: string) => { const waiter = waiters.shift(); if (waiter) waiter(line); else buffered.push(line); });
+  input.on("close", () => { ended = true; for (const waiter of waiters.splice(0)) waiter(""); });
   const ask = (prompt: string): Promise<string> => {
     input.setPrompt(prompt);
     input.prompt();
     const { promise, resolve } = Promise.withResolvers<string>();
     const bufferedLine = buffered.shift();
     if (bufferedLine !== undefined) resolve(bufferedLine);
+    else if (ended) resolve("");
     else waiters.push(resolve);
     return promise;
   };

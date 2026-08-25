@@ -38,7 +38,7 @@ Implemented and tested today:
 - Runner-owned local execution: non-software goals need no Git, while coding agents can use ordinary Git and worktree commands through their skills
 - Real runner subprocess boundary with sliding lease renewal, process-group termination, optional runner-specific timeout, and stale-event rejection
 - Ordinary Human Turns return normal responses; Goal-bound Turns require a current Work Record revision and compact Goal Handoff
-- Mail acknowledged atomically with a valid response or Goal Handoff; abnormal wakes leave messages unread for redelivery
+- Mail acknowledged atomically with a valid response or Goal Handoff; abnormal Human interactions and rejected steering are redelivered from the same unread Mail
 - Injected clocks, schema v1→v8 migrations, indexed bounded queries, and a public ledger conformance suite
 - Optional mechanical metric evaluation (missing/stale/sustain/guardrails), a total-silence tripwire, trigger coalescing, FTS5 fact search, and generic evidence-backed actions; Goal itself has no required metric or target
 - Official Pi 0.84.2 worker binding with `read`, `write`, `edit`, and `bash` for every Agent plus model-view-only mid-turn compaction
@@ -113,9 +113,9 @@ goah goal-complete first-goal --reason "observation passed" --evidence <seq>
 goah status
 ```
 
-`goah` starts the resident Supervisor when necessary and attaches the interactive CEO. `/goal ...` revises the active root and invalidates its old observation method; `/observe ...` confirms the replacement through human authority. `goah start` remains the explicit daemon command and `goah wake <agent>` queues a manual wake. `goah daemon status|logs|restart|stop` manages the resident process.
+`goah` starts the resident Supervisor when necessary and attaches the interactive CEO. `/model` opens the scoped model picker; `/login` and `/logout` manage credentials without replaying onboarding; `/setup` opens returning-user settings with `model`, `auth`, and `runner` sections. Unknown slash commands fail locally and never wake the CEO. `/goal ...` revises the active root and invalidates its old observation method; `/observe ...` confirms the replacement through human authority. `goah start` remains the explicit daemon command and `goah wake <agent>` queues a manual wake. `goah daemon status|logs|restart|stop` manages the resident process.
 
-Goah Core knows only Runner Profiles. Each Runner owns its configuration semantics: the Pi Runner exposes Pi's built-in provider/model registry, OAuth, API-key environment references, custom endpoints, and local Ollama/LM Studio/llama.cpp targets. Use `goah runner setup [PROFILE]`, `goah runner profile assign AGENT PROFILE`, `goah auth ...`, and `goah model ...`. OAuth credentials stay in the Runner credential store; only the selected wake's resolved request credential crosses the private worker pipe, never Agent context or the Ledger. For an offline installation check, use `goah init --provider faux`.
+Goah Core knows only Runner Profiles. Each Runner owns its configuration semantics: the Pi Runner exposes Pi's built-in provider/model registry, OAuth, stored API keys, environment references, custom endpoints, and local Ollama/LM Studio/llama.cpp targets. `goah model` is the interactive picker, while `model list/use` remain scriptable; `goah login [PROVIDER]` is the friendly authentication entry and `goah auth ...` is the explicit credential-management surface. OAuth credentials stay in the Runner credential store; only the selected wake's resolved request credential crosses the private worker pipe, never Agent context or the Ledger. For an offline installation check, use `goah init --provider faux`.
 
 Inspect and export the replayable Session ledger without requiring provider credentials:
 
@@ -201,7 +201,7 @@ Read this before pointing goah at anything real.
 Mechanically enforced today:
 
 - No external side effects by default: a connector must declare a capability for an action's kind, and non-dry-run connectors additionally require an explicit supervisor opt-in. Anything undeclared is gated, fail-closed.
-- Runner and connector code executes in child processes with bounded environments. Connector secrets are explicitly scoped to that connector; runners never receive a ledger connection. Pi authentication is resolved before a wake starts; the worker receives only that request's scoped auth over its private process pipe, while Pi's Bash subprocess receives no provider API-key variables. Control state defaults to `~/.goah/state`, outside the runner root.
+- Runner and connector code executes in child processes with bounded environments. Connector secrets are explicitly scoped to that connector; runners never receive a ledger connection. Pi authentication is resolved before a wake starts; the worker receives only that request's scoped auth over its private process pipe. Read/write/edit reject Goah state paths, and Bash runs inside a platform sandbox that masks credential/control state; unsupported platforms fail the Bash tool closed. Control state defaults to `~/.goah/state`.
 - The events table is append-only (enforced by SQLite triggers); invalid wake/action state transitions are rejected by both the library and the database.
 - `request.prepared` records model-visible behavior but excludes provider API keys, authorization headers, abort handles, and transport-private objects.
 - Recovery Active Context includes only the abnormal reason, interrupted/compaction markers, and tool calls with unknown outcomes; raw deltas and request snapshots remain in the ledger for explicit inspection.

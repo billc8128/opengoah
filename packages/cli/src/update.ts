@@ -25,11 +25,11 @@ export async function runUpdate(options: { check?: boolean; dryRun?: boolean; ta
   if (current === target) { console.log(`Goah ${current} is already up to date.`); return; }
   const globalPrefix = (await capture("npm", ["prefix", "--global"])).trim();
   const plan = planNpmUpdate(packageRoot(), globalPrefix, target);
-  console.log(`Goah ${current} → ${target}`);
-  if (options.check) return;
-  console.log(`${options.dryRun ? "Would run" : "Running"}: ${plan.command} ${plan.args.join(" ")}`);
+  if (options.check) { console.log(`Goah ${current} → ${target} is available.`); return; }
+  if (!options.dryRun) console.log(`Updating Goah ${current} → ${target}…`);
+  else console.log(`Would run: ${plan.command} ${plan.args.join(" ")}`);
   if (options.dryRun) return;
-  await inherit(plan.command, plan.args);
+  await runQuiet(plan.command, [...plan.args, "--no-fund", "--no-audit", "--loglevel=error"]);
   const updated = installedVersion();
   if (updated !== target) throw new Error(`npm completed but the active installation reports ${updated}, expected ${target}`);
   console.log(`Updated Goah to ${updated}. The next goah launch will restart the resident daemon automatically.`);
@@ -46,10 +46,13 @@ function capture(command: string, args: string[]): Promise<string> {
     child.once("close", (code) => code === 0 ? resolveOutput(stdout) : reject(new Error(stderr.trim() || `${command} exited ${code}`)));
   });
 }
-function inherit(command: string, args: string[]): Promise<void> {
+export function runQuiet(command: string, args: string[]): Promise<void> {
   return new Promise((resolveRun, reject) => {
-    const child = spawn(command, args, { stdio: "inherit" });
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = ""; let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
     child.once("error", reject);
-    child.once("close", (code) => code === 0 ? resolveRun() : reject(new Error(`${command} exited ${code}`)));
+    child.once("close", (code) => code === 0 ? resolveRun() : reject(new Error(stderr.trim() || stdout.trim() || `${command} exited ${code}`)));
   });
 }

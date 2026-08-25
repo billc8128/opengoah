@@ -24,6 +24,14 @@ export interface WelcomeSnapshot {
 export const WELCOME_TEAM_SLOTS = 3;
 export const WELCOME_HANDOFF_SLOTS = 2;
 export const WELCOME_CONVERSATION_SLOTS = 4;
+export const GOAH_TERMINAL_MARK = [
+  "        ▄▄",
+  "      ▄▀▀  █▄",
+  "   ▄▄██▀█▀▀ █",
+  "  █▀ █ ████ █ ▄█",
+  "   ▀▀██▄█▀▄█▀▀▀",
+  "      ▀▄▄▄▀▀",
+];
 
 interface GoalRow { id: string; objective: string; phase: string; parent_id: string | null; owner: string }
 interface HandoffRow { actor: string; data: string }
@@ -56,8 +64,8 @@ export function welcomeSnapshot(stateDir: string, runner: RunnerDisplay): Welcom
 
 /** Render only meaningful state; empty workspaces stay compact. */
 export function renderWelcome(snapshot: WelcomeSnapshot, hasHistory: boolean): string[] {
-  const lines = ["", `  ${tuiTheme.strong(hasHistory ? "Welcome back." : "Ready when you are.")}`];
-  if (!snapshot.root) lines.push(`  ${tuiTheme.muted("Chat normally, or use /goal for durable work.")}`);
+  const lines = ["", ...GOAH_TERMINAL_MARK.map((line) => tuiTheme.accent(line)), "", `  ${tuiTheme.strong(hasHistory ? "Welcome back." : "Ready when you are.")}`, `  ${tuiTheme.accent(snapshot.target)} ${tuiTheme.muted(`· ${snapshot.runner}`)}`];
+  if (!snapshot.root) lines.push(`  ${tuiTheme.muted("Chat normally · /goal for durable work · /help")}`);
   if (snapshot.team.length) lines.push(`  ${tuiTheme.muted(`${snapshot.team.length} Goal Agent${snapshot.team.length === 1 ? "" : "s"} in the organization`)}`);
   lines.push("");
   return lines;

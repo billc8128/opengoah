@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AssistantResponse, RunRequest, WakeSnapshot, WakeOutput } from "goah-ledger-contract";
 import { PiRunnerAdapter, ProcessRunner, piWorkerPath, type PiDriver } from "./index.js";
-import { assistantResponseText, bashTimeoutMs, compactMessages, compactMessagesToTokenBudget, resolveContextPolicy, runBashCommand, snapshotModelConfig, validateNextWakeAt } from "./pi-worker.js";
+import { assistantResponseText, bashTimeoutMs, compactMessages, compactMessagesToTokenBudget, resolveContextPolicy, runBashCommand, scopedRunnerPath, snapshotModelConfig, validateNextWakeAt } from "./pi-worker.js";
 import { createPiModel, modelCatalog, providerCatalog } from "./model-provider.js";
 
 const wake: WakeSnapshot = { id: "w", agent: "a", triggerRef: "t", status: "running", leaseUntil: "2026-08-18T00:01:00.000Z", attempt: 1, startedAt: "2026-08-18T00:00:00.000Z", endedAt: null, enqueuedSeq: 1, leaseToken: "lease", runnerPid: null };
@@ -72,6 +76,18 @@ test("bash commands are killed by process-group timeout and become visible tool 
   assert.match(fast.content[0]?.text ?? "", /ok/);
 });
 
+test("runner tools cannot read protected Goah state", async () => {
+  const root = mkdtempSync(join(tmpdir(), "goah-protected-root-")); const state = join(root, ".goah"); mkdirSync(state);
+  const auth = join(state, "auth.json"); writeFileSync(auth, "private-secret");
+  assert.throws(() => scopedRunnerPath(root, auth, [state]), /protected Goah state/);
+  const result = await runBashCommand(root, { command: `cat ${JSON.stringify(auth)}`, timeoutMs: 5_000 }, undefined, [state]);
+  assert.equal(result.isError, true);
+  assert.doesNotMatch(result.content[0]?.text ?? "", /private-secret/);
+  const safe = await runBashCommand(root, { command: "printf ok", timeoutMs: 5_000 }, undefined, [state]);
+  assert.notEqual(safe.isError, true);
+  assert.equal(safe.content[0]?.text, "ok");
+});
+
 test("stopping without handoff is abnormal", async () => {
   const handle = new PiRunnerAdapter(driver([{ stop: true }])).prepare({
     wake, turn: goalTurn, context: {},
@@ -93,6 +109,30 @@ test("ProcessRunner may opt into its own timeout policy", async () => {
   const result = await handle.result;
   assert.equal(result.outcome, "abnormal");
   assert.throws(() => process.kill(handle.pid!, 0));
+});
+
+test("ProcessRunner forwards steering messages over the live worker protocol", async () => {
+  const runner = new ProcessRunner({ command: process.execPath, args: [fileURLToPath(new URL("./steering-worker.test-fixture.js", import.meta.url))], steering: true });
+  const handle = runner.prepare({ wake, turn: { source: { kind: "human" } }, context: {}, now: () => new Date().toISOString(), emit: () => undefined });
+  handle.begin();
+  await handle.steer!("correct the budget");
+  assert.deepEqual(await handle.result, { outcome: "response", response: { content: "correct the budget" } });
+});
+
+test("ProcessRunner rejects steering that the worker no longer accepts", async () => {
+  const runner = new ProcessRunner({ command: process.execPath, args: [fileURLToPath(new URL("./steering-reject.test-fixture.js", import.meta.url))], steering: true });
+  const handle = runner.prepare({ wake, turn: { source: { kind: "human" } }, context: {}, now: () => new Date().toISOString(), emit: () => undefined });
+  handle.begin();
+  await assert.rejects(handle.steer!("too late"), /no longer accepting/);
+  assert.deepEqual(await handle.result, { outcome: "response", response: { content: "finished" } });
+});
+
+test("ProcessRunner bounds steering acknowledgement waits", async () => {
+  const runner = new ProcessRunner({ command: process.execPath, args: [fileURLToPath(new URL("./steering-no-ack.test-fixture.js", import.meta.url))], steering: true, steerAckTimeoutMs: 50, killGraceMs: 25 });
+  const handle = runner.prepare({ wake, turn: { source: { kind: "human" } }, context: {}, now: () => new Date().toISOString(), emit: () => undefined });
+  handle.begin();
+  await assert.rejects(handle.steer!("ignored"), /in time/);
+  await handle.terminate();
 });
 
 test("the Pi worker accepts a pre-0.11 daemon request without Turn metadata", async () => {

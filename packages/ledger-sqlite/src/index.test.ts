@@ -196,6 +196,18 @@ test("ordinary interaction records a response and acknowledges only its Human me
   ledger.close();
 });
 
+test("one interaction atomically acknowledges steering messages", () => {
+  const ledger = new SqliteLedger(":memory:", { clock: new FixedClock() });
+  ledger.enqueueWake({ ...wake("turn", "ceo"), triggerRef: "interaction:primary" }, "supervisor");
+  const leased = ledger.claimNextWake("2030-01-01T00:00:00.000Z", "2030-01-01T00:01:00.000Z", "lease")!;
+  ledger.markWakeRunning(leased.id, "2030-01-01T00:00:00.000Z", "lease");
+  for (const id of ["primary", "steer"]) ledger.putMail({ id, to: "ceo", from: "human", level: "fyi", body: { message: id }, readAt: null }, "human", "turn");
+  const event = ledger.commitInteraction({ agent: "ceo", wakeId: "turn", mailId: "primary", mailIds: ["primary", "steer"], ts: "2030-01-01T00:00:01.000Z", response: { content: "done" } });
+  assert.deepEqual((event.data as { mailIds: string[] }).mailIds, ["primary", "steer"]);
+  assert.equal(ledger.unreadMail("ceo").length, 0);
+  ledger.close();
+});
+
 test("injected clock is authoritative and newer schemas are rejected", () => {
   const clock = new FixedClock("2020-01-01T00:00:00.000Z");
   const ledger = new SqliteLedger(":memory:", { clock });

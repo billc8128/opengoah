@@ -55,7 +55,9 @@ Handoff remains an event-level control result rather than a current-state projec
 
 ### Supervisor
 
-The only Ledger writer in the resident process. It validates authority, Goal and Work Record revisions, leases, capabilities, atomic delegation, Action gates, Mail acknowledgement, scheduling, recovery, and Human interaction priority.
+The only Ledger writer in the resident process. It validates authority, Goal and Work Record revisions, leases, capabilities, atomic delegation, Action gates, Mail acknowledgement, scheduling, recovery, and Human interaction priority. Human input preempts automatic CEO work; follow-ups steer an active Human Turn through an optional RunnerHandle channel while remaining durable Mail.
+
+Human interaction Mail is decision-level control input. Accepted steering is attached to the active Turn; rejected, timed-out, or abnormal interaction Mail is redelivered through a new fenced Wake without creating a second Mail record.
 
 ### Runner
 

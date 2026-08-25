@@ -12,12 +12,14 @@ export type ControlRequest =
   | { op: "ping" }
   | { op: "status" }
   | { op: "interact"; message: string }
+  | { op: "interaction.attach"; wakeId: string }
   | { op: "goal.start"; objective: string; id?: string }
   | { op: "goal.update"; id: string; objective?: string; observationMethod?: string | null; verificationMethod?: string | null; owner?: string }
   | { op: "goal.observe"; id: string; observationMethod: string }
   | { op: "goal.transition"; id: string; phase: "paused" | "active" }
   | { op: "goal.complete"; id: string; reason: string; evidence: number[] }
   | { op: "ceo.send"; message: string }
+  | { op: "ceo.steer"; message: string }
   | { op: "ceo.status" }
   | { op: "ceo.inbox" }
   | { op: "work.records" }
@@ -118,6 +120,7 @@ async function serve(socket: Socket, supervisor: Supervisor, ledger: Ledger, rel
 
 async function dispatch(request: ControlRequest, socket: Socket, supervisor: Supervisor, ledger: Ledger, reloadRuntime?: (configPath: string) => Promise<RuntimeSwap | undefined>, stop?: () => void): Promise<void> {
   if (request.op === "interact") { await interact(request.message, socket, supervisor, ledger); return; }
+  if (request.op === "interaction.attach") { for await (const frame of interactionWakeFrames(request.wakeId, ledger, () => !socket.destroyed)) write(socket, frame); socket.end(); return; }
   let value: unknown;
   if (request.op === "daemon.stop") {
     value = { stopping: true };
@@ -135,6 +138,11 @@ async function dispatch(request: ControlRequest, socket: Socket, supervisor: Sup
   else if (request.op === "goal.transition") value = supervisor.transitionGoal(request.id, request.phase, "human");
   else if (request.op === "goal.complete") value = supervisor.completeGoal({ goalId: request.id, revision: requiredGoal(ledger, request.id).revision, reason: request.reason, evidence: request.evidence }, "human");
   else if (request.op === "ceo.send") value = supervisor.sendToCeo({ message: request.message });
+  else if (request.op === "ceo.steer") {
+    const steered = await supervisor.steerCeo(request.message);
+    if (!steered) throw new Error("the current Human turn is no longer accepting steering messages");
+    value = steered;
+  }
   else if (request.op === "ceo.status") value = ceoStatus(ledger, supervisor);
   else if (request.op === "ceo.inbox") value = ledger.unreadMail("human");
   else if (request.op === "work.records") value = ledger.workRecords();
@@ -157,17 +165,23 @@ async function interact(message: string, socket: Socket, supervisor: Supervisor,
 /** Shared CEO interaction stream used by the interactive shell and the web Console. */
 export async function* interactFrames(message: string, supervisor: Supervisor, ledger: Ledger, isActive: () => boolean = () => true): AsyncGenerator<ControlFrame> {
   if (!message.trim()) throw new Error("message is required");
-  const accepted = supervisor.interactWithCeo(message);
+  const accepted = await supervisor.interactWithCeoNow(message);
   yield { type: "accepted", wakeId: accepted.wake.id, value: accepted as unknown as JsonValue };
-  let lastSeq = 0;
+  yield* interactionWakeFrames(accepted.wake.id, ledger, isActive, accepted.streamAfterSeq ?? 0);
+}
+
+async function* interactionWakeFrames(wakeId: string, ledger: Ledger, isActive: () => boolean, afterSeq = 0): AsyncGenerator<ControlFrame> {
+  const target = ledger.wake(wakeId);
+  if (!target || !interactionMailIdFromTrigger(target.triggerRef)) throw new Error("interaction wake not found");
+  let lastSeq = afterSeq;
   while (true) {
     if (!isActive()) return;
-    for (const event of ledger.eventsForWake(accepted.wake.id)) {
+    for (const event of ledger.eventsForWake(wakeId)) {
       if (event.seq <= lastSeq) continue;
       lastSeq = event.seq;
       if (event.type === "message.assistant.delta" || event.type.startsWith("tool.") || event.type === "handoff.recorded" || event.type.startsWith("wake.")) yield { type: "event", event: event as unknown as JsonValue };
     }
-    const wake = ledger.wake(accepted.wake.id);
+    const wake = ledger.wake(wakeId);
     if (wake && ["done", "abnormal", "merge_blocked"].includes(wake.status)) {
       const interaction = ledger.eventsForWake(wake.id).findLast((event) => event.type === "interaction.completed");
       yield { type: "result", value: { wake, ...(interaction ? { response: (interaction.data as { response?: JsonValue }).response ?? null } : { handoff: ledger.lastEvent("ceo", "handoff.recorded") }) } as unknown as JsonValue };
@@ -176,6 +190,8 @@ export async function* interactFrames(message: string, supervisor: Supervisor, l
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
+
+function interactionMailIdFromTrigger(triggerRef: string): string | null { return triggerRef.startsWith("interaction:") ? triggerRef.slice("interaction:".length).split(":redelivery:", 1)[0]! : null; }
 
 function snapshot(ledger: Ledger, supervisor: Supervisor): JsonValue {
   return { seq: ledger.events().at(-1)?.seq ?? 0, goals: ledger.goals(), team: supervisor.teamList(), wakes: ledger.wakes(), actions: ledger.actions() } as unknown as JsonValue;

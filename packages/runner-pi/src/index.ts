@@ -80,6 +80,9 @@ export interface ProcessRunnerOptions {
   /** Unresolved env spec (may contain `env:NAME` references); resolved at every spawn. */
   envSpec?: Record<string, string> | undefined;
   inheritEnv?: string[];
+  /** Worker implements the live steering control message. */
+  steering?: boolean;
+  steerAckTimeoutMs?: number;
   killGraceMs?: number;
   timeoutMs?: number;
   /** Resolve private per-wake runtime material (for example scoped model auth) before the worker starts. Never enters RunRequest context or Ledger events. */
@@ -93,10 +96,12 @@ type WorkerRequest = Omit<RunRequest, "now" | "emit" | "rpc" | "turn"> & { turn?
 type WorkerMessage =
   | { type: "trace"; event: { type: string; data: JsonValue } }
   | { type: "rpc_request"; id: string; method: AgentCapability; params: JsonValue }
+  | { type: "steer_ack"; id: string; accepted: boolean }
   | { type: "result"; result: RunnerResult };
 type ParentMessage =
   | { type: "start"; request: WorkerRequest }
-  | { type: "rpc_response"; id: string; result?: JsonValue; error?: string };
+  | { type: "rpc_response"; id: string; result?: JsonValue; error?: string }
+  | { type: "steer"; id: string; message: string };
 
 /** Real process boundary. The child stays idle until begin() sends its request. */
 export class ProcessRunner implements Runner {
@@ -117,7 +122,10 @@ export class ProcessRunner implements Runner {
     let stderr = "";
     let timer: NodeJS.Timeout | undefined;
     let settled = false;
+    let resolveStartReady!: () => void;
+    const startReady = new Promise<void>((resolve) => { resolveStartReady = resolve; });
     let resolveResult!: (result: RunnerResult) => void;
+    const pendingSteering = new Map<string, { resolve(): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
     const result = new Promise<RunnerResult>((resolve) => { resolveResult = resolve; });
     const settle = (value: RunnerResult) => { if (!settled) { settled = true; resolveResult(value); } };
 
@@ -127,6 +135,10 @@ export class ProcessRunner implements Runner {
       try {
         const message = JSON.parse(line) as WorkerMessage;
         if (message.type === "trace") request.emit(message.event);
+        else if (message.type === "steer_ack") {
+          const pending = pendingSteering.get(message.id);
+          if (pending) { pendingSteering.delete(message.id); clearTimeout(pending.timer); if (message.accepted) pending.resolve(); else pending.reject(new Error("runner is no longer accepting steering messages")); }
+        }
         else if (message.type === "rpc_request") {
           void Promise.resolve(request.rpc?.(message.method, message.params) ?? Promise.reject(new Error("runner RPC is unavailable")))
             .then((result) => child.stdin?.write(`${JSON.stringify({ type: "rpc_response", id: message.id, result } satisfies ParentMessage)}\n`))
@@ -137,8 +149,11 @@ export class ProcessRunner implements Runner {
         void terminate();
       }
     });
-    child.once("error", (error) => { if (timer) clearTimeout(timer); settle({ outcome: "abnormal", reason: error.message }); });
+    child.once("error", (error) => { resolveStartReady(); if (timer) clearTimeout(timer); settle({ outcome: "abnormal", reason: error.message }); });
     child.once("close", (code, signal) => {
+      resolveStartReady();
+      for (const pending of pendingSteering.values()) { clearTimeout(pending.timer); pending.reject(new Error("runner closed before acknowledging the steering message")); }
+      pendingSteering.clear();
       if (timer) clearTimeout(timer);
       if (protocolError) settle({ outcome: "abnormal", reason: `runner protocol error: ${protocolError}` });
       else if (messageResult) settle(messageResult);
@@ -159,14 +174,28 @@ export class ProcessRunner implements Runner {
             const runtime = await this.options.prepareRuntime?.(request);
             const serializable: WorkerRequest = { wake: request.wake, turn: request.turn, context: request.context, ...(runtime !== undefined ? { runtime } : {}) };
             child.stdin?.write(`${JSON.stringify({ type: "start", request: serializable } satisfies ParentMessage)}\n`);
+            resolveStartReady();
             if (this.options.timeoutMs) timer = setTimeout(() => { timedOut = true; void terminate(); }, this.options.timeoutMs);
           } catch (error) {
             protocolError = error instanceof Error ? error.message : String(error);
+            resolveStartReady();
             await terminate();
           }
         })();
       },
       result,
+      ...(this.options.steering ? { steer: async (message: string) => {
+        if (!started) throw new Error("runner is not accepting steering messages");
+        await startReady;
+        if (settled || protocolError || !child.stdin?.writable) throw new Error("runner is not accepting steering messages");
+        const id = crypto.randomUUID();
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => { pendingSteering.delete(id); reject(new Error("runner did not acknowledge the steering message in time")); }, this.options.steerAckTimeoutMs ?? 2_000);
+          timer.unref();
+          pendingSteering.set(id, { resolve, reject, timer });
+          child.stdin!.write(`${JSON.stringify({ type: "steer", id, message } satisfies ParentMessage)}\n`, (error) => { if (error) { const pending = pendingSteering.get(id); if (pending) clearTimeout(pending.timer); pendingSteering.delete(id); reject(error); } });
+        });
+      } } : {}),
       terminate,
     };
   }
@@ -175,7 +204,8 @@ export class ProcessRunner implements Runner {
 }
 
 export type WorkerRpc = (method: AgentCapability, params: JsonValue) => Promise<JsonValue>;
-export type WorkerRun = (request: WorkerRequest, emit: (event: { type: string; data: JsonValue }) => void, rpc: WorkerRpc) => Promise<RunnerResult>;
+export interface WorkerControls { onSteer(listener: (message: string) => boolean): void }
+export type WorkerRun = (request: WorkerRequest, emit: (event: { type: string; data: JsonValue }) => void, rpc: WorkerRpc, controls: WorkerControls) => Promise<RunnerResult>;
 
 /** Entry helper for runner executables. It exits when its parent disappears. */
 export async function runProcessWorker(run: WorkerRun): Promise<void> {
@@ -191,9 +221,20 @@ export async function runProcessWorker(run: WorkerRun): Promise<void> {
   const start = JSON.parse(first.value) as ParentMessage;
   if (start.type !== "start") throw new Error("first runner message must be start");
   const pending = new Map<string, { resolve(value: JsonValue): void; reject(error: Error): void }>();
+  const queuedSteering: Array<{ id: string; message: string }> = [];
+  let steerListener: ((message: string) => boolean) | undefined;
+  const deliverSteer = (id: string, message: string): void => {
+    let accepted = false;
+    try { accepted = steerListener?.(message) === true; } catch {}
+    process.stdout.write(`${JSON.stringify({ type: "steer_ack", id, accepted } satisfies WorkerMessage)}\n`);
+  };
   void (async () => {
     for await (const line of { [Symbol.asyncIterator]: () => iterator }) {
       const message = JSON.parse(line) as ParentMessage;
+      if (message.type === "steer") {
+        if (steerListener) deliverSteer(message.id, message.message); else queuedSteering.push(message);
+        continue;
+      }
       if (message.type !== "rpc_response") continue;
       const waiter = pending.get(message.id);
       if (!waiter) continue;
@@ -206,7 +247,8 @@ export async function runProcessWorker(run: WorkerRun): Promise<void> {
     pending.set(id, { resolve, reject });
     process.stdout.write(`${JSON.stringify({ type: "rpc_request", id, method, params })}\n`);
   });
-  const result = await run(start.request, (event) => process.stdout.write(`${JSON.stringify({ type: "trace", event })}\n`), rpc);
+  const controls: WorkerControls = { onSteer: (listener) => { steerListener = listener; for (const message of queuedSteering.splice(0)) deliverSteer(message.id, message.message); } };
+  const result = await run(start.request, (event) => process.stdout.write(`${JSON.stringify({ type: "trace", event })}\n`), rpc, controls);
   process.stdout.write(`${JSON.stringify({ type: "result", result })}\n`);
   input.close();
   process.stdin.unref();

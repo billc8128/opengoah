@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { planNpmUpdate } from "./update.js";
+import { planNpmUpdate, runQuiet } from "./update.js";
 
 test("self-update preserves global and custom-prefix installation modes", () => {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), "goah-update-")));
@@ -19,4 +19,12 @@ test("self-update preserves global and custom-prefix installation modes", () => 
 test("self-update refuses source checkouts", () => {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), "goah-source-")));
   assert.throws(() => planNpmUpdate(directory, join(directory, "global"), "1.2.3"), /source checkout/);
+});
+
+test("self-update keeps successful npm implementation output quiet and preserves failures", async () => {
+  await runQuiet(process.execPath, ["-e", "console.log('install chatter'); console.error('npm warn chatter')"]);
+  await assert.rejects(
+    runQuiet(process.execPath, ["-e", "console.error('useful install failure'); process.exit(1)"]),
+    /useful install failure/,
+  );
 });

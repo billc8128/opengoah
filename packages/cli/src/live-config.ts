@@ -7,7 +7,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { requestControl } from "./control.js";
 import type { RunnerSetupInteraction } from "goah-ledger-contract";
-import { loadConfig, updateWorkspaceRunnerProfile } from "./index.js";
+import { loadConfig, persistRunnerProfile } from "./index.js";
 import { runnerPlugin } from "./runner-registry.js";
 
 export interface RunnerDisplay { runner: string; target: string }
@@ -31,7 +31,7 @@ export async function switchModel(configPath: string, stateDir: string, model: s
   const interaction: RunnerSetupInteraction = { select: async () => null, input: async () => null, notify: () => undefined };
   const result = await plugin.configurator.runCommand("model", [model.trim()], profile.config, interaction);
   if (result.config === undefined) throw new Error(`${profile.runner} did not return an updated configuration`);
-  updateWorkspaceRunnerProfile(configPath, { ...profile, config: result.config });
+  persistRunnerProfile({ ...profile, config: result.config }, configPath);
   const outcome = await requestControl(stateDir, { op: "config.reload", configPath: resolve(configPath) }).catch((error: unknown) => ({ reloaded: false, error: error instanceof Error ? error.message : String(error) }));
   const reloaded = Boolean((outcome as { reloaded?: boolean }).reloaded);
   return reloaded ? result.output.join("\n") : `${result.output.join("\n")}; daemon reload failed (${String((outcome as { error?: string }).error ?? "daemon not running")}), it will apply on next start`;

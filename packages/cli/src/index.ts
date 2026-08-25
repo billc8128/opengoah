@@ -155,6 +155,28 @@ export function updateWorkspaceRunnerProfile(path: string, profile: RunnerProfil
   renameSync(temporary, absolute);
 }
 
+/** Persist default + workspace profile as one rollback-safe operation. */
+export function persistRunnerProfile(profile: RunnerProfile, workspacePath: string | null): void {
+  const targets = [profilePath(), ...(workspacePath ? [resolve(workspacePath)] : [])];
+  const before = targets.map((path) => ({ path, content: existsSync(path) ? readFileSync(path) : null }));
+  try {
+    writeDefaultRunnerProfile(profile);
+    if (workspacePath) updateWorkspaceRunnerProfile(workspacePath, profile);
+  } catch (error) {
+    for (const snapshot of before) {
+      if (snapshot.content === null) rmSync(snapshot.path, { force: true });
+      else {
+        mkdirSync(dirname(snapshot.path), { recursive: true });
+        const temporary = `${snapshot.path}.${process.pid}.rollback.tmp`;
+        writeFileSync(temporary, snapshot.content, snapshot.path === profilePath() ? { mode: 0o600 } : undefined);
+        renameSync(temporary, snapshot.path);
+        if (snapshot.path === profilePath()) chmodSync(snapshot.path, 0o600);
+      }
+    }
+    throw error;
+  }
+}
+
 export function diagnoseConfig(config: GoahConfig): { ok: boolean; checks: DoctorCheck[] } {
   const checks: DoctorCheck[] = [];
   const check = (name: string, fn: () => string): void => {

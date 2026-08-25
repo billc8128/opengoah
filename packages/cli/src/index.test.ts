@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { controlAvailable, controlEndpoint, diagnoseConfig, loadConfig, redactValue, SupervisorLock } from "./index.js";
+import { controlAvailable, controlEndpoint, diagnoseConfig, loadConfig, persistRunnerProfile, profilePath, redactValue, SupervisorLock } from "./index.js";
 
 const cli = fileURLToPath(new URL("./cli.js", import.meta.url));
 
@@ -32,6 +32,7 @@ test("help and version work before workspace setup and command typos do not beco
   const directory = mkdtempSync(join(tmpdir(), "goah-help-"));
   assert.match(invoke(directory, "--help"), /goah runner list/);
   assert.match(invoke(directory, "--version"), /^\d+\.\d+\.\d+/);
+  assert.match(invoke(directory, "login", "--help"), /goah login \[PROVIDER\]/);
   assert.match(invokeFailure(directory, "statu"), /Did you mean "goah status"/);
   assert.equal(existsSync(join(directory, "goah.config.json")), false);
 });
@@ -55,6 +56,28 @@ test("CLI initializes versioned config, resolves secret references, and enforces
   assert.throws(() => new SupervisorLock(join(directory, ".goah")).acquire(), /already running/);
   lock.release();
   const next = new SupervisorLock(join(directory, ".goah")); next.acquire(); next.release();
+});
+
+test("configuration commands strip global options and close cleanly without a TTY", () => {
+  const directory = repository();
+  const configPath = join(directory, "custom-goah.json");
+  invoke(directory, "init", "--provider", "faux", "--model", "faux-goah", "--config", configPath);
+  const env = { ...process.env, GOAH_STATE_HOME: join(directory, "state") };
+  for (const command of [["model", "--config", configPath], ["auth", "--config", configPath], ["setup", "--config", configPath]]) {
+    const result = spawnSync(process.execPath, [cli, ...command], { cwd: directory, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /requires an interactive terminal/);
+    assert.doesNotMatch(result.stderr, /unsettled top-level await/);
+  }
+  assert.match(invoke(directory, "model", "list", "--config", configPath), /faux\/faux-goah/);
+});
+
+test("profile persistence rolls the default back when the workspace write fails", () => {
+  const previous = process.env.GOAH_STATE_HOME; const directory = mkdtempSync(join(tmpdir(), "goah-profile-rollback-")); process.env.GOAH_STATE_HOME = join(directory, "state");
+  try {
+    assert.throws(() => persistRunnerProfile({ id: "default", runner: "pi", config: { provider: "faux", model: "faux-goah" } }, join(directory, "missing", "goah.json")));
+    assert.equal(existsSync(profilePath()), false);
+  } finally { if (previous === undefined) delete process.env.GOAH_STATE_HOME; else process.env.GOAH_STATE_HOME = previous; }
 });
 
 test("version-one Pi config migrates in memory to an opaque Runner Profile", () => {

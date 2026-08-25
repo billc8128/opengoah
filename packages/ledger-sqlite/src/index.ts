@@ -548,12 +548,17 @@ export class SqliteLedger implements Ledger {
     return this.#transaction(() => {
       const wake = this.#requiredWake(commit.wakeId);
       if (wake.status !== "running" || wake.agent !== commit.agent) throw new Error("interaction does not match a running wake");
-      const mailRow = this.db.prepare("SELECT * FROM mailbox WHERE id=?").get(commit.mailId) as Row | undefined;
-      if (!mailRow) throw new Error("interaction mail does not exist");
-      const mail = mapMail(mailRow);
-      if (mail.to !== commit.agent || mail.readAt !== null) throw new Error("interaction mail is not unread for the agent");
-      const event = this.#insertEvent({ streamId: wakeStream(commit.wakeId), ts: commit.ts, actor: commit.agent, type: "interaction.completed", data: { mailId: mail.id, response: commit.response } as unknown as JsonValue });
-      this.#recordProjection("mailbox", { ...mail, readAt: commit.ts }, "supervisor", "mail.read", commit.wakeId, commit.ts);
+      const ids = [...new Set(commit.mailIds?.length ? commit.mailIds : [commit.mailId])];
+      if (!ids.includes(commit.mailId)) throw new Error("primary interaction mail is missing from the commit");
+      const mails = ids.map((id) => {
+        const row = this.db.prepare("SELECT * FROM mailbox WHERE id=?").get(id) as Row | undefined;
+        if (!row) throw new Error("interaction mail does not exist");
+        const mail = mapMail(row);
+        if (mail.to !== commit.agent || mail.readAt !== null) throw new Error("interaction mail is not unread for the agent");
+        return mail;
+      });
+      const event = this.#insertEvent({ streamId: wakeStream(commit.wakeId), ts: commit.ts, actor: commit.agent, type: "interaction.completed", data: { mailId: commit.mailId, mailIds: ids, response: commit.response } as unknown as JsonValue });
+      for (const mail of mails) this.#recordProjection("mailbox", { ...mail, readAt: commit.ts }, "supervisor", "mail.read", commit.wakeId, commit.ts);
       return event;
     });
   }
