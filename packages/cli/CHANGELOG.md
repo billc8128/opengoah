@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.5
+
+- Separated hidden thinking, assistant prose, and tool activity in the TUI; tool calls now update a compact execution row instead of blending into the conversation.
+
 ## 0.11.4
 
 - Display provider failures instead of the misleading “worker exited without a response” fallback and keep Goal state solely in the live fixed bar.

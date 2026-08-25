@@ -15,14 +15,19 @@ test("TUI routes ordinary text, queued follow-ups, and approvals", () => {
 });
 
 test("TUI renders streamed assistant text and tool completion", () => {
-  const lines: string[] = []; let live = ""; let completed = "";
-  renderFrame({ type: "event", event: { type: "message.assistant.delta", data: { delta: { delta: "working" } } } }, (line) => lines.push(line), (text) => { live += text; }, (text) => { completed = text; });
-  renderFrame({ type: "event", event: { type: "tool.completed", data: { name: "read", isError: false } } }, (line) => lines.push(line));
-  renderFrame({ type: "event", event: { type: "message.assistant.completed", data: { message: { content: [{ type: "text", text: "done" }] } } } }, (line) => lines.push(line), (text) => { live += text; }, (text) => { completed = text; });
+  const lines: string[] = []; const tools = new Map<string, { status: string; detail: string }>(); let live = ""; let completed = ""; let thinking = false;
+  const render = (frame: Parameters<typeof renderFrame>[0]) => renderFrame(frame, (line) => lines.push(line), (text) => { live += text; }, (text) => { completed = text; }, (text) => lines.push(text), (tool) => tools.set(tool.callId, tool), (active) => { thinking = active; });
+  render({ type: "event", event: { type: "message.assistant.delta", data: { delta: { type: "thinking_delta", delta: "private reasoning" } } } });
+  assert.equal(thinking, true);
+  render({ type: "event", event: { type: "message.assistant.delta", data: { delta: { type: "text_delta", delta: "working" } } } });
+  render({ type: "event", event: { type: "tool.called", data: { callId: "call-1", name: "read", arguments: { path: "src/index.ts" } } } });
+  render({ type: "event", event: { type: "tool.completed", data: { callId: "call-1", name: "read", isError: false } } });
+  render({ type: "event", event: { type: "message.assistant.completed", data: { message: { content: [{ type: "thinking", thinking: "private reasoning" }, { type: "text", text: "done" }] } } } });
   assert.equal(live, "working");
   assert.equal(completed, "done");
-  assert.deepEqual(lines.map(stripAnsi), ["  read  done"]);
-  renderFrame({ type: "result", value: { response: { content: "final answer" } } }, (line) => lines.push(line));
+  assert.equal(thinking, false);
+  assert.deepEqual(tools.get("call-1"), { kind: "tool", callId: "call-1", name: "read", detail: "", status: "done" });
+  render({ type: "result", value: { response: { content: "final answer" } } });
   assert.equal(lines.at(-1), "final answer");
 });
 

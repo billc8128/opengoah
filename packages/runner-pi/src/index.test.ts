@@ -2,11 +2,23 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AssistantResponse, RunRequest, WakeSnapshot, WakeOutput } from "goah-ledger-contract";
 import { PiRunnerAdapter, ProcessRunner, piWorkerPath, type PiDriver } from "./index.js";
-import { bashTimeoutMs, compactMessages, compactMessagesToTokenBudget, resolveContextPolicy, runBashCommand, snapshotModelConfig, validateNextWakeAt } from "./pi-worker.js";
+import { assistantResponseText, bashTimeoutMs, compactMessages, compactMessagesToTokenBudget, resolveContextPolicy, runBashCommand, snapshotModelConfig, validateNextWakeAt } from "./pi-worker.js";
 import { createPiModel, modelCatalog, providerCatalog } from "./model-provider.js";
 
 const wake: WakeSnapshot = { id: "w", agent: "a", triggerRef: "t", status: "running", leaseUntil: "2026-08-18T00:01:00.000Z", attempt: 1, startedAt: "2026-08-18T00:00:00.000Z", endedAt: null, enqueuedSeq: 1, leaseToken: "lease", runnerPid: null };
 const goalTurn = { source: { kind: "goal_driver" as const, round: 1 }, goalBinding: { goalId: "goal", goalRevision: 0 } };
+
+test("assistant response excludes thinking and tool blocks", () => {
+  const message = {
+    role: "assistant",
+    content: [
+      { type: "thinking", thinking: "internal reasoning" },
+      { type: "toolCall", id: "call-1", name: "read", arguments: { path: "README.md" } },
+      { type: "text", text: "Visible answer." },
+    ],
+  } as never;
+  assert.equal(assistantResponseText(message), "Visible answer.");
+});
 
 function driver(steps: Array<{ stop?: boolean; response?: AssistantResponse; handoff?: WakeOutput }>): PiDriver {
   return {

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.5
+
+- Keep Pi reasoning blocks out of user-visible assistant responses, render only text deltas as Markdown, and show tool calls as separate in-place execution rows with concise targets and status.
+
 ## 0.11.4
 
 - Preserve provider `stopReason`/`errorMessage` for empty assistant responses, render quota errors honestly, and remove duplicate Goal state from the welcome transcript.

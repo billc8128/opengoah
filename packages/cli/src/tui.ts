@@ -33,18 +33,34 @@ const markdownTheme: MarkdownTheme = {
   strikethrough: tuiTheme.muted, underline: tuiTheme.underline, codeBlockIndent: "  ",
 };
 class ConversationView implements Component {
-  private entries: Array<{ kind: "text" | "markdown"; content: string }>;
+  private entries: Array<{ kind: "text" | "markdown"; content: string } | ToolActivity>;
   private liveMarkdown = "";
+  private thinking = false;
   constructor(initial: string[]) { this.entries = [{ kind: "text", content: initial.join("\n") }]; }
   addText(content: string): void { this.entries.push({ kind: "text", content }); this.trim(); }
-  addMarkdown(content: string): void { this.liveMarkdown = ""; this.entries.push({ kind: "markdown", content }); this.trim(); }
+  addMarkdown(content: string): void {
+    this.liveMarkdown = "";
+    const previous = this.entries.at(-1);
+    if (previous?.kind === "markdown" && previous.content === content) return;
+    this.entries.push({ kind: "markdown", content }); this.trim();
+  }
   setLiveMarkdown(content: string): void { this.liveMarkdown = content; }
   clearLiveMarkdown(): void { this.liveMarkdown = ""; }
+  setThinking(active: boolean): void { this.thinking = active; }
+  updateTool(activity: ToolActivity): void {
+    const previous = this.entries.findLast((entry) => entry.kind === "tool" && entry.callId === activity.callId);
+    if (previous?.kind === "tool") Object.assign(previous, { ...activity, detail: activity.detail || previous.detail });
+    else this.entries.push(activity);
+    this.trim();
+  }
   private trim(): void { if (this.entries.length > 240) this.entries.splice(1, this.entries.length - 240); }
   render(width: number): string[] {
     const rendered = this.entries.flatMap((entry) => entry.kind === "markdown"
       ? [tuiTheme.accent("  goah"), ...new Markdown(entry.content, 2, 0, markdownTheme).render(width), ""]
-      : new Text(entry.content, 2, 0).render(width));
+      : entry.kind === "tool"
+        ? new Text(toolActivityLine(entry), 2, 0).render(width)
+        : new Text(entry.content, 2, 0).render(width));
+    if (this.thinking) rendered.push(tuiTheme.muted("  thinking…"));
     if (this.liveMarkdown) rendered.push(tuiTheme.accent("  goah"), ...new Markdown(this.liveMarkdown, 2, 0, markdownTheme).render(width));
     return rendered;
   }
@@ -119,6 +135,8 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   const appendLive = (text: string): void => { liveText += text; transcriptView.setLiveMarkdown(liveText); tui.requestRender(); };
   const commitLive = (text: string): void => { liveText = ""; if (text) transcriptView.addMarkdown(text); tui.requestRender(); };
   const pushResponse = (text: string): void => { transcriptView.addMarkdown(text); tui.requestRender(); };
+  const updateTool = (activity: ToolActivity): void => { transcriptView.updateTool(activity); tui.requestRender(); };
+  const setThinking = (active: boolean): void => { transcriptView.setThinking(active); tui.requestRender(); };
 
   const send = async (message: string): Promise<void> => {
     busy.active = true;
@@ -126,9 +144,10 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
     statusView.setText(statusText("working", queued.length));
     push(`${tuiTheme.human("you")}  ${message}`);
     try {
-      await streamControl(stateDir, { op: "interact", message }, (frame) => renderFrame(frame, push, appendLive, commitLive, pushResponse), controller.signal);
+      await streamControl(stateDir, { op: "interact", message }, (frame) => renderFrame(frame, push, appendLive, commitLive, pushResponse, updateTool, setThinking), controller.signal);
     } catch (error) {
       transcriptView.clearLiveMarkdown();
+      transcriptView.setThinking(false);
       if (!controller.signal.aborted) push(errorLine(error));
     } finally {
       if (activeStream === controller) activeStream = null;
@@ -210,13 +229,16 @@ function frameToLine(frame: ControlFrame): string | null {
   renderFrame(frame, (line) => lines.push(line));
   return lines.length ? lines.join("\n") : null;
 }
-/** Render one control-protocol frame into a transcript line. */
-export function renderFrame(frame: ControlFrame, push: (line: string) => void, appendLive: (text: string) => void = push, commitLive: (text: string) => void = push, pushResponse: (text: string) => void = push): void {
-  if (frame.type === "error") { push(`${tuiTheme.error("error")}  ${safeError(frame.error)}\n`); return; }
+export interface ToolActivity { kind: "tool"; callId: string; name: string; detail: string; status: "running" | "done" | "failed" }
+
+/** Render one structured control-protocol frame into its own transcript channel. */
+export function renderFrame(frame: ControlFrame, push: (line: string) => void, appendLive: (text: string) => void = push, commitLive: (text: string) => void = push, pushResponse: (text: string) => void = push, updateTool: (activity: ToolActivity) => void = (activity) => push(toolActivityLine(activity)), setThinking: (active: boolean) => void = () => {}): void {
+  if (frame.type === "error") { setThinking(false); push(`${tuiTheme.error("error")}  ${safeError(frame.error)}\n`); return; }
   if (frame.type === "accepted") return;
   if (frame.type === "result") {
     const value = frame.value && typeof frame.value === "object" && !Array.isArray(frame.value) ? frame.value as Record<string, unknown> : {};
     const response = value.response && typeof value.response === "object" && !Array.isArray(value.response) ? value.response as Record<string, unknown> : {};
+    setThinking(false);
     if (typeof response.content === "string" && response.content.trim()) pushResponse(response.content.trim());
     return;
   }
@@ -226,13 +248,19 @@ export function renderFrame(frame: ControlFrame, push: (line: string) => void, a
   const record = event as Record<string, unknown>;
   const data = record.data && typeof record.data === "object" && !Array.isArray(record.data) ? record.data as Record<string, unknown> : {};
   if (record.type === "tool.called") {
-    return;
+    setThinking(false);
+    updateTool({ kind: "tool", callId: String(data.callId ?? "tool"), name: String(data.name ?? "tool"), detail: toolDetail(data.arguments), status: "running" });
   } else if (record.type === "tool.completed") {
-    push(`  ${tuiTheme.muted(String(data.name ?? "tool"))}  ${data.isError ? tuiTheme.error("failed") : tuiTheme.success("done")}`);
+    updateTool({ kind: "tool", callId: String(data.callId ?? "tool"), name: String(data.name ?? "tool"), detail: "", status: data.isError ? "failed" : "done" });
   } else if (record.type === "message.assistant.delta") {
     const delta = data.delta && typeof data.delta === "object" && !Array.isArray(data.delta) ? data.delta as Record<string, unknown> : {};
-    if (typeof delta.delta === "string") appendLive(delta.delta);
+    if (delta.type === "thinking_start" || delta.type === "thinking_delta") setThinking(true);
+    else if (delta.type === "text_start" || delta.type === "text_delta") {
+      setThinking(false);
+      if (delta.type === "text_delta" && typeof delta.delta === "string") appendLive(delta.delta);
+    } else if (delta.type === "toolcall_start" || delta.type === "toolcall_delta") setThinking(false);
   } else if (record.type === "message.assistant.completed") {
+    setThinking(false);
     const message = data.message && typeof data.message === "object" ? data.message as Record<string, unknown> : {};
     const text = messageText(message.content);
     if (text) commitLive(text);
@@ -245,8 +273,24 @@ export function renderFrame(frame: ControlFrame, push: (line: string) => void, a
   } else if (record.type === "ceo.human_requested") {
     push(`${tuiTheme.warning("needs you")}  ${safeError(compact(record.data ?? {}))}`);
   } else if (record.type === "wake.abnormal_reason") {
+    setThinking(false);
     push(`${tuiTheme.error("error")}  ${safeError(typeof data.reason === "string" ? data.reason : "Wake failed")}\n`);
   }
+}
+
+function toolDetail(value: unknown): string {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  const args = value as Record<string, unknown>;
+  const candidate = [args.path, args.file_path, args.query, args.command, args.goalId].find((item) => typeof item === "string") as string | undefined;
+  if (!candidate) return "";
+  const oneLine = candidate.replace(/\s+/g, " ").trim();
+  return oneLine.length > 72 ? `${oneLine.slice(0, 69)}…` : oneLine;
+}
+
+function toolActivityLine(activity: ToolActivity): string {
+  const state = activity.status === "running" ? tuiTheme.accent("running") : activity.status === "failed" ? tuiTheme.error("failed") : tuiTheme.success("done");
+  const detail = activity.detail ? `  ${tuiTheme.muted(activity.detail)}` : "";
+  return `  ${state}  ${tuiTheme.strong(activity.name)}${detail}`;
 }
 
 async function printStatus(stateDir: string, push: (line: string) => void): Promise<void> {

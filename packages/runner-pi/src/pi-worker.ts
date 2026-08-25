@@ -134,7 +134,7 @@ export async function runPiWorker(): Promise<void> {
       } else if (event.type === "message_update") {
         emit({ type: "message.assistant.delta", data: { messageId: idFor(event.message), delta: JSON.parse(JSON.stringify(event.assistantMessageEvent)) as JsonValue } });
       } else if (event.type === "message_end" && event.message.role === "assistant") {
-        response = messageText(event.message);
+        response = assistantResponseText(event.message);
         if ((event.message.stopReason === "error" || event.message.stopReason === "aborted") && event.message.errorMessage) responseFailure = event.message.errorMessage;
         emit({ type: "message.assistant.completed", data: { message: sessionMessage(event.message, idFor(event.message)) as unknown as JsonValue } });
       } else if (event.type === "tool_execution_start") emit({ type: "tool.called", data: { callId: event.toolCallId, name: event.toolName, arguments: JSON.parse(JSON.stringify(event.args)) as JsonValue } });
@@ -374,5 +374,16 @@ function messageText(message: AgentMessage): string {
   if (value.role === "user") return typeof value.content === "string" ? value.content : value.content.map((item) => item.type === "text" ? item.text : "[image]").join(" ");
   if (value.role === "assistant") return value.content.map((item) => item.type === "text" ? item.text : item.type === "thinking" ? item.thinking : `[tool:${item.name}]`).join(" ");
   return value.content.map((item) => item.type === "text" ? item.text : "[image]").join(" ");
+}
+
+/** User-visible assistant prose only; reasoning and tool blocks stay structured in the ledger. */
+export function assistantResponseText(message: AgentMessage): string {
+  const value = message as Message;
+  if (value.role !== "assistant") return messageText(message);
+  return value.content
+    .filter((item) => item.type === "text")
+    .map((item) => item.text)
+    .join("\n")
+    .trim();
 }
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) await runPiWorker();
