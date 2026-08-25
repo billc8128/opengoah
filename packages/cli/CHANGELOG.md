@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Updated control, TUI, Thread inspection, Console, doctor, and exports for Turn-owned execution; fixed duplicate answers, cross-Agent welcome history, and fencing-token redaction.
+- Preserved final responses after internal assistant messages, filtered failed pending input from history, and reported model capabilities per Agent.
 
 ## 0.11.5
 

@@ -147,7 +147,7 @@ export interface Ledger extends EventStore {
   renewTurnLease(id: string, leaseToken: string, leaseUntil: string, now: string): TurnSnapshot;
   appendTurnEvent(input: EventInput, leaseToken: string): EventRecord;
   repairTurnAttempt(id:string,reason:string,now:string,actor:string):TurnItemSnapshot[];
-  finishTurn(id:string,status:"completed"|"failed"|"interrupted",error:JsonValue|null,now:string,actor:string):TurnSnapshot;
+  finishTurn(id:string,status:"completed"|"failed"|"interrupted",error:JsonValue|null,now:string,actor:string,mailIds?:string[]):TurnSnapshot;
   requestAction(action: ActionSnapshot, actor: string, wakeId?: string): EventRecord;
   approveAction(id: string, approver: string, reason: string, evidence: number[]): ActionSnapshot;
   rejectAction(id: string, approver: string, reason: string, evidence: number[]): ActionSnapshot;

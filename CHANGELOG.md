@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Completed the Thread/Turn/Item architecture: Wake is scheduling-only, Turn owns execution and recovery, Human input blocks automatic claims, Goal policies share one completion path, and schema v12 rejects earlier development state.
+- Hardened concurrency, idempotency, streaming, verification, and long-running resource boundaries found by adversarial review.
 
 ## 0.11.5
 

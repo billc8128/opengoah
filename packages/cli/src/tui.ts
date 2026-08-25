@@ -212,9 +212,9 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   };
   const steer = async (message: string): Promise<void> => {
     try {
-      await requestControl(stateDir, { op: "turn.steer", message });
-      const queuedBySupervisor = false;
-      statusView.setText(`${tuiTheme.accent("working")}  ${tuiTheme.muted("your update is steering this turn · /stop cancels")}`);
+      const outcome=await requestControl(stateDir, { op: "turn.steer", message });const value=outcome&&typeof outcome==="object"&&!Array.isArray(outcome)?outcome as Record<string,unknown>:{};const queuedBySupervisor=value.steered===false&&typeof value.turnId==="string";
+      if(queuedBySupervisor){queuedTurnIds.push(String(value.turnId));activeStream?.abort();}
+      statusView.setText(queuedBySupervisor?`${tuiTheme.warning("new Turn")}  ${tuiTheme.muted("Runner stopped accepting steering; continuing in a fresh Turn")}`:`${tuiTheme.accent("working")}  ${tuiTheme.muted("your update is steering this turn · /stop cancels")}`);
       tui.requestRender();
       if (queuedBySupervisor && !busy.active) continuePending();
     } catch (error) {

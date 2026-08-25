@@ -276,12 +276,12 @@ export class SqliteLedger implements Ledger {
     if(turn.status==="in_progress"&&(!turn.leaseUntil||!turn.leaseToken)||turn.status!=="in_progress"&&(turn.leaseUntil!==null||turn.leaseToken!==null||turn.runnerPid!==null))throw new Error("Turn execution ownership does not match status");
     const current = this.turn(turn.id);
     if (current) {
+      if(turn.status!=="in_progress")throw new Error("terminal Turn state must be committed through finishTurn or commitHandoff");
       if (current.threadId !== turn.threadId || current.source !== turn.source) throw new Error("turn identity cannot change");
       if (current.status !== "in_progress") throw new Error("terminal turn cannot change");
       if (current.goalId !== null && (current.goalId !== turn.goalId || current.goalRevision !== turn.goalRevision)) throw new Error("turn Goal binding cannot change");
       if (turn.attempt !== current.attempt && turn.attempt !== current.attempt + 1) throw new Error("turn attempt must stay current or increment by one");
       if (turn.status === "in_progress" && turn.endedAt !== null || turn.status !== "in_progress" && turn.endedAt === null) throw new Error("turn terminal time does not match status");
-      if(turn.status==="completed"&&this.turnItems(turn.id).some((item)=>item.status==="in_progress"))throw new Error("successful Turn cannot retain in-progress Items");
     } else if (turn.status !== "in_progress" || turn.attempt !== 1) throw new Error("new turn must start in progress at attempt one");
     return this.#project("turns", turn, actor, current ? `turn.${turn.status}` : "turn.started", undefined, undefined, `turn:${turn.id}`);
   }
@@ -445,8 +445,8 @@ export class SqliteLedger implements Ledger {
     this.#assertEvidenceExists(request.evidence);
     const current = this.#getGoal(request.goalId);
     if (!current) throw new Error("goal does not exist");
+    if(current.phase==="complete"){const decision=this.readStream(goalStream(current.id)).findLast((event)=>event.type==="goal.completion_decided");const data=decision?.data as {revision?:unknown;reason?:unknown;evidence?:unknown};if(decision?.actor===actor&&data.revision===request.revision&&data.reason===request.reason&&JSON.stringify(data.evidence)===JSON.stringify(request.evidence))return current;throw new Error("completed goal cannot accept a different completion decision");}
     if (request.revision !== current.revision) throw new Error("goal completion revision is stale");
-    if (current.phase === "complete") return current;
     if (current.observationMethod === null) throw new Error("goal completion requires an observation method");
     if (current.verificationMethod === null || current.verificationMethod === undefined) throw new Error("goal completion requires a verification method");
     this.#assertGoalAuthority(current.parentId, actor);
@@ -503,7 +503,7 @@ export class SqliteLedger implements Ledger {
     });
   }
 
-  startTurnFromWake(id:string,turn:TurnSnapshot,now:string):WakeSnapshot{const wake=this.#requiredWake(id);if(wake.status!=="claimed")throw new Error("only a claimed Wake may start a Turn");if(this.turn(turn.id))throw new Error("Wake Turn already exists");if(turn.status!=="in_progress"||turn.attempt!==1||!turn.leaseUntil||!turn.leaseToken)throw new Error("Wake must start an owned Turn at attempt one");const thread=this.thread(turn.threadId);if(!thread||thread.agent!==wake.agent)throw new Error("Wake Turn agent does not match");return this.#transaction(()=>{this.#recordProjection("turns",turn,"supervisor","turn.started",undefined,now,undefined,`turn:${turn.id}`);const next:WakeSnapshot={...wake,status:"consumed",consumedAt:now,turnId:turn.id};this.#recordProjection("wakes",next,"supervisor","wake.consumed",id,now);return next;});}
+  startTurnFromWake(id:string,turn:TurnSnapshot,now:string):WakeSnapshot{const wake=this.#requiredWake(id);if(wake.status!=="claimed")throw new Error("only a claimed Wake may start a Turn");if(this.turn(turn.id))throw new Error("Wake Turn already exists");if(turn.status!=="in_progress"||turn.attempt!==1||!turn.leaseUntil||!turn.leaseToken)throw new Error("Wake must start an owned Turn at attempt one");const thread=this.thread(turn.threadId);if(!thread||thread.agent!==wake.agent)throw new Error("Wake Turn agent does not match");return this.#transaction(()=>{if(this.db.prepare("SELECT 1 FROM turns WHERE source='human' AND status='in_progress' LIMIT 1").get())throw new Error("automatic Wake cannot start while a Human Turn is in progress");this.#recordProjection("turns",turn,"supervisor","turn.started",undefined,now,undefined,`turn:${turn.id}`);const next:WakeSnapshot={...wake,status:"consumed",consumedAt:now,turnId:turn.id};this.#recordProjection("wakes",next,"supervisor","wake.consumed",id,now);return next;});}
 
   consumeWake(id: string, turnId: string, now: string): WakeSnapshot {
     const current = this.#requiredWake(id);
@@ -555,7 +555,7 @@ export class SqliteLedger implements Ledger {
 
   repairTurnAttempt(id:string,reason:string,now:string,actor:string):TurnItemSnapshot[]{const current=this.#requiredTurn(id);if(current.status!=="in_progress")throw new Error("only an active Turn attempt may be repaired");return this.#transaction(()=>this.#repairOpenTurnItems(id,reason,now,actor));}
 
-  finishTurn(id:string,status:"completed"|"failed"|"interrupted",error:JsonValue|null,now:string,actor:string):TurnSnapshot{const current=this.#requiredTurn(id);if(current.status!=="in_progress")throw new Error("only an active Turn may finish");if(status==="completed"&&error!==null||status!=="completed"&&error===null)throw new Error("Turn terminal error does not match status");return this.#transaction(()=>{if(status!=="completed")this.#repairOpenTurnItems(id,String((error as {message?:unknown}).message??"Turn interrupted"),now,actor);else if(this.turnItems(id).some((item)=>item.status==="in_progress"))throw new Error("successful Turn cannot retain in-progress Items");this.#insertEvent({streamId:`turn:${id}`,ts:now,actor,type:status==="completed"?"transcript.completed":"transcript.interrupted",data:status==="completed"?{}:{reason:String((error as {message?:unknown}).message??"Turn interrupted")}});const next={...current,status,error,endedAt:now,leaseUntil:null,leaseToken:null,runnerPid:null};this.#recordProjection("turns",next,actor,`turn.${status}`,undefined,now,undefined,`turn:${id}`);return next;});}
+  finishTurn(id:string,status:"completed"|"failed"|"interrupted",error:JsonValue|null,now:string,actor:string,mailIds:string[]=[]):TurnSnapshot{const current=this.#requiredTurn(id);if(current.status!=="in_progress")throw new Error("only an active Turn may finish");if(status==="completed"&&error!==null||status!=="completed"&&error===null)throw new Error("Turn terminal error does not match status");return this.#transaction(()=>{if(status!=="completed")this.#repairOpenTurnItems(id,String((error as {message?:unknown}).message??"Turn interrupted"),now,actor);else if(this.turnItems(id).some((item)=>item.status==="in_progress"))throw new Error("successful Turn cannot retain in-progress Items");const streamId=`turn:${id}`;const thread=this.thread(current.threadId);const delivered=new Set(mailIds);if(status!=="completed"&&mailIds.length)throw new Error("failed Turn cannot acknowledge Mail");if(status==="completed"&&thread)for(const mail of this.unreadMail(thread.agent).filter((candidate)=>delivered.has(candidate.id)))this.#recordProjection("mailbox",{...mail,readAt:now},"supervisor","mail.read",undefined,now,undefined,streamId);this.#insertEvent({streamId,ts:now,actor,type:status==="completed"?"transcript.completed":"transcript.interrupted",data:status==="completed"?{}:{reason:String((error as {message?:unknown}).message??"Turn interrupted")}});const next={...current,status,error,endedAt:now,leaseUntil:null,leaseToken:null,runnerPid:null};this.#recordProjection("turns",next,actor,`turn.${status}`,undefined,now,undefined,streamId);return next;});}
 
   requestAction(action: ActionSnapshot, actor: string, wakeId?: string): EventRecord {
     assertActionRequest(action);

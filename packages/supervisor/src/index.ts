@@ -170,7 +170,7 @@ export class Supervisor {
     const thread = this.threadFor("ceo"); const active = this.ledger.activeTurn(thread.id);
     if (active) {
       if (active.source !== "human") { const goalId = active.goalId; await this.interruptTurn(active.id); if (goalId) this.#enqueueTrigger("ceo", `human-interrupted:${active.id}`); }
-      else { const handle = this.#handles.get(active.id);if(handle&&!handle.steer)await this.interruptTurn(active.id);else{this.#appendTurnItem(active.id,"user_message",{text:message},"human");if(handle?.steer)await handle.steer(message);return{threadId:thread.id,turnId:active.id,steered:true};} }
+      else { const handle=this.#handles.get(active.id);if(handle&&!handle.steer)await this.interruptTurn(active.id);else if(handle?.steer){const item=this.#appendTurnItem(active.id,"user_message",{text:message},"human",randomUUID(),"in_progress");try{await handle.steer(message);const stored=this.ledger.turnItems(active.id).find((candidate)=>candidate.id===item.id);if(this.ledger.turn(active.id)?.status==="in_progress"&&stored?.status==="in_progress"){this.ledger.putTurnItem({...stored,status:"completed",completedAt:this.#now()},"human");return{threadId:thread.id,turnId:active.id,steered:true};}}catch{const stored=this.ledger.turnItems(active.id).find((candidate)=>candidate.id===item.id);if(this.ledger.turn(active.id)?.status==="in_progress"&&stored?.status==="in_progress")this.ledger.putTurnItem({...stored,status:"failed",completedAt:this.#now()},"human");if(this.ledger.turn(active.id)?.status==="in_progress")await this.interruptTurn(active.id);}}else{this.#appendTurnItem(active.id,"user_message",{text:message},"human");return{threadId:thread.id,turnId:active.id,steered:true};} }
     }
     const now = this.#now(); this.ledger.putThread({ ...thread,updatedAt:now },"supervisor"); const leaseToken = randomUUID();
     const turn: TurnSnapshot = { id: randomUUID(), threadId: thread.id, source: "human", goalId: null, goalRevision: null, status: "in_progress", attempt: 1, error: null, startedAt: now, endedAt: null, leaseUntil: new Date(this.clock.now().getTime() + this.#leaseMs).toISOString(), leaseToken, runnerPid: null };
@@ -197,7 +197,7 @@ export class Supervisor {
           this.#failTurn(current.id,result.reason);this.#scheduleTurnRecovery(sourceWake,current.id,agent); return;
         }
         if(turnContext.goalBinding){if(result.outcome!=="handoff")throw new Error("Goal-bound Turn requires Handoff");this.#commitGoalTurn(current.id,agent,turnContext,result.output,sourceWake?.id??null,deliveredMailIds,recordRevisionAtStart);return;}
-        if(result.outcome!=="response")throw new Error("ordinary Turn cannot finish with Handoff");if(!this.ledger.turnItems(current.id).some((item)=>item.type==="assistant_message"&&(item.data as {text?:unknown}).text===result.response.content))this.#appendTurnItem(current.id,"assistant_message",{text:result.response.content},agent);this.ledger.finishTurn(current.id,"completed",null,this.#now(),"supervisor");return;
+        if(result.outcome!=="response")throw new Error("ordinary Turn cannot finish with Handoff");if(!this.ledger.turnItems(current.id).some((item)=>item.type==="assistant_message"&&(item.data as {text?:unknown}).text===result.response.content))this.#appendTurnItem(current.id,"assistant_message",{text:result.response.content},agent);this.ledger.finishTurn(current.id,"completed",null,this.#now(),"supervisor",deliveredMailIds);return;
       } catch(error){if(renewal)clearInterval(renewal);if(handle)await handle.terminate();this.#handles.delete(initial.id);const current=this.ledger.turn(initial.id);if(current?.status==="in_progress"){this.#failTurn(current.id,error instanceof Error?error.message:String(error));this.#scheduleTurnRecovery(sourceWake,current.id,agent);}return;}
     }
   }
@@ -216,7 +216,7 @@ export class Supervisor {
 
   #scheduleTurnRecovery(sourceWake:WakeSnapshot|null,turnId:string,agent:string):void{if(!sourceWake)return;const prior=sourceWake.triggerRef.startsWith("recovery:")?Number(sourceWake.triggerRef.slice("recovery:".length).split(":")[1]?.split("@")[0]??0):0;const next=prior+1;if(next<this.#retryPolicy.maxAttempts){const delay=this.#retryPolicy.baseDelayMs*2**prior;this.ledger.putSchedule({id:`recovery:${turnId}:${next}`,agent,nextWakeAt:new Date(this.clock.now().getTime()+delay).toISOString(),reason:`recovery:${turnId}`,setBy:"supervisor"},"supervisor",sourceWake.id);}else if(agent!=="ceo"&&this.#hasActiveRoot())this.#enqueueTrigger("ceo",`child-retry-exhausted:${turnId}`);}
 
-  #closeStreamingItems(turnId:string):void{const open=this.ledger.turnItems(turnId).filter((item)=>item.status==="in_progress");if(open.some((item)=>item.type==="tool_call"))throw new Error("Runner returned while a tool call was still open");for(const item of open)this.ledger.putTurnItem({...item,status:"completed",completedAt:this.#now()},"supervisor");}
+  #closeStreamingItems(turnId:string):void{const open=this.ledger.turnItems(turnId).filter((item)=>item.status==="in_progress");if(open.some((item)=>item.type==="tool_call"||item.type==="user_message"))throw new Error("Runner returned while an input or tool call was still open");for(const item of open)this.ledger.putTurnItem({...item,status:"completed",completedAt:this.#now()},"supervisor");}
 
   #appendTurnItem(turnId: string, type: TurnItemSnapshot["type"], data: JsonValue, actor: string, id: string = randomUUID(), status: TurnItemSnapshot["status"] = "completed"): TurnItemSnapshot {
     const now = this.#now(); const item: TurnItemSnapshot = { id, turnId, ordinal: this.ledger.turnItems(turnId).length + 1, type, status, data, createdAt: now, completedAt: status === "in_progress" ? null : now }; this.ledger.putTurnItem(item, actor); return item;
@@ -625,8 +625,7 @@ export async function runSupervisorDaemon(supervisor: Supervisor, options: { pol
     try { await supervisor.runAvailable(options.concurrency ?? 4); }
     catch (error) { options.onError?.(error); }
     await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, pollMs);
-      options.signal?.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
+      if(options.signal?.aborted){resolve();return;}const onAbort=()=>{clearTimeout(timer);resolve();};const timer=setTimeout(()=>{options.signal?.removeEventListener("abort",onAbort);resolve();},pollMs);options.signal?.addEventListener("abort",onAbort,{once:true});if(options.signal?.aborted)onAbort();
     });
   }
 }
@@ -674,8 +673,7 @@ async function runJsonProcess<T>(spec: MetricProcessSpec | ConnectorProcessSpec,
   const child = spawn(spec.command, spec.args, { detached: process.platform !== "win32", env: minimalEnvironment(spec.env), stdio: ["pipe", "pipe", "pipe"] });
   let stdout = "";
   let stderr = "";
-  child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
-  child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+  let outputOverflow=false;const append=(channel:"stdout"|"stderr",chunk:Buffer)=>{const text=chunk.toString();const remaining=Math.max(0,1_000_000-stdout.length-stderr.length);if(channel==="stdout")stdout+=text.slice(0,remaining);else stderr+=text.slice(0,remaining);if(text.length>remaining&&!outputOverflow){outputOverflow=true;void terminateChild(child,500);}};child.stdout.on("data",(chunk:Buffer)=>append("stdout",chunk));child.stderr.on("data",(chunk:Buffer)=>append("stderr",chunk));
   child.stdin.end(`${JSON.stringify(input)}\n`);
   const timeoutMs = spec.timeoutMs ?? 30_000;
   let timer: NodeJS.Timeout | undefined;
@@ -684,8 +682,9 @@ async function runJsonProcess<T>(spec: MetricProcessSpec | ConnectorProcessSpec,
     child.once("close", (code, signal) => resolve({ code, signal }));
   });
   timer = setTimeout(() => { void terminateChild(child, 500); }, timeoutMs);
-  const result = await exit;
-  clearTimeout(timer);
+  let result:{code:number|null;signal:NodeJS.Signals|null};
+  try{result=await exit;}finally{clearTimeout(timer);}
+  if(outputOverflow)throw new Error("connector or metric output exceeded 1 MB");
   if (result.code !== 0) throw new Error(stderr.trim() || `connector exited (${result.code ?? result.signal})`);
   return JSON.parse(stdout.trim()) as T;
 }

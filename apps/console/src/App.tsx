@@ -344,13 +344,14 @@ type ChatExchange = { kind: "user" | "ceo"; seq: number; text: string; handoff?:
 type LiveChat = { status: "running" | "done" | "error"; text: string; lines: string[]; handoff: ChatExchange["handoff"] }
 
 function chatHistory(snapshot: ConsoleSnapshot): ChatExchange[] {
-  const items: ChatExchange[] = [];const ceoThreadIds=new Set(snapshot.threads.filter((thread)=>thread.agent==="ceo").map((thread)=>thread.id));const humanTurnIds=new Set(snapshot.turns.filter((turn)=>turn.source==="human"&&ceoThreadIds.has(turn.threadId)).map((turn)=>turn.id));
+  const items: ChatExchange[] = [];const ceoThreadIds=new Set(snapshot.threads.filter((thread)=>thread.agent==="ceo").map((thread)=>thread.id));const humanTurnIds=new Set(snapshot.turns.filter((turn)=>turn.source==="human"&&ceoThreadIds.has(turn.threadId)).map((turn)=>turn.id));const messageItems=new Map<string,{seq:number;item:Record<string,unknown>}>();
   for (const event of snapshot.events) {
-    if(event.type==="item.user_message.started"||event.type==="item.assistant_message.started"){const item=record(record(event.data).snapshot);if(humanTurnIds.has(String(item.turnId))){const data=record(item.data);if(typeof data.text==="string")items.push({kind:event.type.includes("user_message")?"user":"ceo",seq:event.seq,text:data.text});}}
+    if(event.type.startsWith("item.user_message.")||event.type.startsWith("item.assistant_message.")){const item=record(record(event.data).snapshot);if(typeof item.id==="string")messageItems.set(item.id,{seq:event.seq,item});}
     else if (event.type === "handoff.recorded" && event.actor === "ceo") {
       items.push({ kind: "ceo", seq: event.seq, text: "", handoff: handoffOf(event.data) })
     }
   }
+  for(const {seq,item} of messageItems.values()){if(item.status!=="completed"||!humanTurnIds.has(String(item.turnId)))continue;const data=record(item.data);if(typeof data.text==="string")items.push({kind:item.type==="user_message"?"user":"ceo",seq,text:data.text});}
   return items.sort((a, b) => a.seq - b.seq)
 }
 

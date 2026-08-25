@@ -28,13 +28,16 @@ export class ProcessVerifierModel implements VerifierModel {
     const env: NodeJS.ProcessEnv = {};
     for (const name of ["PATH", "TMPDIR", "TMP", "TEMP", "SYSTEMROOT"]) if (process.env[name] !== undefined) env[name] = process.env[name];
     const child = spawn(this.spec.command, this.spec.args, { detached: process.platform !== "win32", env: { ...env, ...this.spec.env }, stdio: ["pipe", "pipe", "pipe"] });
-    let stdout = ""; let stderr = ""; let timedOut = false;
-    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
-    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+    let stdout = ""; let stderr = ""; let timedOut = false;let outputOverflow=false;
+    const kill=()=>{if(child.pid){try{process.kill(process.platform==="win32"?child.pid:-child.pid,"SIGKILL");}catch{}}};
+    const append=(channel:"stdout"|"stderr",chunk:Buffer)=>{const text=chunk.toString();const remaining=Math.max(0,1_000_000-stdout.length-stderr.length);if(channel==="stdout")stdout+=text.slice(0,remaining);else stderr+=text.slice(0,remaining);if(text.length>remaining&&!outputOverflow){outputOverflow=true;kill();}};
+    child.stdout.on("data",(chunk:Buffer)=>append("stdout",chunk));
+    child.stderr.on("data",(chunk:Buffer)=>append("stderr",chunk));
     child.stdin.end(`${JSON.stringify({ operation, input })}\n`);
-    const timer = setTimeout(() => { timedOut = true; if (child.pid) { try { process.kill(process.platform === "win32" ? child.pid : -child.pid, "SIGKILL"); } catch {} } }, this.spec.timeoutMs ?? 60_000);
-    const code = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
-    clearTimeout(timer);
+    const timer = setTimeout(() => { timedOut = true;kill(); }, this.spec.timeoutMs ?? 60_000);
+    let code:number|null;
+    try{code=await new Promise<number|null>((resolve,reject)=>{child.once("error",reject);child.once("close",resolve);});}finally{clearTimeout(timer);}
+    if(outputOverflow)throw new Error("verifier output exceeded 1 MB");
     if (code !== 0) throw new Error(timedOut ? "verifier process timed out" : stderr.trim() || `verifier exited ${code}`);
     return JSON.parse(stdout) as VerificationResult;
   }
@@ -44,6 +47,7 @@ export class VerificationPlane {
   constructor(readonly ledger: Ledger, readonly supervisor: Supervisor, readonly model: VerifierModel) {}
 
   async verifyTurn(turnId: string): Promise<VerificationResult> {
+    const turn=this.ledger.turn(turnId);if(!turn)throw new Error(`Turn not found: ${turnId}`);if(turn.status==="in_progress")throw new Error("cannot verify an in-progress Turn");
     const trace = this.ledger.readStream(`turn:${turnId}`);
     const handoff = this.ledger.turnItems(turnId).findLast((item) => item.type === "handoff")?.data ?? null;
     const actions = this.ledger.actions().filter((action) => action.createdInTurn === turnId);

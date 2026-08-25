@@ -74,27 +74,30 @@ export async function requestControl(stateDir: string, request: ControlRequest):
 }
 
 export async function streamControl(stateDir: string, request: ControlRequest, onFrame: (frame: ControlFrame) => void, signal?: AbortSignal): Promise<void> {
+  if(signal?.aborted)return;
   const socket = createConnection(controlEndpoint(stateDir));
   const abort = () => socket.destroy();
-  if (signal?.aborted) abort(); else signal?.addEventListener("abort", abort, { once: true });
-  await new Promise<void>((resolve, reject) => { socket.once("connect", resolve); socket.once("error", reject); });
-  socket.write(`${JSON.stringify(request)}\n`);
-  let buffer = "";
-  await new Promise<void>((resolve, reject) => {
-    socket.on("data", (chunk: Buffer) => {
-      buffer += chunk.toString();
-      while (buffer.includes("\n")) {
-        const index = buffer.indexOf("\n");
-        const line = buffer.slice(0, index); buffer = buffer.slice(index + 1);
-        if (!line) continue;
-        try { onFrame(JSON.parse(line) as ControlFrame); } catch (error) { reject(error); socket.destroy(); }
-      }
+  signal?.addEventListener("abort", abort, { once: true });
+  try{
+    await new Promise<void>((resolve, reject) => { socket.once("connect", resolve); socket.once("error", reject);socket.once("close",()=>signal?.aborted?resolve():reject(new Error("control connection closed before connecting"))); });
+    if(signal?.aborted)return;
+    socket.write(`${JSON.stringify(request)}\n`);
+    let buffer = "";
+    await new Promise<void>((resolve, reject) => {
+      socket.on("data", (chunk: Buffer) => {
+        buffer += chunk.toString();
+        while (buffer.includes("\n")) {
+          const index = buffer.indexOf("\n");
+          const line = buffer.slice(0, index); buffer = buffer.slice(index + 1);
+          if (!line) continue;
+          try { onFrame(JSON.parse(line) as ControlFrame); } catch (error) { reject(error); socket.destroy(); }
+        }
+      });
+      socket.once("end", resolve);
+      socket.once("close", resolve);
+      socket.once("error", reject);
     });
-    socket.once("end", resolve);
-    socket.once("close", resolve);
-    socket.once("error", reject);
-  });
-  signal?.removeEventListener("abort", abort);
+  }finally{signal?.removeEventListener("abort",abort);socket.destroy();}
 }
 
 export async function controlAvailable(stateDir: string): Promise<boolean> {
@@ -174,7 +177,7 @@ async function* turnFrames(turnId: string, ledger: Ledger, isActive: () => boole
     if (!isActive()) return;
     for (const event of ledger.readStream(`turn:${turnId}`)) { if (event.seq <= lastSeq) continue; lastSeq = event.seq; if (event.type.startsWith("message.") || event.type.startsWith("tool.") || event.type.startsWith("item.") || event.type.startsWith("turn.")) yield { type: "event", event: event as unknown as JsonValue }; }
     const current = ledger.turn(turnId); if (!current) throw new Error("Turn disappeared");
-    if (current.status !== "in_progress") { const answer = ledger.turnItems(turnId).filter((item) => item.type === "assistant_message").at(-1); const streamed=ledger.readStream(`turn:${turnId}`).some((event)=>event.type==="message.assistant.completed");yield { type: "result", value: { turn: current, ...(answer&&!streamed ? { response: { content: String((answer.data as { text?: unknown }).text ?? "") } } : {}) } as unknown as JsonValue }; return; }
+    if (current.status !== "in_progress") { const answer = ledger.turnItems(turnId).filter((item) => item.type === "assistant_message").at(-1);const answerText=String((answer?.data as {text?:unknown}|undefined)?.text??"");const streamed=answerText!==""&&ledger.readStream(`turn:${turnId}`).some((event)=>event.type==="message.assistant.completed"&&assistantEventText(event.data)===answerText);yield { type: "result", value: { turn: current, ...(answer&&!streamed ? { response: { content: answerText } } : {}) } as unknown as JsonValue }; return; }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
@@ -186,6 +189,7 @@ function ceoStatus(ledger: Ledger, supervisor: Supervisor): JsonValue {
   return { roots: ledger.goals().filter((goal) => goal.parentId === null && goal.owner === "ceo"), team: supervisor.teamList(), pendingHuman: ledger.unreadMail("human"), recentCeoHandoffs: ledger.eventsSince(0, ["handoff.recorded"]).filter((event) => event.actor === "ceo").slice(-10) } as unknown as JsonValue;
 }
 function requiredGoal(ledger: Ledger, id: string) { const goal = ledger.goal(id); if (!goal) throw new Error("goal not found"); return goal; }
+function assistantEventText(value:JsonValue):string{if(!value||typeof value!=="object"||Array.isArray(value)||!value.message||typeof value.message!=="object"||Array.isArray(value.message))return"";const content=value.message.content;if(typeof content==="string")return content;if(!Array.isArray(content))return"";return content.map((item)=>item&&typeof item==="object"&&!Array.isArray(item)&&item.type==="text"&&typeof item.text==="string"?item.text:"").filter(Boolean).join("\n");}
 function write(socket: Socket, frame: ControlFrame): void { socket.write(`${JSON.stringify(frame)}\n`); }
 
 export interface RuntimeSwap { runner: ProcessRunner | import("goah-ledger-contract").Runner; ledger?: SqliteLedger; profiles?: import("goah-ledger-contract").RunnerProfile[] }
