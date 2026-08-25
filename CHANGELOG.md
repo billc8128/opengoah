@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.11.4
 
 - Preserve provider `stopReason`/`errorMessage` for empty assistant responses, render quota errors honestly, and remove duplicate Goal state from the welcome transcript.
 

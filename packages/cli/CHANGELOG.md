@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.11.4
 
 - Display provider failures instead of the misleading “worker exited without a response” fallback and keep Goal state solely in the live fixed bar.
 
