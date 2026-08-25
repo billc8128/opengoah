@@ -13,6 +13,17 @@ class FixedClock implements Clock { constructor(readonly value = "2030-01-01T00:
 function wake(id: string, agent = "agent-1"): WakeSnapshot { return { id, agent, triggerRef: `trigger:${id}`, status: "queued", leaseUntil: null, attempt: 0, startedAt: null, endedAt: null, enqueuedSeq: 0, leaseToken: null, runnerPid: null }; }
 function action(id: string, evidence: number[]): ActionSnapshot { return { id, agent: "a", kind: "mock.write", connector: "mock", payload: {}, reason: "evidence supports it", evidence, gated: false, status: "requested", reconciledAt: null, externalRef: null, auditAdvice: null, adviceAcked: false }; }
 
+test("Session Turn and Item projections form one resumable execution history", () => {
+  const ledger = new SqliteLedger(":memory:", { clock: new FixedClock() }); const now = "2030-01-01T00:00:00.000Z";
+  ledger.putSession({ id: "session", agent: "ceo", parentSessionId: null, createdAt: now, updatedAt: now }, "supervisor");
+  ledger.putTurn({ id: "turn", sessionId: "session", source: "human", goalId: null, goalRevision: null, status: "in_progress", error: null, startedAt: now, endedAt: null, leaseUntil: null, leaseToken: null, runnerPid: null }, "human");
+  ledger.putTurnItem({ id: "user", turnId: "turn", ordinal: 1, type: "user_message", status: "completed", data: { text: "hello" }, createdAt: now, completedAt: now }, "human");
+  ledger.putTurnItem({ id: "assistant", turnId: "turn", ordinal: 2, type: "assistant_message", status: "completed", data: { text: "hi" }, createdAt: now, completedAt: now }, "ceo");
+  ledger.putTurn({ ...ledger.turn("turn")!, status: "completed", endedAt: now }, "supervisor");
+  assert.equal(ledger.activeTurn("session"), null); assert.equal(ledger.turns("session").length, 1); assert.deepEqual(ledger.turnItems("turn").map((item) => item.type), ["user_message", "assistant_message"]);
+  ledger.close();
+});
+
 test("event and projection roll back together at the injected transaction boundary", () => {
   const ledger = new SqliteLedger(":memory:", { faultInjector: () => { throw new Error("kill -9"); }, clock: new FixedClock() });
   assert.throws(() => ledger.putSchedule({ id: "s1", agent: "a", nextWakeAt: "2030-01-01T00:00:00.000Z", reason: "test", setBy: "a" }, "a"), /kill -9/);

@@ -26,6 +26,9 @@ import {
   type ReassignmentRequest,
   type ReassignmentResult,
   type ScheduleSnapshot,
+  type SessionSnapshot,
+  type TurnSnapshot,
+  type TurnItemSnapshot,
   type WakeSnapshot,
   wakeStream,
   type WorkRecordSnapshot,
@@ -37,9 +40,46 @@ import {
 type FaultPoint = "after_event_before_projection" | "after_delegation_event" | "after_reassignment_event";
 type FaultInjector = (point: FaultPoint) => void;
 type Row = Record<string, unknown>;
-type ProjectionName = "goals" | "schedule" | "wakes" | "mailbox" | "actions" | "work_records";
+type ProjectionName = "sessions" | "turns" | "turn_items" | "goals" | "schedule" | "wakes" | "mailbox" | "actions" | "work_records";
 
-export const SQLITE_SCHEMA_VERSION = 9;
+export const SQLITE_SCHEMA_VERSION = 10;
+
+const createSessions = `CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,
+  agent TEXT NOT NULL,
+  parent_session_id TEXT REFERENCES sessions(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+) STRICT;`;
+
+const createTurns = `CREATE TABLE IF NOT EXISTS turns (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  source TEXT NOT NULL CHECK(source IN ('human','goal','system')),
+  goal_id TEXT REFERENCES goals(id),
+  goal_revision INTEGER CHECK(goal_revision IS NULL OR goal_revision >= 0),
+  status TEXT NOT NULL CHECK(status IN ('in_progress','completed','failed','interrupted')),
+  error TEXT CHECK(error IS NULL OR json_valid(error)),
+  started_at TEXT NOT NULL,
+  ended_at TEXT,
+  lease_until TEXT,
+  lease_token TEXT,
+  runner_pid INTEGER,
+  CHECK((goal_id IS NULL) = (goal_revision IS NULL)),
+  CHECK((status='in_progress' AND ended_at IS NULL) OR (status<>'in_progress' AND ended_at IS NOT NULL))
+) STRICT;`;
+
+const createTurnItems = `CREATE TABLE IF NOT EXISTS turn_items (
+  id TEXT PRIMARY KEY,
+  turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+  ordinal INTEGER NOT NULL CHECK(ordinal > 0),
+  type TEXT NOT NULL CHECK(type IN ('user_message','assistant_message','reasoning','tool_call','tool_result','plan','handoff')),
+  status TEXT NOT NULL CHECK(status IN ('in_progress','completed','failed')),
+  data TEXT NOT NULL CHECK(json_valid(data)),
+  created_at TEXT NOT NULL,
+  completed_at TEXT,
+  UNIQUE(turn_id, ordinal)
+) STRICT;`;
 
 const createGoals = `CREATE TABLE IF NOT EXISTS goals (
   id TEXT PRIMARY KEY,
@@ -101,6 +141,9 @@ const createActions = `CREATE TABLE IF NOT EXISTS actions (
 ) STRICT;`;
 
 const indexesAndTriggers = `
+CREATE UNIQUE INDEX IF NOT EXISTS turns_one_active_session ON turns(session_id) WHERE status='in_progress';
+CREATE INDEX IF NOT EXISTS turns_session_started ON turns(session_id,started_at,id);
+CREATE INDEX IF NOT EXISTS turn_items_turn_ordinal ON turn_items(turn_id,ordinal);
 CREATE UNIQUE INDEX IF NOT EXISTS wakes_one_active_agent ON wakes(agent) WHERE status IN ('leased','running');
 CREATE INDEX IF NOT EXISTS wakes_queue_order ON wakes(status, enqueued_seq);
 CREATE INDEX IF NOT EXISTS schedule_due ON schedule(next_wake_at);
@@ -157,6 +200,9 @@ CREATE TABLE IF NOT EXISTS events (
 ) STRICT;
 ${createGoals}
 ${createWorkRecords}
+${createSessions}
+${createTurns}
+${createTurnItems}
 CREATE TABLE IF NOT EXISTS schedule (
   id TEXT PRIMARY KEY,
   agent TEXT NOT NULL,
@@ -215,6 +261,37 @@ export class SqliteLedger implements Ledger {
   readStream(streamId: string, fromStreamSeq = 1): EventRecord[] {
     return (this.db.prepare("SELECT * FROM events WHERE stream_id=? AND stream_seq>=? ORDER BY stream_seq").all(streamId, fromStreamSeq) as Row[]).map(mapEvent);
   }
+
+  putSession(session: SessionSnapshot, actor: string): EventRecord {
+    if (!session.id.trim() || !session.agent.trim()) throw new Error("session id and agent are required");
+    return this.#project("sessions", session, actor, "session.put", undefined, session.updatedAt, `session:${session.id}`);
+  }
+
+  putTurn(turn: TurnSnapshot, actor: string): EventRecord {
+    if (!turn.id.trim() || !turn.sessionId.trim()) throw new Error("turn id and session are required");
+    const current = this.turn(turn.id);
+    if (current) {
+      if (current.sessionId !== turn.sessionId || current.source !== turn.source) throw new Error("turn identity cannot change");
+      if (current.status !== "in_progress") throw new Error("terminal turn cannot change");
+      if (turn.status === "in_progress" && turn.endedAt !== null || turn.status !== "in_progress" && turn.endedAt === null) throw new Error("turn terminal time does not match status");
+    } else if (turn.status !== "in_progress") throw new Error("new turn must start in progress");
+    return this.#project("turns", turn, actor, current ? `turn.${turn.status}` : "turn.started", undefined, turn.endedAt ?? turn.startedAt, `turn:${turn.id}`);
+  }
+
+  putTurnItem(item: TurnItemSnapshot, actor: string): EventRecord {
+    if (!item.id.trim() || !item.turnId.trim()) throw new Error("turn item id and turn are required");
+    const turn = this.turn(item.turnId); if (!turn) throw new Error("turn item turn does not exist");
+    const current = this.db.prepare("SELECT * FROM turn_items WHERE id=?").get(item.id) as Row | undefined;
+    if (current && (String(current.turn_id) !== item.turnId || String(current.type) !== item.type || String(current.status) !== "in_progress")) throw new Error("turn item identity or terminal state cannot change");
+    return this.#project("turn_items", item, actor, current ? `item.${item.type}.${item.status}` : `item.${item.type}.started`, undefined, item.completedAt ?? item.createdAt, `turn:${item.turnId}`);
+  }
+
+  session(id: string): SessionSnapshot | null { const row = this.db.prepare("SELECT * FROM sessions WHERE id=?").get(id) as Row | undefined; return row ? mapSession(row) : null; }
+  sessions(): SessionSnapshot[] { return (this.db.prepare("SELECT * FROM sessions ORDER BY created_at,id").all() as Row[]).map(mapSession); }
+  turn(id: string): TurnSnapshot | null { const row = this.db.prepare("SELECT * FROM turns WHERE id=?").get(id) as Row | undefined; return row ? mapTurn(row) : null; }
+  turns(sessionId?: string): TurnSnapshot[] { return (sessionId ? this.db.prepare("SELECT * FROM turns WHERE session_id=? ORDER BY started_at,id").all(sessionId) : this.db.prepare("SELECT * FROM turns ORDER BY started_at,id").all() as Row[]).map(mapTurn); }
+  turnItems(turnId: string): TurnItemSnapshot[] { return (this.db.prepare("SELECT * FROM turn_items WHERE turn_id=? ORDER BY ordinal").all(turnId) as Row[]).map(mapTurnItem); }
+  activeTurn(sessionId: string): TurnSnapshot | null { const row = this.db.prepare("SELECT * FROM turns WHERE session_id=? AND status='in_progress'").get(sessionId) as Row | undefined; return row ? mapTurn(row) : null; }
 
   putGoal(goal: GoalSnapshot, actor: string, wakeId?: string): EventRecord {
     const normalized = normalizeGoal(goal);
@@ -641,7 +718,7 @@ export class SqliteLedger implements Ledger {
   rebuildProjections(): void {
     const source = this.events();
     this.#transaction(() => {
-      this.db.exec("DELETE FROM work_records; DELETE FROM actions; DELETE FROM mailbox; DELETE FROM wakes; DELETE FROM schedule; DELETE FROM goals;");
+      this.db.exec("DELETE FROM turn_items; DELETE FROM turns; DELETE FROM sessions; DELETE FROM work_records; DELETE FROM actions; DELETE FROM mailbox; DELETE FROM wakes; DELETE FROM schedule; DELETE FROM goals;");
       for (const event of source) {
         const data = event.data as { projection?: ProjectionName; snapshot?: unknown };
         if (data.projection && data.snapshot) this.#applyProjection(data.projection, data.snapshot, event.seq);
@@ -769,7 +846,16 @@ export class SqliteLedger implements Ledger {
   }
 
   #applyProjection(projection: ProjectionName, raw: unknown, sourceSeq: number): void {
-    if (projection === "goals") {
+    if (projection === "sessions") {
+      const v = raw as SessionSnapshot;
+      this.db.prepare(`INSERT INTO sessions VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET agent=excluded.agent,parent_session_id=excluded.parent_session_id,updated_at=excluded.updated_at`).run(v.id,v.agent,v.parentSessionId,v.createdAt,v.updatedAt);
+    } else if (projection === "turns") {
+      const v = raw as TurnSnapshot;
+      this.db.prepare(`INSERT INTO turns VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET goal_id=excluded.goal_id,goal_revision=excluded.goal_revision,status=excluded.status,error=excluded.error,ended_at=excluded.ended_at,lease_until=excluded.lease_until,lease_token=excluded.lease_token,runner_pid=excluded.runner_pid`).run(v.id,v.sessionId,v.source,v.goalId,v.goalRevision,v.status,v.error===null?null:JSON.stringify(v.error),v.startedAt,v.endedAt,v.leaseUntil,v.leaseToken,v.runnerPid);
+    } else if (projection === "turn_items") {
+      const v = raw as TurnItemSnapshot;
+      this.db.prepare(`INSERT INTO turn_items VALUES (?,?,?,?,?,json(?),?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,data=excluded.data,completed_at=excluded.completed_at`).run(v.id,v.turnId,v.ordinal,v.type,v.status,JSON.stringify(v.data),v.createdAt,v.completedAt);
+    } else if (projection === "goals") {
       const v = normalizeGoal(raw as GoalSnapshot);
       this.db.prepare(`INSERT INTO goals VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET parent_id=excluded.parent_id,objective=excluded.objective,observation_method=excluded.observation_method,verification_method=excluded.verification_method,owner=excluded.owner,phase=excluded.phase,revision=excluded.revision`).run(v.id,v.parentId,v.objective,v.observationMethod,v.verificationMethod ?? null,v.owner,v.phase,v.revision);
     } else if (projection === "work_records") {
@@ -866,7 +952,7 @@ export class SqliteLedger implements Ledger {
       } else if (!eventColumns.has("ignorable")) {
         this.db.exec("ALTER TABLE events ADD COLUMN ignorable INTEGER CHECK(ignorable IS NULL OR ignorable = 1)");
       }
-      this.db.exec(createWorkRecords);
+      this.db.exec(`${createWorkRecords}${createSessions}${createTurns}${createTurnItems}`);
       for (const goal of this.goals()) {
         if (!this.workRecord(goal.id)) this.#createWorkRecord(goal, "supervisor", `migration:work-record:${goal.id}`, undefined, this.#legacyWorkRecord(goal));
       }
@@ -883,6 +969,9 @@ export class SqliteLedger implements Ledger {
 }
 
 function mapEvent(r: Row): EventRecord { return { seq: Number(r.seq), streamId: String(r.stream_id), streamSeq: Number(r.stream_seq), ts: String(r.ts), actor: String(r.actor), type: String(r.type), data: JSON.parse(String(r.data)) as JsonValue, ...(Number(r.ignorable) === 1 ? { ignorable: true as const } : {}) }; }
+function mapSession(r: Row): SessionSnapshot { return { id:String(r.id),agent:String(r.agent),parentSessionId:r.parent_session_id===null?null:String(r.parent_session_id),createdAt:String(r.created_at),updatedAt:String(r.updated_at) }; }
+function mapTurn(r: Row): TurnSnapshot { return { id:String(r.id),sessionId:String(r.session_id),source:String(r.source) as TurnSnapshot["source"],goalId:r.goal_id===null?null:String(r.goal_id),goalRevision:r.goal_revision===null?null:Number(r.goal_revision),status:String(r.status) as TurnSnapshot["status"],error:r.error===null?null:JSON.parse(String(r.error)),startedAt:String(r.started_at),endedAt:r.ended_at===null?null:String(r.ended_at),leaseUntil:r.lease_until===null?null:String(r.lease_until),leaseToken:r.lease_token===null?null:String(r.lease_token),runnerPid:r.runner_pid===null?null:Number(r.runner_pid) }; }
+function mapTurnItem(r: Row): TurnItemSnapshot { return { id:String(r.id),turnId:String(r.turn_id),ordinal:Number(r.ordinal),type:String(r.type) as TurnItemSnapshot["type"],status:String(r.status) as TurnItemSnapshot["status"],data:JSON.parse(String(r.data)),createdAt:String(r.created_at),completedAt:r.completed_at===null?null:String(r.completed_at) }; }
 function normalizeGoal(goal: GoalSnapshot): GoalSnapshot { return { ...goal, observationMethod: goal.observationMethod ?? null, verificationMethod: goal.verificationMethod === undefined ? goal.observationMethod ?? null : goal.verificationMethod }; }
 function mapGoal(r: Row): GoalSnapshot { return { id: String(r.id), parentId: r.parent_id === null ? null : String(r.parent_id), objective: String(r.objective), observationMethod: r.observation_method === null || r.observation_method === undefined ? null : String(r.observation_method), verificationMethod: r.verification_method === null || r.verification_method === undefined ? null : String(r.verification_method), owner: String(r.owner), phase: String(r.phase) as GoalSnapshot["phase"], revision: Number(r.revision) }; }
 function mapWorkRecord(r: Row): WorkRecordSnapshot { return { goalId:String(r.goal_id),recordRevision:Number(r.record_revision),goalRevision:Number(r.goal_revision),content:String(r.content),updatedBy:String(r.updated_by),updatedInTurn:String(r.updated_in_turn),updatedInWake:r.updated_in_wake===null?null:String(r.updated_in_wake),updatedAt:String(r.updated_at),reason:String(r.reason),evidence:JSON.parse(String(r.evidence)) as number[],lastEventSeq:Number(r.last_event_seq) }; }
