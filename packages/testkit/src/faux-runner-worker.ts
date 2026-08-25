@@ -18,8 +18,8 @@ await runProcessWorker(async (request, emit, rpc): Promise<RunnerResult> => {
   if (process.env.GOAH_FAUX_CONTEXT_FILE) writeFileSync(process.env.GOAH_FAUX_CONTEXT_FILE, JSON.stringify(request.context));
   const byAgent = JSON.parse(process.env.GOAH_FAUX_STEPS_BY_AGENT ?? "{}") as Record<string, WorkerStep[]>;
   const byTrigger = JSON.parse(process.env.GOAH_FAUX_STEPS_BY_TRIGGER ?? "{}") as Record<string, WorkerStep[]>;
-  const triggerSteps = Object.entries(byTrigger).find(([prefix]) => request.wake.triggerRef.startsWith(prefix))?.[1];
-  const steps = triggerSteps ?? byAgent[request.wake.agent] ?? JSON.parse(process.env.GOAH_FAUX_STEPS ?? "[]") as WorkerStep[];
+  const triggerSteps = request.sourceWake ? Object.entries(byTrigger).find(([prefix]) => request.sourceWake!.triggerRef.startsWith(prefix))?.[1] : undefined;
+  const steps = triggerSteps ?? byAgent[request.agent] ?? JSON.parse(process.env.GOAH_FAUX_STEPS ?? "[]") as WorkerStep[];
   let goalBinding = request.turn?.goalBinding;
   let recordUpdated = false;
   for (const step of steps) {
@@ -44,7 +44,7 @@ await runProcessWorker(async (request, emit, rpc): Promise<RunnerResult> => {
         const current = await rpc("work_record.read", { goalId: goalBinding.goalId });
         const record = current && typeof current === "object" && !Array.isArray(current) ? current as Record<string, JsonValue> : {};
         const evidence = sourceSeqs(request.context);
-        await rpc("work_record.update", { expectedRevision: Number(record.recordRevision ?? 0), content: handoffRecord(step.handoff, request.wake.id), reason: "record faux Goal progress", evidence: evidence.length ? [Math.max(...evidence)] : [] });
+        await rpc("work_record.update", { expectedRevision: Number(record.recordRevision ?? 0), content: handoffRecord(step.handoff, request.execution.id), reason: "record faux Goal progress", evidence: evidence.length ? [Math.max(...evidence)] : [] });
       }
       return { outcome: "handoff", output: step.handoff };
     }

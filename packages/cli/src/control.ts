@@ -12,7 +12,6 @@ export type ControlRequest =
   | { op: "ping" }
   | { op: "status" }
   | { op: "interact"; message: string }
-  | { op: "interaction.attach"; wakeId: string }
   | { op: "turn.attach"; turnId: string }
   | { op: "turn.steer"; message: string }
   | { op: "turn.interrupt"; turnId: string }
@@ -22,7 +21,6 @@ export type ControlRequest =
   | { op: "goal.transition"; id: string; phase: "paused" | "active" }
   | { op: "goal.complete"; id: string; reason: string; evidence: number[] }
   | { op: "ceo.send"; message: string }
-  | { op: "ceo.steer"; message: string }
   | { op: "ceo.status" }
   | { op: "ceo.inbox" }
   | { op: "work.records" }
@@ -123,7 +121,6 @@ async function serve(socket: Socket, supervisor: Supervisor, ledger: Ledger, rel
 
 async function dispatch(request: ControlRequest, socket: Socket, supervisor: Supervisor, ledger: Ledger, reloadRuntime?: (configPath: string) => Promise<RuntimeSwap | undefined>, stop?: () => void): Promise<void> {
   if (request.op === "interact") { await interact(request.message, socket, supervisor, ledger); return; }
-  if (request.op === "interaction.attach") { for await (const frame of interactionWakeFrames(request.wakeId, ledger, () => !socket.destroyed)) write(socket, frame); socket.end(); return; }
   if (request.op === "turn.attach") { for await (const frame of turnFrames(request.turnId, ledger, () => !socket.destroyed)) write(socket, frame); socket.end(); return; }
   let value: unknown;
   if (request.op === "daemon.stop") {
@@ -142,11 +139,6 @@ async function dispatch(request: ControlRequest, socket: Socket, supervisor: Sup
   else if (request.op === "goal.transition") value = supervisor.transitionGoal(request.id, request.phase, "human");
   else if (request.op === "goal.complete") value = supervisor.completeGoal({ goalId: request.id, revision: requiredGoal(ledger, request.id).revision, reason: request.reason, evidence: request.evidence }, "human");
   else if (request.op === "ceo.send") value = supervisor.sendToCeo({ message: request.message });
-  else if (request.op === "ceo.steer") {
-    const steered = await supervisor.steerCeo(request.message);
-    if (!steered) throw new Error("the current Human turn is no longer accepting steering messages");
-    value = steered;
-  }
   else if (request.op === "ceo.status") value = ceoStatus(ledger, supervisor);
   else if (request.op === "ceo.inbox") value = ledger.unreadMail("human");
   else if (request.op === "work.records") value = ledger.workRecords();
@@ -168,7 +160,7 @@ async function interact(message: string, socket: Socket, supervisor: Supervisor,
   socket.end();
 }
 
-/** Shared CEO interaction stream used by the interactive shell and the web Console. */
+/** Shared CEO Turn stream used by the interactive shell and the web Console. */
 export async function* interactFrames(message: string, supervisor: Supervisor, ledger: Ledger, isActive: () => boolean = () => true): AsyncGenerator<ControlFrame> {
   if (!message.trim()) throw new Error("message is required");
   const accepted = await supervisor.startHumanTurn(message);
@@ -186,42 +178,6 @@ async function* turnFrames(turnId: string, ledger: Ledger, isActive: () => boole
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
-
-async function* interactionWakeFrames(wakeId: string, ledger: Ledger, isActive: () => boolean, afterSeq = 0): AsyncGenerator<ControlFrame> {
-  const target = ledger.wake(wakeId);
-  const mailId = target ? interactionMailIdFromTrigger(target.triggerRef) : null;
-  if (!target || !mailId) throw new Error("interaction wake not found");
-  let lastSeq = afterSeq;
-  while (true) {
-    if (!isActive()) return;
-    const wakes = ledger.wakes().filter((wake) => interactionMailIdFromTrigger(wake.triggerRef) === mailId).sort((left, right) => left.enqueuedSeq - right.enqueuedSeq);
-    const events = wakes.flatMap((wake) => ledger.eventsForWake(wake.id)).sort((left, right) => left.seq - right.seq);
-    for (const event of events) {
-      if (event.seq <= lastSeq) continue;
-      lastSeq = event.seq;
-      if (event.type === "message.assistant.delta" || event.type === "message.assistant.completed" || event.type.startsWith("tool.") || event.type === "handoff.recorded" || event.type.startsWith("wake.")) yield { type: "event", event: event as unknown as JsonValue };
-    }
-    const interaction = events.findLast((event) => event.type === "interaction.completed");
-    if (interaction) {
-      const completedWake = wakes.find((wake) => wake.id === interaction.streamId.replace(/^wake:/, "")) ?? wakes.at(-1)!;
-      yield { type: "result", value: { wake: completedWake, response: (interaction.data as { response?: JsonValue }).response ?? null } as unknown as JsonValue };
-      return;
-    }
-    const terminalWake = wakes.findLast((wake) => wake.status === "done" || wake.status === "merge_blocked");
-    if (terminalWake) {
-      const handoff = ledger.eventsForWake(terminalWake.id).findLast((event) => event.type === "handoff.recorded");
-      yield { type: "result", value: { wake: terminalWake, ...(handoff ? { handoff: handoff.data } : {}) } as unknown as JsonValue };
-      return;
-    }
-    const exhausted = ledger.mailbox().find((mail) => mail.id === `interaction-redelivery-exhausted:${mailId}`);
-    if (exhausted) { yield { type: "error", error: String((exhausted.body as { message?: unknown }).message ?? "Goah could not deliver your message.") }; return; }
-    const cancelled = ledger.eventsSince(0, ["interaction.cancelled"]).find((event) => (event.data as { mailId?: string }).mailId === mailId);
-    if (cancelled) { yield { type: "result", value: { wake: wakes.at(-1) ?? target, cancelled: true } as unknown as JsonValue }; return; }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
-
-function interactionMailIdFromTrigger(triggerRef: string): string | null { return triggerRef.startsWith("interaction:") ? triggerRef.slice("interaction:".length).split(":redelivery:", 1)[0]! : null; }
 
 function snapshot(ledger: Ledger, supervisor: Supervisor): JsonValue {
   return { seq: ledger.events().at(-1)?.seq ?? 0, sessions: ledger.sessions(), turns: ledger.turns(), goals: ledger.goals(), team: supervisor.teamList(), wakes: ledger.wakes(), actions: ledger.actions() } as unknown as JsonValue;

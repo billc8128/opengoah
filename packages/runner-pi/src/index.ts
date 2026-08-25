@@ -172,7 +172,7 @@ export class ProcessRunner implements Runner {
         void (async () => {
           try {
             const runtime = await this.options.prepareRuntime?.(request);
-            const serializable: WorkerRequest = { wake: request.wake, turn: request.turn, context: request.context, ...(runtime !== undefined ? { runtime } : {}) };
+            const serializable: WorkerRequest = { agent: request.agent, execution: request.execution, ...(request.sourceWake ? { sourceWake: request.sourceWake } : {}), turn: request.turn, context: request.context, ...(runtime !== undefined ? { runtime } : {}) };
             child.stdin?.write(`${JSON.stringify({ type: "start", request: serializable } satisfies ParentMessage)}\n`);
             resolveStartReady();
             if (this.options.timeoutMs) timer = setTimeout(() => { timedOut = true; void terminate(); }, this.options.timeoutMs);

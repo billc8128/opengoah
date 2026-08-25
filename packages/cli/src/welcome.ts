@@ -71,25 +71,4 @@ export function renderWelcome(snapshot: WelcomeSnapshot, hasHistory: boolean): s
   return lines;
 }
 
-function conversationLine(row: { actor: string; type: string; data: string }): Array<{ speaker: string; text: string }> {
-  try {
-    const data = JSON.parse(row.data) as Record<string, unknown>;
-    if (row.type === "mail.put") {
-      const snapshot = data.snapshot && typeof data.snapshot === "object" ? data.snapshot as Record<string, unknown> : {};
-      if (snapshot.from !== "human" || snapshot.to !== "ceo") return [];
-      const body = snapshot.body && typeof snapshot.body === "object" ? snapshot.body as Record<string, unknown> : {};
-      const text = typeof body.message === "string" ? body.message : typeof snapshot.body === "string" ? snapshot.body : "";
-      return text ? [{ speaker: "You", text: shorten(text) }] : [];
-    }
-    if (row.type === "interaction.completed") {
-      const response = data.response && typeof data.response === "object" ? data.response as Record<string, unknown> : {};
-      return typeof response.content === "string" && response.content.trim() ? [{ speaker: "Goah", text: shorten(response.content) }] : [];
-    }
-    if (row.actor !== "ceo") return [];
-    const results = Array.isArray(data.results) ? data.results.filter((item): item is string => typeof item === "string") : [];
-    const observations = Array.isArray(data.observations) ? data.observations.filter((item): item is string => typeof item === "string") : [];
-    const text = results[0] ?? observations[0] ?? "";
-    return text ? [{ speaker: "CEO", text: shorten(text) }] : [];
-  } catch { return []; }
-}
 function shorten(value: string): string { return value.length > 120 ? `${value.slice(0, 117)}…` : value; }

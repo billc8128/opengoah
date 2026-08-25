@@ -80,7 +80,7 @@ export interface SupervisorOptions {
   auditWriters?: string[];
   silence?: { maxSilentMs?: number; notify?: string } | null;
   retryPolicy?: { maxAttempts: number; baseDelayMs: number };
-  interactionRetryPolicy?: { maxAttempts: number; baseDelayMs: number };
+  turnRetryPolicy?: { maxAttempts: number; baseDelayMs: number };
   profiles?: AgentProfile[];
   runnerProfiles?: RunnerProfile[];
   verifyMetricsAfterWake?: boolean;
@@ -100,11 +100,10 @@ export class Supervisor {
   readonly #metricContracts = new Map<string, MetricContract>();
   readonly #silence: { maxSilentMs: number; notify: string } | null;
   readonly #retryPolicy: NonNullable<SupervisorOptions["retryPolicy"]>;
-  readonly #interactionRetryPolicy: NonNullable<SupervisorOptions["interactionRetryPolicy"]>;
+  readonly #turnRetryPolicy: NonNullable<SupervisorOptions["turnRetryPolicy"]>;
   readonly #profiles: Map<string, AgentProfile>;
   readonly #runnerProfiles: Map<string, RunnerProfile>;
   readonly #handles = new Map<string, RunnerHandle>();
-  readonly #steeredMailIds = new Map<string, string[]>();
   readonly #verifyMetricsAfterWake: boolean;
 
   #runner: Runner;
@@ -117,7 +116,7 @@ export class Supervisor {
     this.#auditWriters = new Set(options.auditWriters ?? ["verifier", "audit"]);
     this.#silence = options.silence === null ? null : { maxSilentMs: options.silence?.maxSilentMs ?? 12 * 3_600_000, notify: options.silence?.notify ?? "ceo" };
     this.#retryPolicy = options.retryPolicy ?? { maxAttempts: 0, baseDelayMs: 1_000 };
-    this.#interactionRetryPolicy = options.interactionRetryPolicy ?? { maxAttempts: 3, baseDelayMs: 1_000 };
+    this.#turnRetryPolicy = options.turnRetryPolicy ?? { maxAttempts: 3, baseDelayMs: 1_000 };
     this.#profiles = new Map([["ceo", { agent: "ceo", role: "ceo" } satisfies AgentProfile], ...(options.profiles ?? []).map((profile) => [profile.agent, profile] as const)]);
     this.#runnerProfiles = new Map((options.runnerProfiles ?? []).map((profile) => [profile.id, profile] as const));
     this.#verifyMetricsAfterWake = options.verifyMetricsAfterWake ?? false;
@@ -157,14 +156,6 @@ export class Supervisor {
     if (!wake) throw new Error("CEO wake was not admitted for an active root goal");
     return { goal, wake };
   }
-  interactWithCeo(message: string): { mail: MailSnapshot; wake: WakeSnapshot } {
-    if (!message.trim()) throw new Error("message is required");
-    const mail = humanInteractionMail(message);
-    this.ledger.putMail(mail, "human");
-    const wake = this.#enqueueInteractionMail(mail.id);
-    if (!wake) throw new Error("CEO interaction was not admitted");
-    return { mail, wake };
-  }
 
   sessionFor(agent = "ceo"): import("goah-ledger-contract").SessionSnapshot {
     const existing = this.ledger.sessions().find((session) => session.agent === agent && session.parentSessionId === null);
@@ -175,12 +166,13 @@ export class Supervisor {
 
   async startHumanTurn(message: string): Promise<{ sessionId: string; turnId: string; steered: boolean }> {
     if (!message.trim()) throw new Error("message is required");
+    const automatic = this.ledger.wakes().find((wake) => wake.agent === "ceo" && (wake.status === "leased" || wake.status === "running")); if (automatic) { const execution = this.ledger.turn(automatic.id); if (execution?.status === "in_progress") this.ledger.putTurn({ ...execution,status:"interrupted",endedAt:this.#now(),leaseUntil:null,leaseToken:null,runnerPid:null },"human"); await this.#stopWake(automatic); }
     const session = this.sessionFor("ceo"); const active = this.ledger.activeTurn(session.id);
     if (active) {
       const handle = this.#handles.get(active.id); if (!handle?.steer) throw new Error("the active Turn is not accepting steering");
       this.#appendTurnItem(active.id, "user_message", { text: message }, "human"); await handle.steer(message); return { sessionId: session.id, turnId: active.id, steered: true };
     }
-    const now = this.#now(); const leaseToken = randomUUID();
+    const now = this.#now(); this.ledger.putSession({ ...session,updatedAt:now },"supervisor"); const leaseToken = randomUUID();
     const turn: TurnSnapshot = { id: randomUUID(), sessionId: session.id, source: "human", goalId: null, goalRevision: null, status: "in_progress", error: null, startedAt: now, endedAt: null, leaseUntil: new Date(this.clock.now().getTime() + this.#leaseMs).toISOString(), leaseToken, runnerPid: null };
     this.ledger.putTurn(turn, "human"); this.#appendTurnItem(turn.id, "user_message", { text: message }, "human");
     void this.#runDirectTurn(turn, message, leaseToken); return { sessionId: session.id, turnId: turn.id, steered: false };
@@ -198,15 +190,14 @@ export class Supervisor {
     const currentMessages = this.ledger.turnItems(initial.id).filter((item) => item.type === "user_message").map((item) => String((item.data as { text?: unknown }).text ?? ""));
     const sourceSeqs = this.ledger.readStream(`turn:${initial.id}`).filter((event) => event.type === "item.user_message.started").map((event) => event.seq);
     const context = { text: [...(recent.length ? [`# Recent conversation\n\n${recent.join("\n")}`] : []), `# Human message\n\n${currentMessages.join("\n\nFollow-up: ")}`].join("\n\n"), sourceSeqs, capabilities: profile.capabilities ?? defaultCapabilities(profile.role), systemPrompt: profile.systemPrompt ?? "You are Goah's primary Agent. Respond naturally and use tools when useful.", ...(runnerProfile ? { runnerProfile } : {}) } as unknown as JsonValue;
-    const syntheticWake: WakeSnapshot = { id: initial.id, agent: "ceo", triggerRef: `turn:${initial.id}`, status: "running", leaseUntil: initial.leaseUntil, attempt: 1, startedAt: initial.startedAt, endedAt: null, enqueuedSeq: 1, leaseToken, runnerPid: null };
     let handle: RunnerHandle | null = null; let renewal: NodeJS.Timeout | null = null;
     try {
-      handle = this.runner.prepare({ wake: syntheticWake, turn: turnContext, context, now: () => this.#now(), emit: (trace) => this.#recordDirectTrace(initial.id, trace.type, trace.data), rpc: (method, params) => this.#agentRpcForTurn(initial.id, "ceo", turnContext, method, params) });
+      handle = this.runner.prepare({ agent:"ceo",execution:this.ledger.turn(initial.id)!,turn:turnContext,context,now:()=>this.#now(),emit:(trace)=>this.#recordDirectTrace(initial.id,trace.type,trace.data),rpc:(method,params)=>this.#agentRpcForTurn(initial.id,"ceo",turnContext,method,params) });
       this.#handles.set(initial.id, handle); if (handle.pid) this.ledger.putTurn({ ...this.ledger.turn(initial.id)!, runnerPid: handle.pid }, "supervisor"); renewal = setInterval(() => { const current = this.ledger.turn(initial.id); if (current?.status === "in_progress") this.ledger.putTurn({ ...current,leaseUntil:new Date(this.clock.now().getTime()+this.#leaseMs).toISOString() },"supervisor"); },Math.max(25,Math.floor(this.#leaseMs/3))); renewal.unref(); handle.begin(); const result = await handle.result; if (renewal) clearInterval(renewal); renewal = null; await handle.terminate(); this.#handles.delete(initial.id);
       const current = this.ledger.turn(initial.id); if (!current || current.status !== "in_progress") return;
       if (result.outcome === "abnormal") {
         const attempts = this.ledger.readStream(`turn:${initial.id}`).filter((event) => event.type === "turn.retry_started").length;
-        if (attempts < this.#interactionRetryPolicy.maxAttempts - 1) { this.ledger.appendEvent({ streamId:`turn:${initial.id}`,ts:this.#now(),actor:"supervisor",type:"turn.retry_started",data:{ attempt:attempts + 2,reason:result.reason } }); setTimeout(() => { void this.#runDirectTurn(this.ledger.turn(initial.id)!, message, leaseToken); }, this.#interactionRetryPolicy.baseDelayMs * 2 ** attempts); return; }
+        if (attempts < this.#turnRetryPolicy.maxAttempts - 1) { this.ledger.appendEvent({ streamId:`turn:${initial.id}`,ts:this.#now(),actor:"supervisor",type:"turn.retry_started",data:{ attempt:attempts + 2,reason:result.reason } }); setTimeout(() => { void this.#runDirectTurn(this.ledger.turn(initial.id)!, message, leaseToken); }, this.#turnRetryPolicy.baseDelayMs * 2 ** attempts); return; }
         this.ledger.putTurn({ ...current, status: "failed", error: { message: result.reason }, endedAt: this.#now(), leaseUntil: null, leaseToken: null, runnerPid: null }, "supervisor"); return;
       }
       if (turnContext.goalBinding) {
@@ -226,43 +217,8 @@ export class Supervisor {
   #recordDirectTrace(turnId: string, type: string, data: JsonValue, actor = "ceo"): void {
     this.ledger.appendEvent({ streamId: `turn:${turnId}`, ts: this.#now(), actor, type, data });
     if (type === "message.assistant.completed") { const message = data && typeof data === "object" && !Array.isArray(data) ? (data as { message?: { content?: unknown } }).message : undefined; const text = messageTextContent(message?.content); if (text) this.#appendTurnItem(turnId, "assistant_message", { text }, actor); }
-    else if (type === "tool.called") { const input = data as { callId?: unknown; name?: unknown; arguments?: JsonValue }; this.#appendTurnItem(turnId, "tool_call", { tool: String(input.name), arguments: input.arguments ?? null }, actor, `tool:${String(input.callId)}`, "in_progress"); }
-    else if (type === "tool.completed") { const input = data as { callId?: unknown; result?: JsonValue; isError?: unknown }; const id = `tool:${String(input.callId)}`; const existing = this.ledger.turnItems(turnId).find((item) => item.id === id); if (existing) this.ledger.putTurnItem({ ...existing, status: input.isError ? "failed" : "completed", completedAt: this.#now() }, actor); this.#appendTurnItem(turnId, "tool_result", { callId: String(input.callId), result: input.result ?? null }, actor); }
-  }
-  async steerCeo(message: string): Promise<{ mail: MailSnapshot; wake: WakeSnapshot; steered?: true; queued?: true; streamAfterSeq?: number } | null> {
-    if (!message.trim()) throw new Error("message is required");
-    const human = this.ledger.wakes().find((wake) => wake.agent === "ceo" && wake.status === "running" && Boolean(interactionMailId(wake)));
-    const handle = human ? this.#handles.get(human.id) : undefined;
-    if (!human || !handle?.steer) {
-      const pending = [...this.ledger.wakes()].reverse().find((wake) => {
-        const primary = interactionMailId(wake);
-        return wake.agent === "ceo" && Boolean(primary) && wake.status !== "done" && wake.status !== "merge_blocked" && this.ledger.unreadMail("ceo").some((mail) => mail.id === primary);
-      });
-      const primary = pending ? interactionMailId(pending) : null;
-      if (!pending || !primary) return null;
-      if (this.ledger.wakes().filter((wake) => interactionMailId(wake) === primary).length >= this.#interactionRetryPolicy.maxAttempts) return null;
-      const mail = humanInteractionFollowupMail(message, primary);
-      const event = this.ledger.putMail(mail, "human", pending.id);
-      this.ledger.appendEvent({ streamId: wakeStream(pending.id), ts: this.#now(), actor: "human", type: "interaction.followup_queued", data: { mailId: mail.id, interactionMailId: primary } });
-      return { mail, wake: pending, steered: true, streamAfterSeq: event.seq };
-    }
-    const mail = humanInteractionMail(message);
-    const event = this.ledger.putMail(mail, "human", human.id);
-    try { await handle.steer(message); }
-    catch { const wake = this.#enqueueInteractionMail(mail.id); if (!wake) throw new Error("Human interaction delivery retries are exhausted"); return { mail, wake, queued: true }; }
-    const ids = this.#steeredMailIds.get(human.id) ?? [];
-    ids.push(mail.id); this.#steeredMailIds.set(human.id, ids);
-    this.ledger.appendEvent({ streamId: wakeStream(human.id), ts: this.#now(), actor: "human", type: "interaction.steered", data: { mailId: mail.id } });
-    return { mail, wake: human, steered: true, streamAfterSeq: event.seq };
-  }
-  /** Human conversation takes the CEO foreground, interrupting only automatic Goal work. */
-  async interactWithCeoNow(message: string): Promise<{ mail: MailSnapshot; wake: WakeSnapshot; steered?: true; queued?: true; streamAfterSeq?: number }> {
-    const steered = await this.steerCeo(message);
-    if (steered) return steered;
-    const automatic = this.ledger.wakes().find((wake) => wake.agent === "ceo" && ["leased", "running"].includes(wake.status) && !interactionMailId(wake));
-    const accepted = this.interactWithCeo(message);
-    if (automatic) await this.#stopWake(automatic);
-    return accepted;
+    else if (type === "tool.called") { const input = data as { callId?: unknown; name?: unknown; arguments?: JsonValue }; this.#appendTurnItem(turnId, "tool_call", { tool: String(input.name), arguments: input.arguments ?? null }, actor, `${turnId}:tool:${String(input.callId)}`, "in_progress"); }
+    else if (type === "tool.completed") { const input = data as { callId?: unknown; result?: JsonValue; isError?: unknown }; const id = `${turnId}:tool:${String(input.callId)}`; const existing = this.ledger.turnItems(turnId).find((item) => item.id === id); if (existing) this.ledger.putTurnItem({ ...existing, status: input.isError ? "failed" : "completed", completedAt: this.#now() }, actor); this.#appendTurnItem(turnId, "tool_result", { callId: String(input.callId), result: input.result ?? null }, actor); }
   }
   sendToCeo(body: JsonValue, level: "fyi" | "decision" | "emergency" = "decision"): { mail: MailSnapshot; wake: WakeSnapshot } {
     const mail = { id: randomUUID(), to: "ceo", from: "human", level, body, readAt: null };
@@ -328,14 +284,8 @@ export class Supervisor {
 
   async stopAgentWake(agent: string): Promise<WakeSnapshot | null> {
     const active = this.ledger.wakes().find((item) => item.agent === agent && ["running", "leased", "queued"].includes(item.status));
-    const pending = [...this.ledger.wakes()].reverse().find((item) => { const id = interactionMailId(item); return item.agent === agent && Boolean(id) && this.ledger.unreadMail(agent).some((mail) => mail.id === id); });
-    const wake = pending ?? active;
+    const wake = active;
     if (!wake) return null;
-    const interactionId = interactionMailId(wake);
-    if (interactionId) {
-      const mailIds = this.ledger.unreadMail(agent).filter((mail) => mail.id === interactionId || interactionFollowupId(mail) === interactionId).map((mail) => mail.id);
-      this.ledger.failInteraction({ agent, mailId: interactionId, mailIds, ts: this.#now(), reason: "cancelled by human", outcome: "cancelled" });
-    }
     if (wake.status === "queued") { this.#suppressQueuedWake(agent, "stopped by human"); return this.#wake(wake.id); }
     if (wake.status === "running" || wake.status === "leased") await this.#stopWake(wake);
     return this.#wake(wake.id);
@@ -366,16 +316,16 @@ export class Supervisor {
       running = this.ledger.markWakeRunning(wake.id, this.#now(), leaseToken);
       const turn = this.#turnContext(running);
       const session = this.sessionFor(running.agent); const existingTurn = this.ledger.turn(running.id);
-      if (!existingTurn) this.ledger.putTurn({ id:running.id,sessionId:session.id,source:turn.source.kind === "human" ? "human" : turn.source.kind === "goal_driver" ? "goal" : "system",goalId:turn.goalBinding?.goalId??null,goalRevision:turn.goalBinding?.goalRevision??null,status:"in_progress",error:null,startedAt:this.#now(),endedAt:null,leaseUntil:running.leaseUntil,leaseToken,runnerPid:running.runnerPid },"supervisor");
-      const primaryInteractionMailId = interactionMailId(running);
-      const deliveredMailIds = !turn.goalBinding && primaryInteractionMailId
-        ? this.ledger.unreadMail(running.agent).filter((mail) => mail.id === primaryInteractionMailId || interactionFollowupId(mail) === primaryInteractionMailId).map((mail) => mail.id)
-        : this.ledger.unreadMail(running.agent).map((mail) => mail.id);
+      this.ledger.putSession({ ...session,updatedAt:this.#now() },"supervisor");
+      if (!existingTurn) this.ledger.putTurn({ id:running.id,sessionId:session.id,source:turn.source.kind === "human" ? "human" : turn.source.kind === "goal" ? "goal" : "system",goalId:turn.goalBinding?.goalId??null,goalRevision:turn.goalBinding?.goalRevision??null,status:"in_progress",error:null,startedAt:this.#now(),endedAt:null,leaseUntil:running.leaseUntil,leaseToken,runnerPid:running.runnerPid },"supervisor");
+      const deliveredMailIds = this.ledger.unreadMail(running.agent).map((mail) => mail.id);
       this.ledger.appendRunnerEvent({ streamId: wakeStream(running.id), ts: this.#now(), actor: running.agent, type: "run.admitted", data: turn as unknown as JsonValue }, leaseToken);
       const workRecordRevisionAtStart = turn.goalBinding ? this.ledger.workRecord(turn.goalBinding.goalId)?.recordRevision ?? -1 : -1;
       const context = this.#loadContext(running, turn);
       handle = this.runner.prepare({
-        wake: running,
+        agent: running.agent,
+        execution: this.ledger.turn(running.id)!,
+        sourceWake: running,
         turn,
         context,
         now: () => this.#now(),
@@ -383,11 +333,12 @@ export class Supervisor {
         rpc: (method, params) => this.#agentRpc(running, turn, leaseToken, method, params),
       });
       this.#handles.set(running.id, handle);
-      if (handle.pid) running = this.ledger.attachWakeProcess(running.id, leaseToken, handle.pid, this.#now());
+      if (handle.pid) { running = this.ledger.attachWakeProcess(running.id, leaseToken, handle.pid, this.#now()); const execution=this.ledger.turn(running.id)!; this.ledger.putTurn({ ...execution,runnerPid:handle.pid },"supervisor"); }
       renewal = setInterval(() => {
         try {
           const now = this.clock.now();
           this.ledger.renewWakeLease(running.id, leaseToken, new Date(now.getTime() + this.#leaseMs).toISOString(), now.toISOString());
+          const execution=this.ledger.turn(running.id); if (execution?.status === "in_progress") this.ledger.putTurn({ ...execution,leaseUntil:new Date(now.getTime()+this.#leaseMs).toISOString() },"supervisor");
         } catch { void handle?.terminate(); }
       }, Math.max(25, Math.floor(this.#leaseMs / 3)));
       renewal.unref();
@@ -397,20 +348,15 @@ export class Supervisor {
       await handle.terminate();
       this.#handles.delete(running.id);
       if (result.outcome === "abnormal") {
-        this.#steeredMailIds.delete(running.id);
-        await this.#markAbnormal(running, result.reason);
         const execution = this.ledger.turn(running.id); if (execution?.status === "in_progress") this.ledger.putTurn({ ...execution,status:"failed",error:{message:result.reason},endedAt:this.#now(),leaseUntil:null,leaseToken:null,runnerPid:null },"supervisor");
+        await this.#markAbnormal(running, result.reason);
         return this.#wake(running.id);
       }
 
       if (result.outcome === "response") {
         if (turn.goalBinding) throw new Error("a Goal-bound Turn must finish with a handoff");
-        const mailId = interactionMailId(running);
-        if (!mailId) throw new Error("an ordinary response requires an interaction mail");
-        this.ledger.commitInteraction({ agent: running.agent, wakeId: running.id, mailId, mailIds: [...new Set([...deliveredMailIds, ...(this.#steeredMailIds.get(running.id) ?? [])])], ts: this.#now(), response: result.response });
-        this.#steeredMailIds.delete(running.id);
-        this.ledger.finishWake(running.id, "done", this.#now());
         const execution = this.ledger.turn(running.id)!; if (!this.ledger.turnItems(running.id).some((item) => item.type === "assistant_message")) this.#appendTurnItem(running.id,"assistant_message",{text:result.response.content},running.agent); this.ledger.putTurn({ ...execution,status:"completed",endedAt:this.#now(),leaseUntil:null,leaseToken:null,runnerPid:null },"supervisor");
+        this.ledger.finishWake(running.id, "done", this.#now());
         return this.#wake(running.id);
       }
 
@@ -423,10 +369,9 @@ export class Supervisor {
       const schedule = output.nextWakeAt
         ? { id: `schedule:${running.agent}`, agent: running.agent, nextWakeAt: output.nextWakeAt, reason: "handoff.next_steps", setBy: running.agent }
         : null;
-      const handoffEvent = this.ledger.commitHandoff({ agent: running.agent, wakeId: running.id, mailIds: [...new Set([...deliveredMailIds, ...(this.#steeredMailIds.get(running.id) ?? [])])], ts: this.#now(), output, outgoingMail, schedule });
-      this.#steeredMailIds.delete(running.id);
-      this.ledger.finishWake(running.id, "done", this.#now());
+      const handoffEvent = this.ledger.commitHandoff({ agent: running.agent, wakeId: running.id, mailIds: deliveredMailIds, ts: this.#now(), output, outgoingMail, schedule });
       const execution = this.ledger.turn(running.id)!; this.#appendTurnItem(running.id,"handoff",output.handoff as unknown as JsonValue,running.agent); this.ledger.putTurn({ ...execution,status:"completed",endedAt:this.#now(),leaseUntil:null,leaseToken:null,runnerPid:null },"supervisor");
+      this.ledger.finishWake(running.id, "done", this.#now());
       if (this.#role(running.agent) !== "ceo" && handoffTriggersCeo(output.handoff) && this.#hasActiveRoot()) {
         this.#enqueueTrigger("ceo", `child-handoff:${handoffEvent.seq}`);
       }
@@ -438,9 +383,8 @@ export class Supervisor {
       if (renewal) clearInterval(renewal);
       if (handle) await handle.terminate();
       this.#handles.delete(running.id);
-      this.#steeredMailIds.delete(running.id);
-      await this.#markAbnormal(running, error instanceof Error ? error.message : String(error));
       const execution = this.ledger.turn(running.id); if (execution?.status === "in_progress") this.ledger.putTurn({ ...execution,status:"failed",error:{message:error instanceof Error?error.message:String(error)},endedAt:this.#now(),leaseUntil:null,leaseToken:null,runnerPid:null },"supervisor");
+      await this.#markAbnormal(running, error instanceof Error ? error.message : String(error));
       return this.#wake(running.id);
     }
   }
@@ -455,11 +399,8 @@ export class Supervisor {
       await this.#collectMetrics();
       this.#scheduleMetricAlerts();
       this.#checkSystemSilence();
-      const inFlightSteering = new Set([...this.#steeredMailIds.values()].flat());
       for (const mail of this.ledger.triggeringMail()) {
-        if (inFlightSteering.has(mail.id)) continue;
-        if (isHumanInteractionMail(mail)) this.#enqueueInteractionMail(mail.id);
-        else if (!interactionFollowupId(mail)) this.#enqueueTrigger(mail.to, `mail:${mail.id}`);
+        this.#enqueueTrigger(mail.to, `mail:${mail.id}`);
       }
       const now = this.clock.now();
       const leaseToken = randomUUID();
@@ -583,33 +524,13 @@ export class Supervisor {
     return this.#enqueueTrigger(schedule.agent, `${schedule.id}@${schedule.nextWakeAt}`);
   }
 
-  #enqueueInteractionMail(mailId: string): WakeSnapshot | null {
-    const live = this.ledger.wakes().find((wake) => wake.agent === "ceo" && ["queued", "leased", "running"].includes(wake.status) && interactionMailId(wake) === mailId);
-    if (live) return live;
-    const prior = this.ledger.wakes().filter((wake) => wake.agent === "ceo" && interactionMailId(wake) === mailId).length;
-    if (prior >= this.#interactionRetryPolicy.maxAttempts) {
-      const notificationId = `interaction-redelivery-exhausted:${mailId}`;
-      if (!this.ledger.mailbox().some((mail) => mail.id === notificationId)) {
-        const mailIds = this.ledger.unreadMail("ceo").filter((mail) => mail.id === mailId || interactionFollowupId(mail) === mailId).map((mail) => mail.id);
-        const notification: MailSnapshot = { id: notificationId, to: "human", from: "supervisor", level: "decision", body: { type: "interaction_redelivery_exhausted", mailId, mailIds, attempts: prior, message: "Goah could not deliver your message. Check provider/auth status, then send it again." }, readAt: null };
-        this.ledger.failInteraction({ agent: "ceo", mailId, mailIds, ts: this.#now(), reason: "delivery retries exhausted", outcome: "exhausted", notification });
-      }
-      return null;
-    }
-    const previous = this.ledger.wakes().filter((wake) => wake.agent === "ceo" && interactionMailId(wake) === mailId).at(-1);
-    if (previous?.endedAt && this.clock.now().getTime() < Date.parse(previous.endedAt) + this.#interactionRetryPolicy.baseDelayMs * 2 ** Math.max(0, prior - 1)) return null;
-    const wake = this.#enqueueTrigger("ceo", prior ? `interaction:${mailId}:redelivery:${prior}` : `interaction:${mailId}`);
-    if (!wake) throw new Error("CEO interaction was not admitted");
-    return wake;
-  }
-
   #enqueueTrigger(agent: string, triggerRef: string): WakeSnapshot | null {
     const exact = this.ledger.wakeByTrigger(agent, triggerRef);
     if (exact) return exact;
     const ownsLiveGoal = this.ledger.goalsForOwner(agent).some((goal) => goal.phase === "active" || goal.phase === "blocked");
-    const ceoInterrupt = agent === "ceo" && (triggerRef.startsWith("interaction:") || triggerRef.startsWith("mail:") || triggerRef.startsWith("child-"));
+    const ceoInterrupt = agent === "ceo" && (triggerRef.startsWith("mail:") || triggerRef.startsWith("child-"));
     if (!ownsLiveGoal && !ceoInterrupt) return null;
-    const queued = triggerRef.startsWith("interaction:") ? null : this.ledger.queuedWakeForAgent(agent);
+    const queued = this.ledger.queuedWakeForAgent(agent);
     if (queued) {
       this.ledger.appendEvent({ streamId: wakeStream(queued.id), ts: this.#now(), actor: "supervisor", type: "wake.trigger_coalesced", data: { wakeId: queued.id, triggerRef } });
       return queued;
@@ -675,11 +596,10 @@ export class Supervisor {
   }
 
   #turnContext(wake: WakeSnapshot): TurnContext {
-    if (interactionMailId(wake)) return { source: { kind: "human" } };
     const goals = this.ledger.goalsForOwner(wake.agent).filter((goal) => goal.phase === "active");
     const goal = goals.find((candidate) => candidate.parentId === null) ?? goals[0];
     const humanMail = wake.triggerRef.startsWith("mail:") && this.ledger.mailbox().some((mail) => mail.id === wake.triggerRef.slice(5) && mail.from === "human");
-    return { source: humanMail ? { kind: "human" } : { kind: "goal_driver", round: goal ? (this.ledger.workRecord(goal.id)?.recordRevision ?? 0) + 1 : 1 }, ...(goal ? { goalBinding: { goalId: goal.id, goalRevision: goal.revision } } : {}) };
+    return { source: humanMail ? { kind: "human" } : { kind: "goal", round: goal ? (this.ledger.workRecord(goal.id)?.recordRevision ?? 0) + 1 : 1 }, ...(goal ? { goalBinding: { goalId: goal.id, goalRevision: goal.revision } } : {}) };
   }
 
   #loadContext(wake: WakeSnapshot, turn: TurnContext): JsonValue {
@@ -687,28 +607,6 @@ export class Supervisor {
     const role = profile.role;
     const capabilities = profile.capabilities ?? defaultCapabilities(role);
     const runnerProfile = this.#runnerProfiles.get(profile.runnerProfile ?? "default");
-    if (!turn.goalBinding && interactionMailId(wake)) {
-      const primaryId = interactionMailId(wake)!;
-      const mail = this.ledger.mailbox().find((candidate) => candidate.id === primaryId);
-      const body = mail?.body && typeof mail.body === "object" && !Array.isArray(mail.body) ? mail.body as Record<string, JsonValue> : {};
-      const message = typeof body.message === "string" ? body.message : "";
-      const followups = this.ledger.unreadMail(wake.agent).filter((candidate) => interactionFollowupId(candidate) === primaryId);
-      const mailIds = [primaryId, ...followups.map((candidate) => candidate.id)];
-      const mailEvents = this.ledger.eventsSince(0, ["mail.put"]).filter((event) => mailIds.includes(String((event.data as { snapshot?: { id?: string } }).snapshot?.id)));
-      const recent = this.ledger.eventsSince(0, ["interaction.completed"]).filter((event) => event.actor === wake.agent).slice(-8).map((event) => {
-        const data = event.data as { mailId?: string; response?: { content?: string } };
-        const prior = this.ledger.mailbox().find((candidate) => candidate.id === data.mailId);
-        const priorBody = prior?.body && typeof prior.body === "object" && !Array.isArray(prior.body) ? prior.body as Record<string, JsonValue> : {};
-        return `Human: ${typeof priorBody.message === "string" ? priorBody.message : ""}\nAssistant: ${data.response?.content ?? ""}`;
-      });
-      return {
-        text: [...(recent.length ? [`# Recent conversation\n\n${recent.join("\n\n")}`] : []), `# Human message\n\n${message}${followups.map((candidate) => `\n\nFollow-up: ${String((candidate.body as { message?: unknown }).message ?? "")}`).join("")}`].join("\n\n"),
-        sourceSeqs: mailEvents.map((event) => event.seq),
-        capabilities,
-        systemPrompt: profile.systemPrompt ?? "You are Goah's primary Agent. Respond naturally to the Human, use tools when useful, and keep the final answer concise. Do not create or operate a Goal unless the Human expresses durable Goal intent.",
-        ...(runnerProfile ? { runnerProfile } : {}),
-      } as unknown as JsonValue;
-    }
     const goals = role === "ceo" ? this.ledger.goals() : this.ledger.goalsForOwner(wake.agent);
     const mail = this.ledger.unreadMail(wake.agent);
     const handoff = this.ledger.lastEvent(wake.agent, "handoff.recorded");
@@ -751,13 +649,13 @@ export class Supervisor {
   #now(): string { return this.clock.now().toISOString(); }
 
   async #agentRpc(wake: WakeSnapshot, turn: TurnContext, leaseToken: string, method: AgentCapability, params: JsonValue): Promise<JsonValue> {
-    const current = this.ledger.wake(wake.id);
-    if (!current || current.status !== "running" || current.leaseToken !== leaseToken || !current.leaseUntil || current.leaseUntil < this.#now()) throw new Error("stale runner RPC rejected");
+    const execution = this.ledger.turn(wake.id);
+    if (!execution || execution.status !== "in_progress" || execution.leaseToken !== leaseToken || !execution.leaseUntil || execution.leaseUntil < this.#now()) throw new Error("stale runner RPC rejected");
     const profile = this.#profiles.get(wake.agent) ?? { agent: wake.agent, role: "child" as const };
     const allowed = new Set(profile.capabilities ?? defaultCapabilities(profile.role));
     if (!allowed.has(method)) throw new Error(`${profile.role} agent is not allowed to call ${method}`);
     if (!turn.goalBinding && goalBoundCapability(method)) throw new Error(`${method} requires a Goal-bound Turn`);
-    this.ledger.appendRunnerEvent({ streamId: wakeStream(wake.id), ts: this.#now(), actor: wake.agent, type: `rpc.${method}`, data: params }, leaseToken);
+    this.ledger.appendEvent({ streamId: `turn:${wake.id}`, ts: this.#now(), actor: wake.agent, type: `rpc.${method}`, data: params });
     const input = asRecord(params);
     if (method === "ledger.search") return this.ledger.searchEvents(String(input.query), Number(input.limit ?? 20)) as unknown as JsonValue;
     if (method === "team.list") return this.teamList() as unknown as JsonValue;
@@ -994,11 +892,6 @@ function minimalEnvironment(explicit: Record<string, string> = {}): NodeJS.Proce
   return { ...env, ...explicit };
 }
 function escapeHtml(value: string): string { return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"); }
-function interactionMailId(wake: WakeSnapshot): string | null { return wake.triggerRef.startsWith("interaction:") ? wake.triggerRef.slice("interaction:".length).split(":redelivery:", 1)[0]! : null; }
-function humanInteractionMail(message: string): MailSnapshot { return { id: randomUUID(), to: "ceo", from: "human", level: "decision", body: { type: "interaction", message }, readAt: null }; }
-function humanInteractionFollowupMail(message: string, interactionMailId: string): MailSnapshot { return { id: randomUUID(), to: "ceo", from: "human", level: "decision", body: { type: "interaction_followup", interactionMailId, message }, readAt: null }; }
-function isHumanInteractionMail(mail: MailSnapshot): boolean { return mail.from === "human" && Boolean(mail.body && typeof mail.body === "object" && !Array.isArray(mail.body) && (mail.body as Record<string, JsonValue>).type === "interaction"); }
-function interactionFollowupId(mail: MailSnapshot): string | null { if (mail.from !== "human" || !mail.body || typeof mail.body !== "object" || Array.isArray(mail.body)) return null; const body = mail.body as Record<string, JsonValue>; return body.type === "interaction_followup" && typeof body.interactionMailId === "string" ? body.interactionMailId : null; }
 function messageTextContent(content: unknown): string { if (typeof content === "string") return content; if (!Array.isArray(content)) return ""; return content.map((part) => part && typeof part === "object" && !Array.isArray(part) && (part as { type?: unknown }).type === "text" ? String((part as { text?: unknown }).text ?? "") : "").filter(Boolean).join("\n"); }
 function handoffBlocked(handoff: Handoff): boolean { return "goalId" in handoff ? handoff.outcome === "blocked" : Boolean(handoff.blocker); }
 function handoffTriggersCeo(handoff: Handoff): boolean { return "goalId" in handoff ? handoff.outcome === "blocked" || handoff.outcome === "completion_proposed" : Boolean(handoff.material || handoff.blocker); }

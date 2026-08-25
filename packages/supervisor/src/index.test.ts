@@ -15,7 +15,7 @@ function taggedRunner(tag: string): Runner {
 
 test("RunnerRouter selects by opaque Runner Profile without knowing provider or model", async () => {
   const router = new RunnerRouter(new Map([["ceo", taggedRunner("ceo-runner")], ["worker", taggedRunner("worker-runner")]]));
-  const request = { wake, turn: { source: { kind: "system", reason: "test" } }, context: { runnerProfile: { id: "worker", runner: "anything", config: { opaque: true } } }, now: () => "", emit: () => undefined } satisfies RunRequest;
+  const request = { agent:wake.agent,sourceWake:wake,execution:{ id:wake.id,sessionId:"session",source:"system",goalId:null,goalRevision:null,status:"in_progress",error:null,startedAt:"2026-08-18T00:00:00.000Z",endedAt:null,leaseUntil:wake.leaseUntil,leaseToken:wake.leaseToken,runnerPid:null }, turn: { source: { kind: "system", reason: "test" } }, context: { runnerProfile: { id: "worker", runner: "anything", config: { opaque: true } } }, now: () => "", emit: () => undefined } satisfies RunRequest;
   const handle = router.prepare(request);
   handle.begin();
   assert.deepEqual(await handle.result, { outcome: "abnormal", reason: "worker-runner" });

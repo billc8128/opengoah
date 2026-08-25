@@ -46,7 +46,7 @@ export async function runPiWorker(): Promise<void> {
         const handoff = JSON.parse(process.env.GOAH_PI_FAUX_HANDOFF ?? "{}") as Record<string, unknown>;
         const current = contextRecord.workRecord && typeof contextRecord.workRecord === "object" && !Array.isArray(contextRecord.workRecord) ? contextRecord.workRecord as Record<string, unknown> : {};
         const evidence = Array.isArray(contextRecord.sourceSeqs) ? contextRecord.sourceSeqs.filter((value): value is number => typeof value === "number") : [];
-        const record = `# Current State\n\nFaux Goal work completed.\n\n# Observations\n\n${JSON.stringify(handoff.observations ?? [])}\n\n# Work Completed\n\n${JSON.stringify(handoff.results ?? [])}\n\n# Decisions\n\nRecord the scripted result from ${request.wake.id}.\n\n# Blockers\n\n${String(handoff.blocker ?? "None.")}\n\n# Next Steps\n\n${JSON.stringify(handoff.nextSteps ?? [])}\n`;
+        const record = `# Current State\n\nFaux Goal work completed.\n\n# Observations\n\n${JSON.stringify(handoff.observations ?? [])}\n\n# Work Completed\n\n${JSON.stringify(handoff.results ?? [])}\n\n# Decisions\n\nRecord the scripted result from ${request.execution.id}.\n\n# Blockers\n\n${String(handoff.blocker ?? "None.")}\n\n# Next Steps\n\n${JSON.stringify(handoff.nextSteps ?? [])}\n`;
         faux.setResponses([
           fauxAssistantMessage(fauxToolCall("work_record_update", { expectedRevision: Number(current.recordRevision ?? 0), content: record, reason: "record faux Goal progress", evidence: evidence.length ? [Math.max(...evidence)] : [] }), { stopReason: "toolUse" }),
           fauxAssistantMessage(fauxToolCall("handoff", handoff), { stopReason: "toolUse" }),
@@ -79,7 +79,7 @@ export async function runPiWorker(): Promise<void> {
       ? new Set(contextRecord.capabilities.filter((value): value is AgentCapability => typeof value === "string"))
       : undefined;
     if (contextRecord.workRecord && typeof contextRecord.workRecord === "object" && !Array.isArray(contextRecord.workRecord) && typeof contextRecord.workRecord.recordRevision === "number") goalState.recordRevision = contextRecord.workRecord.recordRevision;
-    const tools = createTools(root, (value) => { output = value; }, rpc, request.wake.startedAt, capabilities, goalState, protectedPaths);
+    const tools = createTools(root, (value) => { output = value; }, rpc, request.execution.startedAt, capabilities, goalState, protectedPaths);
     const contextPolicy = resolveContextPolicy(model.contextWindow, process.env);
     emit({ type: "session.started", data: { formatVersion: SESSION_FORMAT_VERSION, provider, model: modelId, runner: "pi", contextWindowTokens: model.contextWindow, maxOutputTokensPerTurn: model.maxTokens } });
     const suppliedPrompt = typeof contextRecord.systemPrompt === "string" ? contextRecord.systemPrompt : undefined;
@@ -155,7 +155,7 @@ export async function runPiWorker(): Promise<void> {
     process.once("SIGTERM", abortAgent);
     process.once("SIGINT", abortAgent);
     try {
-      await agent.prompt(`Wake started at: ${request.wake.startedAt ?? "unknown"}\n\n${activeContext}\n\nRunner root: ${root}. Manage local files directly when the goal requires them.`);
+      await agent.prompt(`Turn started at: ${request.execution.startedAt}\n\n${activeContext}\n\nRunner root: ${root}. Manage local files directly when the goal requires them.`);
     } finally {
       acceptingSteering = false;
       process.off("SIGTERM", abortAgent);

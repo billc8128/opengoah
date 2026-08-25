@@ -17,8 +17,6 @@ import {
   type GoalSnapshot,
   type GoalCompletionRequest,
   type HandoffCommit,
-  type InteractionCommit,
-  type InteractionFailureCommit,
   type JsonValue,
   type Ledger,
   type MailSnapshot,
@@ -481,7 +479,7 @@ export class SqliteLedger implements Ledger {
     return this.#transaction(() => {
       const row = this.db.prepare(`SELECT * FROM wakes w WHERE status='queued' AND NOT EXISTS (
         SELECT 1 FROM wakes active WHERE active.agent=w.agent AND active.status IN ('leased','running')
-      ) ORDER BY CASE WHEN trigger_ref LIKE 'interaction:%' THEN 0 ELSE 1 END,enqueued_seq LIMIT 1`).get() as Row | undefined;
+      ) ORDER BY enqueued_seq LIMIT 1`).get() as Row | undefined;
       if (!row) return null;
       const current = mapWake(row);
       const next: WakeSnapshot = { ...current, status: "leased", leaseUntil, leaseToken, runnerPid: null, attempt: current.attempt + 1 };
@@ -623,45 +621,6 @@ export class SqliteLedger implements Ledger {
     });
   }
 
-  commitInteraction(commit: InteractionCommit): EventRecord {
-    return this.#transaction(() => {
-      const wake = this.#requiredWake(commit.wakeId);
-      if (wake.status !== "running" || wake.agent !== commit.agent) throw new Error("interaction does not match a running wake");
-      const ids = [...new Set(commit.mailIds?.length ? commit.mailIds : [commit.mailId])];
-      if (!ids.includes(commit.mailId)) throw new Error("primary interaction mail is missing from the commit");
-      const mails = ids.map((id) => {
-        const row = this.db.prepare("SELECT * FROM mailbox WHERE id=?").get(id) as Row | undefined;
-        if (!row) throw new Error("interaction mail does not exist");
-        const mail = mapMail(row);
-        if (mail.to !== commit.agent || mail.readAt !== null) throw new Error("interaction mail is not unread for the agent");
-        return mail;
-      });
-      const event = this.#insertEvent({ streamId: wakeStream(commit.wakeId), ts: commit.ts, actor: commit.agent, type: "interaction.completed", data: { mailId: commit.mailId, mailIds: ids, response: commit.response } as unknown as JsonValue });
-      for (const mail of mails) this.#recordProjection("mailbox", { ...mail, readAt: commit.ts }, "supervisor", "mail.read", commit.wakeId, commit.ts);
-      return event;
-    });
-  }
-
-  failInteraction(commit: InteractionFailureCommit): EventRecord {
-    return this.#transaction(() => {
-      const ids = [...new Set(commit.mailIds)];
-      if (!ids.includes(commit.mailId)) throw new Error("primary interaction mail is missing from the failure commit");
-      const mails = ids.map((id) => {
-        const row = this.db.prepare("SELECT * FROM mailbox WHERE id=?").get(id) as Row | undefined;
-        if (!row) throw new Error("interaction mail does not exist");
-        const mail = mapMail(row);
-        if (mail.to !== commit.agent || mail.readAt !== null) throw new Error("interaction mail is not unread for the agent");
-        return mail;
-      });
-      const event = this.#insertEvent({ streamId: controlStream("interactions"), ts: commit.ts, actor: "supervisor", type: `interaction.${commit.outcome}`, data: { mailId: commit.mailId, mailIds: ids, reason: commit.reason } as unknown as JsonValue });
-      for (const mail of mails) this.#recordProjection("mailbox", { ...mail, readAt: commit.ts }, "supervisor", "mail.read", undefined, commit.ts);
-      if (commit.notification) {
-        if (commit.notification.from !== "supervisor" || commit.notification.to !== "human") throw new Error("interaction failure notification must come from supervisor to human");
-        this.#recordProjection("mailbox", commit.notification, "supervisor", "mail.put", undefined, commit.ts);
-      }
-      return event;
-    });
-  }
 
   dueSchedules(now: string): ScheduleSnapshot[] { return (this.db.prepare("SELECT * FROM schedule WHERE next_wake_at <= ? ORDER BY next_wake_at,id").all(now) as Row[]).map(mapSchedule); }
   unreadMail(agent: string): MailSnapshot[] { return (this.db.prepare("SELECT * FROM mailbox WHERE to_agent=? AND read_at IS NULL ORDER BY rowid").all(agent) as Row[]).map(mapMail); }

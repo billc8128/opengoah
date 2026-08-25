@@ -111,7 +111,7 @@ test("profile persistence refuses concurrent writers", () => {
 test("interactive stream follows redelivery wakes through recovery", async () => {
   const clock: Clock = { now: () => new Date("2026-08-25T00:00:00.000Z") }; const ledger = new SqliteLedger(":memory:", { clock }); let attempts = 0;
   const runner: Runner = { isolation: "process", prepare: (request) => { const attempt = ++attempts; return { pid: null, begin: () => { if (attempt > 1) { request.emit({ type: "message.assistant.delta", data: { delta: { type: "text_delta", delta: "recovered response" } } }); request.emit({ type: "message.assistant.completed", data: { message: { role: "assistant", content: [{ type: "text", text: "recovered response" }] } } }); } }, result: Promise.resolve(attempt === 1 ? { outcome: "abnormal", reason: "temporary provider failure" } : { outcome: "response", response: { content: "recovered response" } }), terminate: async () => undefined }; }, terminateProcess: async () => undefined };
-  const supervisor = new Supervisor(ledger, runner, clock, { interactionRetryPolicy: { maxAttempts: 3, baseDelayMs: 0 } });
+  const supervisor = new Supervisor(ledger, runner, clock, { turnRetryPolicy: { maxAttempts: 3, baseDelayMs: 0 } });
   const framesPromise = (async () => { const frames = []; for await (const frame of interactFrames("hello", supervisor, ledger)) frames.push(frame); return frames; })();
   const frames = await framesPromise;
   assert.equal(frames.filter((frame) => frame.type === "accepted").length, 1);

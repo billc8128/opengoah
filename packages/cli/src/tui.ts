@@ -150,7 +150,7 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   ]);
   const busy: CancellableState = { active: false };
   const queued: string[] = [];
-  const queuedWakeIds: string[] = [];
+  const queuedTurnIds: string[] = [];
   let activeStream: AbortController | null = null;
   let activeInteractionWakeId: string | null = null;
   let resumeInteractionWakeId: string | null = null;
@@ -185,16 +185,16 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
       if (activeStream === controller) activeStream = null;
       busy.active = false;
       await refreshGoalBar(stateDir, goalView, tui);
-      statusView.setText(statusText(queuedWakeIds.length || queued.length ? "queued" : "ready", queuedWakeIds.length + queued.length));
+      statusView.setText(statusText(queuedTurnIds.length || queued.length ? "queued" : "ready", queuedTurnIds.length + queued.length));
       continuePending();
     }
   };
-  const attachWake = async (wakeId: string): Promise<void> => {
+  const attachTurn = async (turnId: string): Promise<void> => {
     busy.active = true;
-    activeInteractionWakeId = wakeId;
+    activeInteractionWakeId = turnId;
     const controller = new AbortController(); activeStream = controller;
     statusView.setText(statusText("queued", 1));
-    try { await streamControl(stateDir, { op: "turn.attach", turnId: wakeId }, (frame) => { if (frame.type === "result" || frame.type === "error") activeInteractionWakeId = null; renderFrame(frame, push, appendLive, commitLive, pushResponse, updateTool, updateThinking, setWakeState, () => commitLive("")); }, controller.signal); }
+    try { await streamControl(stateDir, { op: "turn.attach", turnId }, (frame) => { if (frame.type === "result" || frame.type === "error") activeInteractionWakeId = null; renderFrame(frame, push, appendLive, commitLive, pushResponse, updateTool, updateThinking, setWakeState, () => commitLive("")); }, controller.signal); }
     catch (error) { if (!controller.signal.aborted) push(errorLine(error)); }
     finally {
       if (activeStream === controller) activeStream = null;
@@ -206,8 +206,8 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   };
   const continuePending = (): void => {
     if (exiting || configuring || busy.active) return;
-    const wakeId = queuedWakeIds.shift();
-    if (wakeId) { void attachWake(wakeId); return; }
+    const turnId = queuedTurnIds.shift();
+    if (turnId) { void attachTurn(turnId); return; }
     const next = queued.shift();
     if (next) void send(next, false);
   };
@@ -244,7 +244,7 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
     tui.stop();
     try { await work(); }
     catch (error) { push(errorLine(error)); }
-    finally { configuring = false; if (resumeInteractionWakeId && !queuedWakeIds.includes(resumeInteractionWakeId)) queuedWakeIds.unshift(resumeInteractionWakeId); resumeInteractionWakeId = null; if (!exiting) { tui.start(); tui.requestRender(true); statusView.setText(statusText("ready")); continuePending(); } }
+    finally { configuring = false; if (resumeInteractionWakeId && !queuedTurnIds.includes(resumeInteractionWakeId)) queuedTurnIds.unshift(resumeInteractionWakeId); resumeInteractionWakeId = null; if (!exiting) { tui.start(); tui.requestRender(true); statusView.setText(statusText("ready")); continuePending(); } }
   };
   const launchRunnerCommand = async (command: "model" | "auth", commandArgs: string[] = []): Promise<void> => withConfigurationScreen(async () => {
     const current = configuredRunnerProfile(configPath);
@@ -306,7 +306,7 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
     return { consume: true };
   });
   tui.start();
-  if (initialMessage) void send(initialMessage); else if (typeof liveInteractionWakeId === "string") void attachWake(liveInteractionWakeId);
+  if (initialMessage) void send(initialMessage); else if (typeof liveInteractionWakeId === "string") void attachTurn(liveInteractionWakeId);
   await exited;
 }
 

@@ -138,13 +138,13 @@ test("wake queue is FIFO, deduplicated, fenced and safely recovered", () => {
   ledger.close();
 });
 
-test("Human interaction wakes preempt queued automatic Goal work while preserving FIFO", () => {
+test("Goal and system wakes preserve FIFO while active ownership stays per Agent", () => {
   const ledger = new SqliteLedger(":memory:", { clock: new FixedClock() });
   ledger.enqueueWake({ ...wake("goal", "ceo"), triggerRef: "schedule:ceo" }, "supervisor");
-  ledger.enqueueWake({ ...wake("human-1", "ceo"), triggerRef: "interaction:one" }, "supervisor");
-  ledger.enqueueWake({ ...wake("human-2", "other"), triggerRef: "interaction:two" }, "supervisor");
-  assert.equal(ledger.claimNextWake("2030-01-01T00:00:00.000Z", "2030-01-01T00:01:00.000Z", "lease-1")?.id, "human-1");
-  assert.equal(ledger.claimNextWake("2030-01-01T00:00:00.000Z", "2030-01-01T00:01:00.000Z", "lease-2")?.id, "human-2");
+  ledger.enqueueWake({ ...wake("review", "ceo"), triggerRef: "mail:review" }, "supervisor");
+  ledger.enqueueWake({ ...wake("child", "other"), triggerRef: "goal:child" }, "supervisor");
+  assert.equal(ledger.claimNextWake("2030-01-01T00:00:00.000Z", "2030-01-01T00:01:00.000Z", "lease-1")?.id, "goal");
+  assert.equal(ledger.claimNextWake("2030-01-01T00:00:00.000Z", "2030-01-01T00:01:00.000Z", "lease-2")?.id, "child");
   ledger.close();
 });
 
@@ -191,32 +191,6 @@ test("handoff event and mail acknowledgement roll back together", () => {
   assert.throws(() => ledger.commitHandoff({ agent: "agent-1", wakeId: "w", mailIds: ["m"], ts: "2030-01-01T00:00:02.000Z", output: { handoff: { observations: [], results: [], nextSteps: [] }, mail: [], nextWakeAt: null }, outgoingMail: [], schedule: null }), /kill during handoff/);
   assert.equal(JSON.stringify(ledger.events()), before);
   assert.equal(ledger.unreadMail("agent-1").length, 1);
-  ledger.close();
-});
-
-test("ordinary interaction records a response and acknowledges only its Human message", () => {
-  const ledger = new SqliteLedger(":memory:", { clock: new FixedClock() });
-  ledger.enqueueWake(wake("interaction", "ceo"), "supervisor");
-  ledger.claimNextWake("2030-01-01T00:00:00.000Z", "2030-01-01T00:01:00.000Z", "lease");
-  ledger.markWakeRunning("interaction", "2030-01-01T00:00:01.000Z", "lease");
-  ledger.putMail({ id: "current", to: "ceo", from: "human", level: "fyi", body: { message: "hello" }, readAt: null }, "human");
-  ledger.putMail({ id: "other", to: "ceo", from: "human", level: "decision", body: { message: "goal correction" }, readAt: null }, "human");
-  const event = ledger.commitInteraction({ agent: "ceo", wakeId: "interaction", mailId: "current", ts: "2030-01-01T00:00:02.000Z", response: { content: "你好" } });
-  assert.equal(event.type, "interaction.completed");
-  assert.deepEqual((event.data as { response: { content: string } }).response, { content: "你好" });
-  assert.deepEqual(ledger.unreadMail("ceo").map((mail) => mail.id), ["other"]);
-  ledger.close();
-});
-
-test("one interaction atomically acknowledges steering messages", () => {
-  const ledger = new SqliteLedger(":memory:", { clock: new FixedClock() });
-  ledger.enqueueWake({ ...wake("turn", "ceo"), triggerRef: "interaction:primary" }, "supervisor");
-  const leased = ledger.claimNextWake("2030-01-01T00:00:00.000Z", "2030-01-01T00:01:00.000Z", "lease")!;
-  ledger.markWakeRunning(leased.id, "2030-01-01T00:00:00.000Z", "lease");
-  for (const id of ["primary", "steer"]) ledger.putMail({ id, to: "ceo", from: "human", level: "fyi", body: { message: id }, readAt: null }, "human", "turn");
-  const event = ledger.commitInteraction({ agent: "ceo", wakeId: "turn", mailId: "primary", mailIds: ["primary", "steer"], ts: "2030-01-01T00:00:01.000Z", response: { content: "done" } });
-  assert.deepEqual((event.data as { mailIds: string[] }).mailIds, ["primary", "steer"]);
-  assert.equal(ledger.unreadMail("ceo").length, 0);
   ledger.close();
 });
 
