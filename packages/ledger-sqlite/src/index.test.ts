@@ -51,7 +51,7 @@ test("schema v6 adds the ignorable event envelope and goal phase constraints", (
   const migrated = new SqliteLedger(path, { clock: new FixedClock() });
   const columns = (migrated.db.prepare("PRAGMA table_info(events)").all() as Array<{ name: string }>).map((row) => row.name);
   assert.equal(columns.includes("ignorable"), true);
-  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 9);
+  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 10);
   migrated.close();
 });
 
@@ -69,7 +69,7 @@ test("schema v7 adds nullable Goal observation methods without rewriting history
   const migrated = new SqliteLedger(path, { clock: new FixedClock() });
   const columns = (migrated.db.prepare("PRAGMA table_info(goals)").all() as Array<{ name: string }>).map((row) => row.name);
   assert.equal(columns.includes("observation_method"), true);
-  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 9);
+  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 10);
   migrated.close();
 });
 
@@ -255,7 +255,7 @@ test("schema v1 is migrated without rewriting event history", () => {
   assert.equal(ledger.wake("w")?.enqueuedSeq, 1);
   assert.match(ledger.wake("w")?.leaseToken ?? "", /^legacy:/);
   assert.equal(ledger.action("a")?.connector, "legacy");
-  assert.equal((ledger.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 9);
+  assert.equal((ledger.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 10);
   assert.equal(ledger.events().length, 2);
   ledger.rebuildProjections();
   assert.equal(ledger.wake("w")?.enqueuedSeq, 1);
@@ -273,7 +273,7 @@ test("schema v2 migration builds the FTS index from existing events", () => {
   raw.close();
   const migrated = new SqliteLedger(path, { clock: new FixedClock() });
   assert.equal(migrated.searchEvents("migrationsearchterm").length, 1);
-  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 9);
+  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 10);
   migrated.close();
 });
 
@@ -288,7 +288,7 @@ test("schema v3 migration indexes coalesced wake triggers", () => {
   raw.close();
   const migrated = new SqliteLedger(path, { clock: new FixedClock() });
   assert.equal(migrated.wakeByTrigger("a", "metric:g:missing:none")?.id, "w");
-  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 9);
+  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 10);
   migrated.close();
 });
 
@@ -306,7 +306,7 @@ test("schema v4 migration removes the legacy goal budget column", () => {
   assert.equal("budget" in migrated.goal("legacy")!, false);
   const columns = (migrated.db.prepare("PRAGMA table_info(goals)").all() as Array<{ name: string }>).map((row) => row.name);
   assert.equal(columns.includes("budget"), false);
-  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 9);
+  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 10);
   migrated.close();
 });
 

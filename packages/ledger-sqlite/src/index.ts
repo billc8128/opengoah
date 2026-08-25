@@ -275,7 +275,7 @@ export class SqliteLedger implements Ledger {
       if (current.status !== "in_progress") throw new Error("terminal turn cannot change");
       if (turn.status === "in_progress" && turn.endedAt !== null || turn.status !== "in_progress" && turn.endedAt === null) throw new Error("turn terminal time does not match status");
     } else if (turn.status !== "in_progress") throw new Error("new turn must start in progress");
-    return this.#project("turns", turn, actor, current ? `turn.${turn.status}` : "turn.started", undefined, turn.endedAt ?? turn.startedAt, `turn:${turn.id}`);
+    return this.#project("turns", turn, actor, current ? `turn.${turn.status}` : "turn.started", undefined, undefined, `turn:${turn.id}`);
   }
 
   putTurnItem(item: TurnItemSnapshot, actor: string): EventRecord {

@@ -57,14 +57,14 @@ test("a Human Turn can create a Root Goal and become Goal-bound through tools", 
     { handoff: { handoff: { observations: ["Human requested durable work"], results: ["Root Goal created"], nextSteps: ["Inspect authentication"] }, mail: [], nextWakeAt: "2026-08-19T00:00:00.000Z" } },
   ], undefined, repo);
   const supervisor = new Supervisor(ledger, runner, clock);
-  const accepted = supervisor.interactWithCeo("finish authentication and keep going until it is verified");
-  assert.equal((await supervisor.tick())?.status, "done");
+  const accepted = await supervisor.startHumanTurn("finish authentication and keep going until it is verified");
+  while (ledger.turn(accepted.turnId)?.status === "in_progress") await new Promise((resolveWait) => setTimeout(resolveWait, 1));
+  assert.equal(ledger.turn(accepted.turnId)?.status, "completed");
   assert.equal(ledger.goal("human-goal")?.objective, "finish authentication");
   assert.equal(ledger.workRecord("human-goal")?.recordRevision, 1);
-  assert.equal(ledger.workRecord("human-goal")?.updatedInTurn, accepted.wake.id);
-  assert.equal(ledger.eventsForWake(accepted.wake.id).some((event) => event.type === "turn.goal_bound"), true);
-  assert.equal(ledger.eventsForWake(accepted.wake.id).some((event) => event.type === "handoff.recorded"), true);
-  assert.equal(ledger.eventsForWake(accepted.wake.id).some((event) => event.type === "interaction.completed"), false);
+  assert.equal(ledger.workRecord("human-goal")?.updatedInTurn, accepted.turnId);
+  assert.equal(ledger.turn(accepted.turnId)?.goalId, "human-goal");
+  assert.equal(ledger.turnItems(accepted.turnId).some((item) => item.type === "handoff"), true);
   ledger.close();
 });
 
