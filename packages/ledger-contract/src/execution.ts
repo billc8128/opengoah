@@ -86,13 +86,13 @@ export interface RunnerSetupInteraction {
   openUrl?(url: string): void;
 }
 export interface RunnerManifest { id: string; name: string; description: string; commands?: Array<{ name: string; description: string }> }
-export interface RunnerDiagnostic { ok: boolean; name: string; detail: string }
-export interface RunnerCommandResult { config?: JsonValue; output: string[] }
-export interface RunnerSetupTransaction { commit(): Promise<void>; rollback(): Promise<void> }
+export interface RunnerDiagnostic { ok: boolean; name: string; detail: string; severity?: "warning" | "error" }
+export interface RunnerCommandResult { config?: JsonValue; output: string[]; rollback?(): Promise<void> }
+export interface RunnerSetupTransaction { config: JsonValue | null; commit(): Promise<JsonValue | null>; rollback(): Promise<void> }
 export interface RunnerConfigurator {
   describe(): RunnerManifest;
   setup(current: JsonValue | null, interaction: RunnerSetupInteraction): Promise<JsonValue | null>;
-  beginSetup?(current: JsonValue | null): Promise<RunnerSetupTransaction>;
+  beginSetup?(current: JsonValue | null, interaction: RunnerSetupInteraction): Promise<RunnerSetupTransaction>;
   doctor(config: JsonValue, context?: { root: string }): Promise<RunnerDiagnostic[]>;
   summarize?(config: JsonValue): Array<{ label: string; value: string }>;
   runCommand?(command: string, args: string[], config: JsonValue, interaction: RunnerSetupInteraction): Promise<RunnerCommandResult>;
@@ -111,8 +111,9 @@ export interface ConnectorManifest { contractVersion: typeof CONTRACT_VERSION; c
 export interface ConnectorDispatchResult { status: "confirmed" | "failed"; externalRef?: string }
 export interface ConnectorQueryResult { status: "confirmed" | "failed" | "pending"; externalRef?: string }
 export interface ConnectorProcessSpec { manifest: ConnectorManifest; command: string; args: string[]; env?: Record<string, string>; timeoutMs?: number }
-export interface HandoffCommit { agent: string; wakeId: string; ts: string; output: WakeOutput; outgoingMail: MailSnapshot[]; schedule: ScheduleSnapshot | null }
+export interface HandoffCommit { agent: string; wakeId: string; mailIds: string[]; ts: string; output: WakeOutput; outgoingMail: MailSnapshot[]; schedule: ScheduleSnapshot | null }
 export interface InteractionCommit { agent: string; wakeId: string; mailId: string; mailIds?: string[]; ts: string; response: AssistantResponse }
+export interface InteractionFailureCommit { agent: string; mailId: string; mailIds: string[]; ts: string; reason: string; outcome: "exhausted" | "cancelled"; notification?: MailSnapshot }
 
 /** Standard execution modules composed on top of the generic event store. */
 export interface Ledger extends EventStore {
@@ -141,6 +142,7 @@ export interface Ledger extends EventStore {
   putMail(mail: MailSnapshot, actor: string, wakeId?: string): EventRecord;
   commitHandoff(commit: HandoffCommit): EventRecord;
   commitInteraction(commit: InteractionCommit): EventRecord;
+  failInteraction(commit: InteractionFailureCommit): EventRecord;
   dueSchedules(now: string): ScheduleSnapshot[];
   unreadMail(agent: string): MailSnapshot[];
   unackedAuditAdvice(agent: string): ActionSnapshot[];

@@ -1,7 +1,9 @@
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import { dirname } from "node:path";
-import { chmod, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import type { JsonValue, RunnerCommandResult, RunnerConfigurator, RunnerDiagnostic, RunnerSetupInteraction } from "goah-ledger-contract";
 import { ProcessRunner, piWorkerPath, resolveEnvSpec } from "./index.js";
 import { JsonCredentialStore } from "./credential-store.js";
@@ -32,19 +34,31 @@ export function piRunnerConfigurator(): RunnerConfigurator {
   };
 }
 
-async function beginPiSetup(current: JsonValue | null) {
+async function beginPiSetup(current: JsonValue | null, interaction: RunnerSetupInteraction) {
   const before = current ? piConfig(current) : null;
-  const paths = [...new Set([defaultAuthFile(), before?.authFile].filter((value): value is string => Boolean(value)))];
-  const snapshots = await Promise.all(paths.map(async (path) => ({ path, content: await readFile(path).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? null : Promise.reject(error)) })));
-  let settled = false;
+  const authFile = before?.authFile ?? defaultAuthFile();
+  const baseline = await readFile(authFile).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? null : Promise.reject(error));
+  const stagingDirectory = await mkdtemp(join(tmpdir(), "goah-auth-stage-")); const stagingAuthFile = join(stagingDirectory, "auth.json");
+  if (baseline) await writeFile(stagingAuthFile, baseline, { mode: 0o600 });
+  let config: JsonValue | null;
+  try { config = await setupPi(current, interaction, "full", stagingAuthFile); }
+  catch (error) { await rm(stagingDirectory, { recursive: true, force: true }); throw error; }
+  let state: "open" | "committed" | "rolled_back" = "open"; let committed: Buffer | null = null;
   return {
-    commit: async () => { settled = true; },
+    config,
+    commit: async () => {
+      if (state === "committed") return config && typeof config === "object" && !Array.isArray(config) ? { ...config, authFile } as unknown as JsonValue : config;
+      if (state === "rolled_back") throw new Error("Runner setup transaction was already rolled back");
+      const staged = await readFile(stagingAuthFile).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? null : Promise.reject(error));
+      try { await new JsonCredentialStore(authFile).replaceFileIfUnchanged(baseline, staged); committed = staged; state = "committed"; }
+      catch (error) { state = "rolled_back"; await rm(stagingDirectory, { recursive: true, force: true }); throw error; }
+      await rm(stagingDirectory, { recursive: true, force: true });
+      return config && typeof config === "object" && !Array.isArray(config) ? { ...config, authFile } as unknown as JsonValue : config;
+    },
     rollback: async () => {
-      if (settled) return; settled = true;
-      for (const snapshot of snapshots) {
-        if (snapshot.content === null) await unlink(snapshot.path).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; });
-        else { await mkdir(dirname(snapshot.path), { recursive: true }); await writeFile(snapshot.path, snapshot.content, { mode: 0o600 }); await chmod(snapshot.path, 0o600); }
-      }
+      if (state === "rolled_back") return;
+      if (state === "committed") await new JsonCredentialStore(authFile).replaceFileIfUnchanged(committed, baseline);
+      state = "rolled_back"; await rm(stagingDirectory, { recursive: true, force: true });
     },
   };
 }
@@ -70,7 +84,7 @@ export function createPiProcessRunner(configValue: JsonValue, root: string): Pro
   });
 }
 
-async function setupPi(current: JsonValue | null, interaction: RunnerSetupInteraction, scope: "full" | "model" = "full"): Promise<JsonValue | null> {
+async function setupPi(current: JsonValue | null, interaction: RunnerSetupInteraction, scope: "full" | "model" = "full", setupAuthFile = defaultAuthFile()): Promise<JsonValue | null> {
   const legacyCredential = Boolean(current && typeof current === "object" && !Array.isArray(current) && typeof current.apiKeyEnv === "string" && !isShellIdentifier(current.apiKeyEnv));
   const before = current ? piConfig(current) : null;
   const providers = [...providerCatalog(), { id: "custom", name: "Custom endpoint", modelCount: 0, oauth: false, apiKey: true, local: false }, { id: "faux", name: "Offline demo", modelCount: 1, oauth: false, apiKey: false, local: true }];
@@ -81,18 +95,21 @@ async function setupPi(current: JsonValue | null, interaction: RunnerSetupIntera
   const catalog = ["ollama", "lm-studio", "llama.cpp"].includes(providerId) ? await discoverLocalModels(providerId) : modelCatalog(providerId);
   const selected = catalog.length ? await interaction.select({ title: "Choose a model", description: `${providerId} · search by model name or ID.`, progress: { current: 3, total: 5 }, choices: [...catalog.map((model) => ({ value: model.id, label: model.name, description: `${model.id} · ${Math.round(model.contextWindow / 1000)}k${model.reasoning ? " · reasoning" : ""}` })), { value: "__custom__", label: "Custom model…" }, { value: "__back__", label: "Back to providers" }] }) : "__custom__";
   if (!selected) return null;
-  if (selected === "__back__") return setupPi(current, interaction, scope);
+  if (selected === "__back__") return setupPi(current, interaction, scope, setupAuthFile);
   const model = selected === "__custom__" ? await interaction.input({ title: "Model ID", description: `Enter the model identifier accepted by ${providerId}.`, prompt: "Model", progress: { current: 3, total: 5 }, ...(before?.provider === providerId ? { initial: before.model } : {}) }) : selected;
   if (!model) return null;
   if (scope === "model" && before?.provider === providerId) return { ...before, model } as unknown as JsonValue;
-  const config: PiRunnerConfig = { provider: providerId, model, thinking: before?.thinking ?? (providerId === "faux" ? "off" : "medium"), authFile: defaultAuthFile(), authMode: providerId === "faux" || ["ollama", "lm-studio", "llama.cpp"].includes(providerId) ? "local" : "unconfigured" };
+  const config: PiRunnerConfig = { provider: providerId, model, thinking: before?.thinking ?? (providerId === "faux" ? "off" : "medium"), authFile: before?.authFile ?? setupAuthFile, authMode: providerId === "faux" || ["ollama", "lm-studio", "llama.cpp"].includes(providerId) ? "local" : "unconfigured" };
 
   const descriptor = providers.find((entry) => entry.id === provider)!;
   if (!descriptor.local && provider !== "faux") {
     const existing = scope === "model" ? await new JsonCredentialStore(config.authFile!).read(providerId) : null;
-    const auth = existing ? { authMode: existing.type === "oauth" ? "oauth" as const : "stored-key" as const } : await configureAuthentication(providerId, descriptor, config.authFile!, interaction, legacyCredential);
-    if (auth === "back") return setupPi(current, interaction, scope);
-    Object.assign(config, auth);
+    if (scope === "model") config.authMode = existing?.type === "oauth" ? "oauth" : existing ? "stored-key" : "unconfigured";
+    else {
+      const auth = await configureAuthentication(providerId, descriptor, config.authFile!, interaction, legacyCredential);
+      if (auth === "back") return setupPi(current, interaction, scope, setupAuthFile);
+      Object.assign(config, auth);
+    }
   }
 
   if (["ollama", "lm-studio", "llama.cpp"].includes(provider)) {
@@ -146,30 +163,44 @@ async function doctorPi(value: JsonValue, context?: { root: string }): Promise<R
   const env = resolveEnvSpec(piEnvironment(config), { root: context?.root ?? process.cwd() });
   const configured = createPiModel(config.provider, config.model, env);
   const auth = config.provider === "faux" || ["ollama", "lm-studio", "llama.cpp"].includes(config.provider) ? { source: "local" } : await configured.models.getAuth(config.provider);
+  const sandbox = bashSandboxCapability();
+  const sandboxSmoke = sandbox.available ? await (await import("./pi-worker.js")).runBashCommand(context?.root ?? process.cwd(), { command: "node --version && npm --version && git --version", timeoutMs: 15_000 }, undefined, [dirname(defaultAuthFile())]) : null;
+  const sandboxReady = sandbox.available && sandboxSmoke?.isError !== true;
   return [
     { ok: true, name: "model", detail: `${config.provider}/${config.model} · context ${configured.model.contextWindow} · output ${configured.model.maxTokens}` },
     { ok: Boolean(auth), name: "auth", detail: auth?.source ?? `No credentials for ${config.provider}; use runner auth login or configure ${config.apiKeyEnv ?? defaultApiKeyEnv(config.provider)}` },
+    { ok: sandboxReady, name: "bash-sandbox", detail: sandboxReady ? `${sandbox.detail} · node/npm/git ready` : sandboxSmoke?.content[0]?.text.trim() || sandbox.detail },
   ];
 }
 
 function summarizePi(value: JsonValue): Array<{ label: string; value: string }> {
   const config = piConfig(value);
-  const auth = config.authMode === "oauth" ? "OAuth" : config.authMode === "stored-key" ? "Stored API key" : config.authMode === "environment" ? `Environment · ${config.apiKeyEnv ?? defaultApiKeyEnv(config.provider)}` : config.authMode === "local" ? "Local · no credentials" : "Not configured";
+  const auth = config.authMode === "environment" ? `Environment · ${config.apiKeyEnv ?? defaultApiKeyEnv(config.provider)}` : config.authMode === "local" ? "Local · no credentials" : "Managed separately · use auth status";
   return [
     { label: "Runner", value: "Pi" },
     { label: "Provider", value: config.provider },
     { label: "Model", value: config.model },
     { label: "Thinking", value: config.thinking ?? "off" },
     { label: "Authentication", value: auth },
+    { label: "Bash sandbox", value: bashSandboxDescription() },
     ...(config.baseUrl ? [{ label: "Endpoint", value: config.baseUrl }] : []),
   ];
+}
+
+function bashSandboxDescription(): string {
+  return bashSandboxCapability().detail;
+}
+function bashSandboxCapability(): { available: boolean; detail: string } {
+  if (process.platform === "darwin") return existsSync("/usr/bin/sandbox-exec") ? { available: true, detail: "sandbox-exec" } : { available: false, detail: "unavailable — Bash fails closed" };
+  if (process.platform === "linux") return ["/usr/bin/bwrap", "/bin/bwrap"].some(existsSync) ? { available: true, detail: "bubblewrap" } : { available: false, detail: "unavailable — install bubblewrap; Bash fails closed" };
+  return { available: false, detail: "unavailable on this platform — Bash fails closed" };
 }
 
 async function runPiCommand(command: string, args: string[], value: JsonValue, interaction: RunnerSetupInteraction): Promise<RunnerCommandResult> {
   const config = piConfig(value);
   if (command === "model") {
     if (!args.length) {
-      const selected = await setupPi(value, interaction, "model");
+      const selected = await setupPi(value, interaction, "model", config.authFile ?? defaultAuthFile());
       return selected === null ? { output: ["No change."] } : { config: selected, output: [`Pi target changed to ${piConfig(selected).provider}/${piConfig(selected).model}`] };
     }
     if (args[0] === "list") {
@@ -196,9 +227,12 @@ async function runPiCommand(command: string, args: string[], value: JsonValue, i
     return { config: next as unknown as JsonValue, output: [`Pi target changed to ${provider}/${model}`] };
   }
   if (command === "auth") {
-    const store = new JsonCredentialStore(config.authFile ?? defaultAuthFile());
+    const authFile = config.authFile ?? defaultAuthFile();
+    const store = new JsonCredentialStore(authFile);
     const catalog = providerCatalog();
     if (!catalog.some((entry) => entry.id === config.provider)) catalog.unshift({ id: config.provider, name: config.provider === "faux" ? "Offline demo" : config.provider, oauth: false, apiKey: config.provider !== "faux", local: config.provider === "faux", modelCount: config.provider === "faux" ? 1 : 0 });
+    const storedProviders = await store.list();
+    for (const stored of storedProviders) if (!catalog.some((entry) => entry.id === stored.providerId)) catalog.push({ id: stored.providerId, name: stored.providerId, oauth: stored.type === "oauth", apiKey: stored.type === "api_key", local: false, modelCount: 0 });
     let action = args[0];
     if (!action) action = await interaction.select({ title: "Authentication", description: "Credentials are stored by the Pi Runner, outside workspace config.", choices: [{ value: "login", label: "Add or sign in", description: "OAuth, API key, or environment variable" }, { value: "logout", label: "Sign out or remove", description: "Remove stored credentials" }, { value: "status", label: "View status", description: "Inspect configured providers" }] }) ?? "cancel";
     if (action === "cancel") return { output: ["No change."] };
@@ -206,7 +240,7 @@ async function runPiCommand(command: string, args: string[], value: JsonValue, i
     if (action === "remove") action = "logout";
     let provider = args[1];
     if (!provider && (action === "login" || action === "logout")) {
-      const saved = new Set((await store.list()).map((item) => item.providerId));
+      const saved = new Set(storedProviders.map((item) => item.providerId));
       const choices = catalog.filter((entry) => action === "login" ? !entry.local : saved.has(entry.id)).map((entry) => ({ value: entry.id, label: entry.name, description: `${entry.id}${saved.has(entry.id) ? " · signed in" : entry.oauth ? " · OAuth available" : " · API key"}` }));
       if (!choices.length) return { output: ["No stored credentials."] };
       provider = await interaction.select({ title: action === "login" ? "Sign in to a provider" : "Sign out of a provider", choices }) ?? undefined;
@@ -216,25 +250,37 @@ async function runPiCommand(command: string, args: string[], value: JsonValue, i
     const descriptor = catalog.find((item) => item.id === provider);
     if (!descriptor) throw new Error(`Unknown provider: ${provider}`);
     if (action === "status" || action === "list") {
-      const saved = new Set((await store.list()).map((item) => item.providerId));
+      const saved = new Set(storedProviders.map((item) => item.providerId));
       const rows = catalog.filter((item) => action === "list" || item.id === provider).map((item) => `${saved.has(item.id) || (item.id === config.provider && config.authMode === "environment") ? "✓" : "·"} ${item.id}${item.id === config.provider && config.authMode === "environment" ? ` · env:${config.apiKeyEnv ?? defaultApiKeyEnv(item.id)}` : item.oauth ? " · OAuth available" : ""}`);
       return { output: rows.length ? rows : ["No configured credentials."] };
     }
     if (action === "login") {
       if (descriptor.local) return { output: [`${provider} is local and does not require authentication.`] };
-      const auth = await configureAuthentication(provider, descriptor, config.authFile ?? defaultAuthFile(), interaction, false, false, provider === config.provider);
+      const auth = await stagedProviderMutation(authFile, provider, (staged) => configureAuthentication(provider, descriptor, staged, interaction, false, false, provider === config.provider));
       if (auth === "back") return { output: ["No change."] };
-      return { ...(provider === config.provider ? { config: { ...config, ...auth } as unknown as JsonValue } : {}), output: [`Authentication configured for ${provider}`] };
+      return { ...(provider === config.provider ? { config: { ...config, ...auth, ...(auth.authMode === "environment" ? {} : { apiKeyEnv: undefined }) } as unknown as JsonValue } : {}), output: [`Authentication configured for ${provider}`] };
     }
     if (action === "logout") {
       if (descriptor.local) return { output: [`${provider} is local and does not use stored credentials.`] };
-      if (provider === config.provider && config.authMode === "environment") return { output: [`${provider} uses ${config.apiKeyEnv ?? defaultApiKeyEnv(provider)} from your environment; unset it in your shell to sign out.`] };
-      await store.delete(provider);
-      return { ...(provider === config.provider ? { config: { ...config, authMode: "unconfigured", apiKeyEnv: undefined } as unknown as JsonValue } : {}), output: [`Removed stored credentials for ${provider}. Environment variables, if set, remain available to the provider.`] };
+      const storedCredential = await store.read(provider);
+      if (!storedCredential && provider === config.provider && config.authMode === "environment") return { output: [`${provider} uses ${config.apiKeyEnv ?? defaultApiKeyEnv(provider)} from your environment; unset it in your shell to sign out.`] };
+      await stagedProviderMutation(authFile, provider, async (staged) => { await new JsonCredentialStore(staged).delete(provider); });
+      return { ...(provider === config.provider && config.authMode !== "environment" ? { config: { ...config, authMode: "unconfigured", apiKeyEnv: undefined } as unknown as JsonValue } : {}), output: [`Removed stored credentials for ${provider}. Environment variables, if set, remain available to the provider.`] };
     }
     throw new Error(`Unknown Pi auth command: ${action}`);
   }
   throw new Error(`Unknown Pi runner command: ${command}`);
+}
+
+async function stagedProviderMutation<T>(path: string, provider: string, operation: (stagedPath: string) => Promise<T>): Promise<T> {
+  const real = new JsonCredentialStore(path); const before = await real.read(provider); const directory = await mkdtemp(join(tmpdir(), "goah-auth-command-")); const stagedPath = join(directory, "auth.json");
+  const raw = await readFile(path).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? null : Promise.reject(error));
+  if (raw) await writeFile(stagedPath, raw, { mode: 0o600 });
+  try {
+    const value = await operation(stagedPath); const after = await new JsonCredentialStore(stagedPath).read(provider);
+    if (JSON.stringify(before) !== JSON.stringify(after)) await real.replaceProviderIfUnchanged(provider, before, after);
+    return value;
+  } finally { await rm(directory, { recursive: true, force: true }); }
 }
 
 async function oauthLogin(providerId: string, authFile: string, interaction: RunnerSetupInteraction): Promise<void> {

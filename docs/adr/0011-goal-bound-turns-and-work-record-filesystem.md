@@ -25,7 +25,7 @@ Turn source and Goal binding are independent facts. A Human message begins unbou
 
 A successful `create_goal` or `work_on_goal` call attaches `{ goalId, goalRevision }` to the open Human Turn without changing its Human provenance. GoalDriver creates explicitly Goal-bound continuation Turns. Goal-bound Turns must finish through the strict Goal protocol.
 
-Human input owns the CEO foreground. A new Human interaction preempts an active automatic Goal wake; a follow-up during an active Human Turn is persisted as Mail and steered into the same Runner Session at the next safe agent-loop boundary. Queued Human interactions have priority over queued automatic Goal work and preserve FIFO. All Human messages accepted by one Turn are acknowledged atomically with its response; abnormal execution leaves them unread for recovery.
+Human input owns the CEO foreground. A new Human interaction preempts an active automatic Goal wake; a follow-up during an active Human Turn is persisted as Mail and steered into the same Runner Session at the next safe agent-loop boundary. During retry backoff it is durably attached to the pending interaction and delivered in the next retry context instead of waiting in the TUI. Queued Human interactions have priority over queued automatic Goal work and preserve FIFO. Responses and Handoffs acknowledge only the explicit Mail IDs delivered to that Turn; abnormal or rejected execution leaves them unread for fenced redelivery.
 
 ### Work Record filesystem
 

@@ -78,6 +78,7 @@ export interface SupervisorOptions {
   auditWriters?: string[];
   silence?: { maxSilentMs?: number; notify?: string } | null;
   retryPolicy?: { maxAttempts: number; baseDelayMs: number };
+  interactionRetryPolicy?: { maxAttempts: number; baseDelayMs: number };
   profiles?: AgentProfile[];
   runnerProfiles?: RunnerProfile[];
   verifyMetricsAfterWake?: boolean;
@@ -97,6 +98,7 @@ export class Supervisor {
   readonly #metricContracts = new Map<string, MetricContract>();
   readonly #silence: { maxSilentMs: number; notify: string } | null;
   readonly #retryPolicy: NonNullable<SupervisorOptions["retryPolicy"]>;
+  readonly #interactionRetryPolicy: NonNullable<SupervisorOptions["interactionRetryPolicy"]>;
   readonly #profiles: Map<string, AgentProfile>;
   readonly #runnerProfiles: Map<string, RunnerProfile>;
   readonly #handles = new Map<string, RunnerHandle>();
@@ -113,6 +115,7 @@ export class Supervisor {
     this.#auditWriters = new Set(options.auditWriters ?? ["verifier", "audit"]);
     this.#silence = options.silence === null ? null : { maxSilentMs: options.silence?.maxSilentMs ?? 12 * 3_600_000, notify: options.silence?.notify ?? "ceo" };
     this.#retryPolicy = options.retryPolicy ?? { maxAttempts: 0, baseDelayMs: 1_000 };
+    this.#interactionRetryPolicy = options.interactionRetryPolicy ?? { maxAttempts: 3, baseDelayMs: 1_000 };
     this.#profiles = new Map([["ceo", { agent: "ceo", role: "ceo" } satisfies AgentProfile], ...(options.profiles ?? []).map((profile) => [profile.agent, profile] as const)]);
     this.#runnerProfiles = new Map((options.runnerProfiles ?? []).map((profile) => [profile.id, profile] as const));
     this.#verifyMetricsAfterWake = options.verifyMetricsAfterWake ?? false;
@@ -164,11 +167,23 @@ export class Supervisor {
     if (!message.trim()) throw new Error("message is required");
     const human = this.ledger.wakes().find((wake) => wake.agent === "ceo" && wake.status === "running" && Boolean(interactionMailId(wake)));
     const handle = human ? this.#handles.get(human.id) : undefined;
-    if (!human || !handle?.steer) return null;
+    if (!human || !handle?.steer) {
+      const pending = [...this.ledger.wakes()].reverse().find((wake) => {
+        const primary = interactionMailId(wake);
+        return wake.agent === "ceo" && Boolean(primary) && wake.status !== "done" && wake.status !== "merge_blocked" && this.ledger.unreadMail("ceo").some((mail) => mail.id === primary);
+      });
+      const primary = pending ? interactionMailId(pending) : null;
+      if (!pending || !primary) return null;
+      if (this.ledger.wakes().filter((wake) => interactionMailId(wake) === primary).length >= this.#interactionRetryPolicy.maxAttempts) return null;
+      const mail = humanInteractionFollowupMail(message, primary);
+      const event = this.ledger.putMail(mail, "human", pending.id);
+      this.ledger.appendEvent({ streamId: wakeStream(pending.id), ts: this.#now(), actor: "human", type: "interaction.followup_queued", data: { mailId: mail.id, interactionMailId: primary } });
+      return { mail, wake: pending, steered: true, streamAfterSeq: event.seq };
+    }
     const mail = humanInteractionMail(message);
     const event = this.ledger.putMail(mail, "human", human.id);
     try { await handle.steer(message); }
-    catch { return { mail, wake: this.#enqueueInteractionMail(mail.id), queued: true }; }
+    catch { const wake = this.#enqueueInteractionMail(mail.id); if (!wake) throw new Error("Human interaction delivery retries are exhausted"); return { mail, wake, queued: true }; }
     const ids = this.#steeredMailIds.get(human.id) ?? [];
     ids.push(mail.id); this.#steeredMailIds.set(human.id, ids);
     this.ledger.appendEvent({ streamId: wakeStream(human.id), ts: this.#now(), actor: "human", type: "interaction.steered", data: { mailId: mail.id } });
@@ -246,10 +261,17 @@ export class Supervisor {
   }
 
   async stopAgentWake(agent: string): Promise<WakeSnapshot | null> {
-    const wake = this.ledger.wakes().find((item) => item.agent === agent && ["running", "leased", "queued"].includes(item.status));
+    const active = this.ledger.wakes().find((item) => item.agent === agent && ["running", "leased", "queued"].includes(item.status));
+    const pending = [...this.ledger.wakes()].reverse().find((item) => { const id = interactionMailId(item); return item.agent === agent && Boolean(id) && this.ledger.unreadMail(agent).some((mail) => mail.id === id); });
+    const wake = pending ?? active;
     if (!wake) return null;
+    const interactionId = interactionMailId(wake);
+    if (interactionId) {
+      const mailIds = this.ledger.unreadMail(agent).filter((mail) => mail.id === interactionId || interactionFollowupId(mail) === interactionId).map((mail) => mail.id);
+      this.ledger.failInteraction({ agent, mailId: interactionId, mailIds, ts: this.#now(), reason: "cancelled by human", outcome: "cancelled" });
+    }
     if (wake.status === "queued") { this.#suppressQueuedWake(agent, "stopped by human"); return this.#wake(wake.id); }
-    await this.#stopWake(wake);
+    if (wake.status === "running" || wake.status === "leased") await this.#stopWake(wake);
     return this.#wake(wake.id);
   }
 
@@ -276,6 +298,10 @@ export class Supervisor {
     try {
       running = this.ledger.markWakeRunning(wake.id, this.#now(), leaseToken);
       const turn = this.#turnContext(running);
+      const primaryInteractionMailId = interactionMailId(running);
+      const deliveredMailIds = !turn.goalBinding && primaryInteractionMailId
+        ? this.ledger.unreadMail(running.agent).filter((mail) => mail.id === primaryInteractionMailId || interactionFollowupId(mail) === primaryInteractionMailId).map((mail) => mail.id)
+        : this.ledger.unreadMail(running.agent).map((mail) => mail.id);
       this.ledger.appendRunnerEvent({ streamId: wakeStream(running.id), ts: this.#now(), actor: running.agent, type: "run.admitted", data: turn as unknown as JsonValue }, leaseToken);
       const workRecordRevisionAtStart = turn.goalBinding ? this.ledger.workRecord(turn.goalBinding.goalId)?.recordRevision ?? -1 : -1;
       const context = this.#loadContext(running, turn);
@@ -311,7 +337,7 @@ export class Supervisor {
         if (turn.goalBinding) throw new Error("a Goal-bound Turn must finish with a handoff");
         const mailId = interactionMailId(running);
         if (!mailId) throw new Error("an ordinary response requires an interaction mail");
-        this.ledger.commitInteraction({ agent: running.agent, wakeId: running.id, mailId, mailIds: [mailId, ...(this.#steeredMailIds.get(running.id) ?? [])], ts: this.#now(), response: result.response });
+        this.ledger.commitInteraction({ agent: running.agent, wakeId: running.id, mailId, mailIds: [...new Set([...deliveredMailIds, ...(this.#steeredMailIds.get(running.id) ?? [])])], ts: this.#now(), response: result.response });
         this.#steeredMailIds.delete(running.id);
         this.ledger.finishWake(running.id, "done", this.#now());
         return this.#wake(running.id);
@@ -326,7 +352,7 @@ export class Supervisor {
       const schedule = output.nextWakeAt
         ? { id: `schedule:${running.agent}`, agent: running.agent, nextWakeAt: output.nextWakeAt, reason: "handoff.next_steps", setBy: running.agent }
         : null;
-      const handoffEvent = this.ledger.commitHandoff({ agent: running.agent, wakeId: running.id, ts: this.#now(), output, outgoingMail, schedule });
+      const handoffEvent = this.ledger.commitHandoff({ agent: running.agent, wakeId: running.id, mailIds: [...new Set([...deliveredMailIds, ...(this.#steeredMailIds.get(running.id) ?? [])])], ts: this.#now(), output, outgoingMail, schedule });
       this.#steeredMailIds.delete(running.id);
       this.ledger.finishWake(running.id, "done", this.#now());
       if (this.#role(running.agent) !== "ceo" && handoffTriggersCeo(output.handoff) && this.#hasActiveRoot()) {
@@ -359,7 +385,8 @@ export class Supervisor {
       const inFlightSteering = new Set([...this.#steeredMailIds.values()].flat());
       for (const mail of this.ledger.triggeringMail()) {
         if (inFlightSteering.has(mail.id)) continue;
-        if (isHumanInteractionMail(mail)) this.#enqueueInteractionMail(mail.id); else this.#enqueueTrigger(mail.to, `mail:${mail.id}`);
+        if (isHumanInteractionMail(mail)) this.#enqueueInteractionMail(mail.id);
+        else if (!interactionFollowupId(mail)) this.#enqueueTrigger(mail.to, `mail:${mail.id}`);
       }
       const now = this.clock.now();
       const leaseToken = randomUUID();
@@ -483,10 +510,21 @@ export class Supervisor {
     return this.#enqueueTrigger(schedule.agent, `${schedule.id}@${schedule.nextWakeAt}`);
   }
 
-  #enqueueInteractionMail(mailId: string): WakeSnapshot {
+  #enqueueInteractionMail(mailId: string): WakeSnapshot | null {
     const live = this.ledger.wakes().find((wake) => wake.agent === "ceo" && ["queued", "leased", "running"].includes(wake.status) && interactionMailId(wake) === mailId);
     if (live) return live;
     const prior = this.ledger.wakes().filter((wake) => wake.agent === "ceo" && interactionMailId(wake) === mailId).length;
+    if (prior >= this.#interactionRetryPolicy.maxAttempts) {
+      const notificationId = `interaction-redelivery-exhausted:${mailId}`;
+      if (!this.ledger.mailbox().some((mail) => mail.id === notificationId)) {
+        const mailIds = this.ledger.unreadMail("ceo").filter((mail) => mail.id === mailId || interactionFollowupId(mail) === mailId).map((mail) => mail.id);
+        const notification: MailSnapshot = { id: notificationId, to: "human", from: "supervisor", level: "decision", body: { type: "interaction_redelivery_exhausted", mailId, mailIds, attempts: prior, message: "Goah could not deliver your message. Check provider/auth status, then send it again." }, readAt: null };
+        this.ledger.failInteraction({ agent: "ceo", mailId, mailIds, ts: this.#now(), reason: "delivery retries exhausted", outcome: "exhausted", notification });
+      }
+      return null;
+    }
+    const previous = this.ledger.wakes().filter((wake) => wake.agent === "ceo" && interactionMailId(wake) === mailId).at(-1);
+    if (previous?.endedAt && this.clock.now().getTime() < Date.parse(previous.endedAt) + this.#interactionRetryPolicy.baseDelayMs * 2 ** Math.max(0, prior - 1)) return null;
     const wake = this.#enqueueTrigger("ceo", prior ? `interaction:${mailId}:redelivery:${prior}` : `interaction:${mailId}`);
     if (!wake) throw new Error("CEO interaction was not admitted");
     return wake;
@@ -577,10 +615,13 @@ export class Supervisor {
     const capabilities = profile.capabilities ?? defaultCapabilities(role);
     const runnerProfile = this.#runnerProfiles.get(profile.runnerProfile ?? "default");
     if (!turn.goalBinding && interactionMailId(wake)) {
-      const mail = this.ledger.mailbox().find((candidate) => candidate.id === interactionMailId(wake));
+      const primaryId = interactionMailId(wake)!;
+      const mail = this.ledger.mailbox().find((candidate) => candidate.id === primaryId);
       const body = mail?.body && typeof mail.body === "object" && !Array.isArray(mail.body) ? mail.body as Record<string, JsonValue> : {};
       const message = typeof body.message === "string" ? body.message : "";
-      const mailEvent = this.ledger.eventsSince(0, ["mail.put"]).findLast((event) => (event.data as { snapshot?: { id?: string } }).snapshot?.id === mail?.id);
+      const followups = this.ledger.unreadMail(wake.agent).filter((candidate) => interactionFollowupId(candidate) === primaryId);
+      const mailIds = [primaryId, ...followups.map((candidate) => candidate.id)];
+      const mailEvents = this.ledger.eventsSince(0, ["mail.put"]).filter((event) => mailIds.includes(String((event.data as { snapshot?: { id?: string } }).snapshot?.id)));
       const recent = this.ledger.eventsSince(0, ["interaction.completed"]).filter((event) => event.actor === wake.agent).slice(-8).map((event) => {
         const data = event.data as { mailId?: string; response?: { content?: string } };
         const prior = this.ledger.mailbox().find((candidate) => candidate.id === data.mailId);
@@ -588,8 +629,8 @@ export class Supervisor {
         return `Human: ${typeof priorBody.message === "string" ? priorBody.message : ""}\nAssistant: ${data.response?.content ?? ""}`;
       });
       return {
-        text: [...(recent.length ? [`# Recent conversation\n\n${recent.join("\n\n")}`] : []), `# Human message\n\n${message}`].join("\n\n"),
-        sourceSeqs: mailEvent ? [mailEvent.seq] : [],
+        text: [...(recent.length ? [`# Recent conversation\n\n${recent.join("\n\n")}`] : []), `# Human message\n\n${message}${followups.map((candidate) => `\n\nFollow-up: ${String((candidate.body as { message?: unknown }).message ?? "")}`).join("")}`].join("\n\n"),
+        sourceSeqs: mailEvents.map((event) => event.seq),
         capabilities,
         systemPrompt: profile.systemPrompt ?? "You are Goah's primary Agent. Respond naturally to the Human, use tools when useful, and keep the final answer concise. Do not create or operate a Goal unless the Human expresses durable Goal intent.",
         ...(runnerProfile ? { runnerProfile } : {}),
@@ -855,7 +896,9 @@ function minimalEnvironment(explicit: Record<string, string> = {}): NodeJS.Proce
 function escapeHtml(value: string): string { return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"); }
 function interactionMailId(wake: WakeSnapshot): string | null { return wake.triggerRef.startsWith("interaction:") ? wake.triggerRef.slice("interaction:".length).split(":redelivery:", 1)[0]! : null; }
 function humanInteractionMail(message: string): MailSnapshot { return { id: randomUUID(), to: "ceo", from: "human", level: "decision", body: { type: "interaction", message }, readAt: null }; }
+function humanInteractionFollowupMail(message: string, interactionMailId: string): MailSnapshot { return { id: randomUUID(), to: "ceo", from: "human", level: "decision", body: { type: "interaction_followup", interactionMailId, message }, readAt: null }; }
 function isHumanInteractionMail(mail: MailSnapshot): boolean { return mail.from === "human" && Boolean(mail.body && typeof mail.body === "object" && !Array.isArray(mail.body) && (mail.body as Record<string, JsonValue>).type === "interaction"); }
+function interactionFollowupId(mail: MailSnapshot): string | null { if (mail.from !== "human" || !mail.body || typeof mail.body !== "object" || Array.isArray(mail.body)) return null; const body = mail.body as Record<string, JsonValue>; return body.type === "interaction_followup" && typeof body.interactionMailId === "string" ? body.interactionMailId : null; }
 function handoffBlocked(handoff: Handoff): boolean { return "goalId" in handoff ? handoff.outcome === "blocked" : Boolean(handoff.blocker); }
 function handoffTriggersCeo(handoff: Handoff): boolean { return "goalId" in handoff ? handoff.outcome === "blocked" || handoff.outcome === "completion_proposed" : Boolean(handoff.material || handoff.blocker); }
 function goalBoundCapability(method: AgentCapability): boolean { return ["goal.delegate", "goal.reassign", "goal.revise", "goal.put", "work_record.update", "mail.send", "schedule.set", "human.request"].includes(method); }

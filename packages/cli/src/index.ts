@@ -1,5 +1,5 @@
-import { accessSync, chmodSync, constants, existsSync, mkdirSync, openSync, closeSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, openSync, closeSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -33,10 +33,11 @@ export interface InitOptions {
   maxOutputTokensPerTurn?: number;
   baseUrl?: string;
 }
-export interface DoctorCheck { name: string; ok: boolean; detail: string }
+export interface DoctorCheck { name: string; ok: boolean; detail: string; severity?: "warning" | "error" }
 const configRoots = new WeakMap<GoahConfig, string>();
 
 export function loadConfig(path = "goah.config.json"): GoahConfig {
+  recoverProfileTransaction();
   const absolute = resolve(path);
   const config = JSON.parse(readFileSync(absolute, "utf8")) as GoahConfig & { workspace?: string; limits?: unknown; heartbeatPolicies?: unknown; progressPolicies?: unknown };
   if (config.version !== 1 && config.version !== 2) throw new Error(`unsupported goah config version: ${String(config.version)}`);
@@ -126,6 +127,7 @@ export function writeDefaultConfig(path = "goah.config.json", options: InitOptio
 export function profilePath(): string { return join(process.env.GOAH_STATE_HOME ?? join(homedir(), ".goah"), "profile.json"); }
 
 export function readDefaultRunnerProfile(): RunnerProfile | null {
+  recoverProfileTransaction();
   try {
     const raw = JSON.parse(readFileSync(profilePath(), "utf8")) as Record<string, unknown>;
     if (typeof raw.id === "string" && typeof raw.runner === "string" && raw.config && typeof raw.config === "object") return raw as unknown as RunnerProfile;
@@ -138,6 +140,9 @@ export function readDefaultRunnerProfile(): RunnerProfile | null {
 }
 
 export function writeDefaultRunnerProfile(profile: RunnerProfile): void {
+  withProfileLock(() => { recoverProfileTransactionUnlocked(); writeDefaultRunnerProfileUnlocked(profile); });
+}
+function writeDefaultRunnerProfileUnlocked(profile: RunnerProfile): void {
   mkdirSync(dirname(profilePath()), { recursive: true });
   const temporary = `${profilePath()}.${process.pid}.tmp`;
   writeFileSync(temporary, `${JSON.stringify(profile, null, 2)}\n`, { mode: 0o600 });
@@ -146,6 +151,9 @@ export function writeDefaultRunnerProfile(profile: RunnerProfile): void {
 }
 
 export function updateWorkspaceRunnerProfile(path: string, profile: RunnerProfile): void {
+  withProfileLock(() => { recoverProfileTransactionUnlocked(); updateWorkspaceRunnerProfileUnlocked(path, profile); });
+}
+function updateWorkspaceRunnerProfileUnlocked(path: string, profile: RunnerProfile): void {
   const absolute = resolve(path);
   const current = existsSync(absolute) ? JSON.parse(readFileSync(absolute, "utf8")) as GoahConfig : defaultConfig(dirname(absolute));
   current.runnerProfiles = [...(current.runnerProfiles ?? []).filter((item) => item.id !== profile.id), profile];
@@ -155,27 +163,79 @@ export function updateWorkspaceRunnerProfile(path: string, profile: RunnerProfil
   renameSync(temporary, absolute);
 }
 
-/** Persist default + workspace profile as one rollback-safe operation. */
+/** Persist default + workspace profile with a crash-recoverable rollback journal. */
 export function persistRunnerProfile(profile: RunnerProfile, workspacePath: string | null): void {
-  const targets = [profilePath(), ...(workspacePath ? [resolve(workspacePath)] : [])];
-  const before = targets.map((path) => ({ path, content: existsSync(path) ? readFileSync(path) : null }));
-  try {
-    writeDefaultRunnerProfile(profile);
-    if (workspacePath) updateWorkspaceRunnerProfile(workspacePath, profile);
-  } catch (error) {
-    for (const snapshot of before) {
-      if (snapshot.content === null) rmSync(snapshot.path, { force: true });
-      else {
-        mkdirSync(dirname(snapshot.path), { recursive: true });
-        const temporary = `${snapshot.path}.${process.pid}.rollback.tmp`;
-        writeFileSync(temporary, snapshot.content, snapshot.path === profilePath() ? { mode: 0o600 } : undefined);
-        renameSync(temporary, snapshot.path);
-        if (snapshot.path === profilePath()) chmodSync(snapshot.path, 0o600);
-      }
+  withProfileLock(() => {
+    recoverProfileTransactionUnlocked();
+    const targets = [profilePath(), ...(workspacePath ? [resolve(workspacePath)] : [])];
+    const before = targets.map((path) => ({ path, content: existsSync(path) ? readFileSync(path) : null }));
+    writeProfileTransaction(before);
+    try {
+      writeDefaultRunnerProfileUnlocked(profile);
+      if (workspacePath) updateWorkspaceRunnerProfileUnlocked(workspacePath, profile);
+      rmSync(profileTransactionPath(), { force: true });
+    } catch (error) {
+      restoreProfileSnapshots(before);
+      rmSync(profileTransactionPath(), { force: true });
+      throw error;
     }
-    throw error;
+  });
+}
+
+function withProfileLock<T>(operation: () => T): T {
+  const lock = `${profilePath()}.lock`; const ownerPath = join(lock, "owner.json"); const token = randomUUID(); mkdirSync(dirname(lock), { recursive: true });
+  acquireProfileLock(lock, ownerPath, token);
+  try { return operation(); }
+  finally { if (readProfileLockOwner(ownerPath)?.token === token) rmSync(lock, { recursive: true, force: true }); }
+}
+
+function acquireProfileLock(lock: string, ownerPath: string, token: string): void {
+  while (true) {
+    try {
+      mkdirSync(lock);
+      try { writeFileSync(ownerPath, JSON.stringify({ pid: process.pid, token }), { mode: 0o600 }); } catch (error) { rmSync(lock, { recursive: true, force: true }); throw error; }
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    const owner = readProfileLockOwner(ownerPath);
+    let oldUnownedLock = false;
+    try { oldUnownedLock = !owner && Date.now() - statSync(lock).mtimeMs > 5_000; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+    if (owner && processIsAlive(owner.pid) || !owner && !oldUnownedLock) throw new Error("Another Goah process is updating Runner Profiles; try again.");
+    const stale = `${lock}.stale.${token}`;
+    try { renameSync(lock, stale); rmSync(stale, { recursive: true, force: true }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   }
 }
+
+type ProfileSnapshot = { path: string; content: Buffer | null };
+function profileTransactionPath(): string { return join(dirname(profilePath()), "profile-transaction.json"); }
+function writeProfileTransaction(snapshots: ProfileSnapshot[]): void {
+  const path = profileTransactionPath(); const temporary = `${path}.${process.pid}.tmp`; mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(temporary, `${JSON.stringify({ version: 1, snapshots: snapshots.map((snapshot) => ({ path: snapshot.path, content: snapshot.content?.toString("base64") ?? null })) })}\n`, { mode: 0o600 });
+  renameSync(temporary, path); chmodSync(path, 0o600);
+}
+function restoreProfileSnapshots(snapshots: ProfileSnapshot[]): void {
+  for (const snapshot of snapshots) {
+    if (snapshot.content === null) rmSync(snapshot.path, { force: true });
+    else { mkdirSync(dirname(snapshot.path), { recursive: true }); const temporary = `${snapshot.path}.${process.pid}.rollback.tmp`; writeFileSync(temporary, snapshot.content, snapshot.path === profilePath() ? { mode: 0o600 } : undefined); renameSync(temporary, snapshot.path); if (snapshot.path === profilePath()) chmodSync(snapshot.path, 0o600); }
+  }
+}
+function recoverProfileTransaction(): void { if (existsSync(profileTransactionPath())) withProfileLock(recoverProfileTransactionUnlocked); }
+function recoverProfileTransactionUnlocked(): void {
+  const path = profileTransactionPath(); if (!existsSync(path)) return;
+  const value = JSON.parse(readFileSync(path, "utf8")) as { version?: unknown; snapshots?: Array<{ path?: unknown; content?: unknown }> };
+  if (value.version !== 1 || !Array.isArray(value.snapshots)) throw new Error("Goah Runner Profile transaction journal is invalid");
+  const snapshots = value.snapshots.map((snapshot): ProfileSnapshot => {
+    if (typeof snapshot.path !== "string" || snapshot.content !== null && typeof snapshot.content !== "string") throw new Error("Goah Runner Profile transaction journal is invalid");
+    return { path: snapshot.path, content: snapshot.content === null ? null : Buffer.from(snapshot.content, "base64") };
+  });
+  restoreProfileSnapshots(snapshots); rmSync(path, { force: true });
+}
+function readProfileLockOwner(path: string): { pid: number; token: string } | null {
+  try { const value = JSON.parse(readFileSync(path, "utf8")) as { pid?: unknown; token?: unknown }; return Number.isInteger(value.pid) && Number(value.pid) > 0 && typeof value.token === "string" ? value as { pid: number; token: string } : null; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) return null; throw error; }
+}
+function processIsAlive(pid: number): boolean { try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; } }
 
 export function diagnoseConfig(config: GoahConfig): { ok: boolean; checks: DoctorCheck[] } {
   const checks: DoctorCheck[] = [];
@@ -220,7 +280,7 @@ export function diagnoseConfig(config: GoahConfig): { ok: boolean; checks: Docto
     const model = createPiModel(provider, modelId, env).model;
     return `${provider}/${modelId} context=${model.contextWindow} output=${model.maxTokens}; auth is checked when the wake starts`;
   });
-  return { ok: checks.every((item) => item.ok), checks };
+  return { ok: checks.every((item) => item.ok || item.severity === "warning"), checks };
 }
 
 export function statusSnapshot(ledger: SqliteLedger): object {

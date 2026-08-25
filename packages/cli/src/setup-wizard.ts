@@ -8,8 +8,8 @@ import { SearchableSelect } from "./searchable-select.js";
 import { SecretInput, setInitialValue } from "./secret-input.js";
 import { tuiTheme } from "./tui-theme.js";
 
-export interface WizardResult { profile: RunnerProfile | null }
-export interface RunnerCommandWizardResult { profile: RunnerProfile; output: string[] }
+export interface WizardResult { profile: RunnerProfile | null; rollback?(): Promise<void> }
+export interface RunnerCommandWizardResult { profile: RunnerProfile; output: string[]; rollback?(): Promise<void> }
 export type SetupSection = "runner" | "model" | "auth";
 
 export function renderSetupHeader(title: string, description = "", progress?: { current: number; total: number }, surface = "SETUP"): string {
@@ -40,14 +40,15 @@ async function runTui(current: RunnerProfile | null): Promise<WizardResult> {
         if (!runner) return { profile: null };
         const configurator = runnerPlugin(runner).configurator;
         const currentConfig = current?.runner === runner ? current.config : null;
-        transaction = await configurator.beginSetup?.(currentConfig);
-        const config = await configurator.setup(currentConfig, interaction);
+        transaction = await configurator.beginSetup?.(currentConfig, interaction);
+        let config = transaction ? transaction.config : await configurator.setup(currentConfig, interaction);
         if (config === null) { await transaction?.rollback(); return { profile: null }; }
         const summary = configurator.summarize?.(config) ?? summarize(config);
         const confirmation = await interaction.select({ title: "Review", description: summary.map((item) => `${item.label.padEnd(12)} ${item.value}`).join("\n "), progress: { current: 5, total: 5 }, choices: [{ value: "save", label: "Save and continue" }, { value: "back", label: "Back" }, { value: "cancel", label: "Cancel without saving" }] });
         if (confirmation === "back") { await transaction?.rollback(); continue; }
-        if (confirmation === "save") await transaction?.commit(); else await transaction?.rollback();
-        return { profile: confirmation === "save" ? { id: current?.id ?? "default", runner, config } : null };
+        if (confirmation === "save" && transaction) config = await transaction.commit(); else if (confirmation !== "save") await transaction?.rollback();
+        if (confirmation === "save" && config === null) throw new Error("Runner setup transaction produced no configuration");
+        return { profile: confirmation === "save" ? { id: current?.id ?? "default", runner, config } : null, ...(confirmation === "save" && transaction ? { rollback: transaction.rollback } : {}) };
       } catch (error) {
         await transaction?.rollback();
         const choice = await interaction.select({ title: "Setup failed", description: error instanceof Error ? error.message : String(error), choices: [{ value: "retry", label: "Try again" }, { value: "cancel", label: "Cancel without saving" }] });
@@ -99,7 +100,7 @@ export async function runRunnerCommandWizard(current: RunnerProfile, command: st
   if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error(command === "model" ? "goah model requires an interactive terminal; use `goah model list` or `goah model use PROVIDER/MODEL`." : "goah auth requires an interactive terminal; use `goah auth status|list|login|logout PROVIDER`.");
   const run = async (interaction: RunnerSetupInteraction): Promise<RunnerCommandWizardResult> => {
     const result = await plugin.configurator.runCommand!(command, args, current.config, interaction);
-    return { profile: result.config === undefined ? current : { ...current, config: result.config }, output: result.output };
+    return { profile: result.config === undefined ? current : { ...current, config: result.config }, output: result.output, ...(result.rollback ? { rollback: result.rollback } : {}) };
   };
   return withTuiInteraction(run, command === "model" ? "MODEL" : "AUTH");
 }
@@ -119,9 +120,10 @@ export async function chooseSetupSection(current: RunnerProfile): Promise<SetupS
   }) as Promise<SetupSection | null>, "SETTINGS");
 }
 
-export function applyWizardResult(result: WizardResult, configPath: string | null): void {
+export async function applyWizardResult(result: WizardResult, configPath: string | null): Promise<void> {
   if (!result.profile) throw new Error("Setup was cancelled; your existing configuration was not changed.");
-  persistRunnerProfile(result.profile, configPath);
+  try { persistRunnerProfile(result.profile, configPath); }
+  catch (error) { await result.rollback?.(); throw error; }
 }
 
 function summarize(config: JsonValue): Array<{ label: string; value: string }> {

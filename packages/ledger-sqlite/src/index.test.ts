@@ -161,9 +161,10 @@ test("mail is acknowledged only by an atomic successful handoff", () => {
   ledger.claimNextWake("2030-01-01T00:00:00.000Z", "2030-01-01T00:01:00.000Z", "lease");
   ledger.markWakeRunning("w", "2030-01-01T00:00:01.000Z", "lease");
   ledger.putMail({ id: "m", to: "agent-1", from: "human", level: "emergency", body: {}, readAt: null }, "human");
-  assert.equal(ledger.unreadMail("agent-1").length, 1);
-  ledger.commitHandoff({ agent: "agent-1", wakeId: "w", ts: "2030-01-01T00:00:02.000Z", output: { handoff: { observations: [], results: [], nextSteps: [] }, mail: [], nextWakeAt: null }, outgoingMail: [], schedule: null });
-  assert.equal(ledger.unreadMail("agent-1").length, 0);
+  ledger.putMail({ id: "later", to: "agent-1", from: "human", level: "decision", body: {}, readAt: null }, "human");
+  assert.equal(ledger.unreadMail("agent-1").length, 2);
+  ledger.commitHandoff({ agent: "agent-1", wakeId: "w", mailIds: ["m"], ts: "2030-01-01T00:00:02.000Z", output: { handoff: { observations: [], results: [], nextSteps: [] }, mail: [], nextWakeAt: null }, outgoingMail: [], schedule: null });
+  assert.deepEqual(ledger.unreadMail("agent-1").map((mail) => mail.id), ["later"]);
   ledger.close();
 });
 
@@ -176,7 +177,7 @@ test("handoff event and mail acknowledgement roll back together", () => {
   ledger.putMail({ id: "m", to: "agent-1", from: "human", level: "emergency", body: {}, readAt: null }, "human");
   const before = JSON.stringify(ledger.events());
   armed = true;
-  assert.throws(() => ledger.commitHandoff({ agent: "agent-1", wakeId: "w", ts: "2030-01-01T00:00:02.000Z", output: { handoff: { observations: [], results: [], nextSteps: [] }, mail: [], nextWakeAt: null }, outgoingMail: [], schedule: null }), /kill during handoff/);
+  assert.throws(() => ledger.commitHandoff({ agent: "agent-1", wakeId: "w", mailIds: ["m"], ts: "2030-01-01T00:00:02.000Z", output: { handoff: { observations: [], results: [], nextSteps: [] }, mail: [], nextWakeAt: null }, outgoingMail: [], schedule: null }), /kill during handoff/);
   assert.equal(JSON.stringify(ledger.events()), before);
   assert.equal(ledger.unreadMail("agent-1").length, 1);
   ledger.close();

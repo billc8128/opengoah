@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifyTuiInput, renderFrame, renderTuiHeader, renderUserMessage } from "./tui.js";
+import { classifyTuiInput, findLiveInteractionWakeId, renderFrame, renderTuiHeader, renderUserMessage } from "./tui.js";
 import { stripAnsi } from "./tui-theme.js";
 
 test("TUI routes ordinary text, queued follow-ups, and approvals", () => {
@@ -16,6 +16,11 @@ test("TUI routes ordinary text, queued follow-ups, and approvals", () => {
   assert.equal(classifyTuiInput("/setup model", false).action, "setup");
   assert.equal(classifyTuiInput("/modle", false).action, "unknown");
   assert.equal(classifyTuiInput("/help", false).action, "help");
+});
+
+test("TUI reconnect selects the newest live Human interaction only", () => {
+  assert.equal(findLiveInteractionWakeId([{ id: "goal", agent: "ceo", status: "running", triggerRef: "root:g" }, { id: "human", agent: "ceo", status: "queued", triggerRef: "interaction:mail" }]), "human");
+  assert.equal(findLiveInteractionWakeId([{ id: "done", agent: "ceo", status: "done", triggerRef: "interaction:mail" }]), null);
 });
 
 test("TUI renders streamed assistant text and tool completion", () => {
@@ -37,6 +42,12 @@ test("TUI renders streamed assistant text and tool completion", () => {
   assert.deepEqual(tools.get("call-1"), { kind: "tool", callId: "call-1", name: "read", detail: "", status: "done" });
   render({ type: "result", value: { response: { content: "final answer" } } });
   assert.equal(lines.at(-1), "final answer");
+});
+
+test("TUI discards assistant text from a failed completed message", () => {
+  const committed: string[] = []; let cleared = 0;
+  renderFrame({ type: "event", event: { type: "message.assistant.completed", data: { message: { stopReason: "error", errorMessage: "provider failed", content: [{ type: "text", text: "partial answer" }] } } } }, () => undefined, () => undefined, (text) => committed.push(text), () => undefined, () => undefined, () => undefined, () => undefined, () => { cleared += 1; });
+  assert.deepEqual(committed, []); assert.equal(cleared, 1);
 });
 
 test("TUI hides internal wake ids and credential-shaped environment errors", () => {

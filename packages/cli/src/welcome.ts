@@ -56,7 +56,7 @@ export function welcomeSnapshot(stateDir: string, runner: RunnerDisplay): Welcom
         return [{ agent: row.actor, result }];
       } catch { return [{ agent: row.actor, result: "" }]; }
     });
-    const conversationRows = db.prepare("SELECT actor, type, data FROM events WHERE type IN ('mail.put','handoff.recorded') ORDER BY seq DESC LIMIT 30").all() as unknown as Array<{ actor: string; type: string; data: string }>;
+    const conversationRows = db.prepare("SELECT actor, type, data FROM events WHERE type IN ('mail.put','handoff.recorded','interaction.completed') ORDER BY seq DESC LIMIT 30").all() as unknown as Array<{ actor: string; type: string; data: string }>;
     const conversation = conversationRows.reverse().flatMap((row) => conversationLine(row)).slice(-WELCOME_CONVERSATION_SLOTS);
     return { root: root ? { id: root.id, objective: root.objective, phase: root.phase } : null, team, handoffs, conversation, runner: runner.runner, target: runner.target };
   } finally { db.close(); }
@@ -80,6 +80,10 @@ function conversationLine(row: { actor: string; type: string; data: string }): A
       const body = snapshot.body && typeof snapshot.body === "object" ? snapshot.body as Record<string, unknown> : {};
       const text = typeof body.message === "string" ? body.message : typeof snapshot.body === "string" ? snapshot.body : "";
       return text ? [{ speaker: "You", text: shorten(text) }] : [];
+    }
+    if (row.type === "interaction.completed") {
+      const response = data.response && typeof data.response === "object" ? data.response as Record<string, unknown> : {};
+      return typeof response.content === "string" && response.content.trim() ? [{ speaker: "Goah", text: shorten(response.content) }] : [];
     }
     if (row.actor !== "ceo") return [];
     const results = Array.isArray(data.results) ? data.results.filter((item): item is string => typeof item === "string") : [];

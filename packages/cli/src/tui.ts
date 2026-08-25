@@ -42,6 +42,8 @@ class ConversationView implements Component {
   addUser(content: string): void { this.entries.push({ kind: "user", content }); this.trim(); }
   addMarkdown(content: string): void {
     this.liveMarkdown = "";
+    content = content.trim();
+    if (!content) return;
     const previous = this.entries.at(-1);
     if (previous?.kind === "markdown" && previous.content === content) return;
     this.entries.push({ kind: "markdown", content }); this.trim();
@@ -123,11 +125,15 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   const snapshot = welcomeSnapshot(stateDir, runner);
   const welcome = renderWelcome(snapshot, Boolean(snapshot.root || snapshot.handoffs.length || snapshot.conversation.length));
   await ensureDaemon(configPath, stateDir);
+  const liveSnapshot = await requestControl(stateDir, { op: "status" }).catch(() => null);
+  const liveWakes = liveSnapshot && typeof liveSnapshot === "object" && !Array.isArray(liveSnapshot) && Array.isArray(liveSnapshot.wakes) ? liveSnapshot.wakes as Array<Record<string, unknown>> : [];
+  const liveInteractionWakeId = findLiveInteractionWakeId(liveWakes);
   const terminal = new ProcessTerminal();
   const tui = new TuiAltScreen(terminal, true, undefined, { mouse: true });
   terminal.setTitle(`Goah · ${runner.target}`);
   const headerView = new HeaderBar(runner.runner, runner.target, installedVersion());
   const transcriptView = new ConversationView(welcome);
+  for (const row of snapshot.conversation) if (row.speaker === "You") transcriptView.addUser(row.text); else transcriptView.addMarkdown(row.text);
   const conversationScroll = new ScrollView(transcriptView, { follow: "end", primary: true, scrollbar: "auto", scrollbarStyle: tuiTheme.muted });
   const goalView = new GoalBar(snapshot.root);
   const input = new Editor(tui, {
@@ -146,6 +152,10 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   const queued: string[] = [];
   const queuedWakeIds: string[] = [];
   let activeStream: AbortController | null = null;
+  let activeInteractionWakeId: string | null = null;
+  let resumeInteractionWakeId: string | null = null;
+  let steeringTail: Promise<void> = Promise.resolve();
+  let configuring = false;
   let exiting = false;
 
   const push = (line: string): void => {
@@ -154,7 +164,7 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   };
   let liveText = "";
   const appendLive = (text: string): void => { liveText += text; transcriptView.setLiveMarkdown(liveText); tui.requestRender(); };
-  const commitLive = (text: string): void => { liveText = ""; if (text) transcriptView.addMarkdown(text); tui.requestRender(); };
+  const commitLive = (text: string): void => { liveText = ""; transcriptView.clearLiveMarkdown(); if (text) transcriptView.addMarkdown(text); tui.requestRender(); };
   const pushResponse = (text: string): void => { transcriptView.addMarkdown(text); tui.requestRender(); };
   const updateTool = (activity: ToolActivity): void => { transcriptView.updateTool(activity); tui.requestRender(); };
   const updateThinking = (activity: ThinkingActivity): void => { transcriptView.updateThinking(activity); tui.requestRender(); };
@@ -166,7 +176,7 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
     statusView.setText(statusText("working", queued.length));
     if (showUser) { transcriptView.addUser(message); tui.requestRender(); }
     try {
-      await streamControl(stateDir, { op: "interact", message }, (frame) => renderFrame(frame, push, appendLive, commitLive, pushResponse, updateTool, updateThinking, setWakeState), controller.signal);
+      await streamControl(stateDir, { op: "interact", message }, (frame) => { if (frame.type === "accepted") activeInteractionWakeId = frame.wakeId; if (frame.type === "result" || frame.type === "error") activeInteractionWakeId = null; renderFrame(frame, push, appendLive, commitLive, pushResponse, updateTool, updateThinking, setWakeState, () => commitLive("")); }, controller.signal);
     } catch (error) {
       transcriptView.clearLiveMarkdown();
       transcriptView.updateThinking({ phase: "clear", text: "" });
@@ -181,9 +191,10 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   };
   const attachWake = async (wakeId: string): Promise<void> => {
     busy.active = true;
+    activeInteractionWakeId = wakeId;
     const controller = new AbortController(); activeStream = controller;
     statusView.setText(statusText("queued", 1));
-    try { await streamControl(stateDir, { op: "interaction.attach", wakeId }, (frame) => renderFrame(frame, push, appendLive, commitLive, pushResponse, updateTool, updateThinking, setWakeState), controller.signal); }
+    try { await streamControl(stateDir, { op: "interaction.attach", wakeId }, (frame) => { if (frame.type === "result" || frame.type === "error") activeInteractionWakeId = null; renderFrame(frame, push, appendLive, commitLive, pushResponse, updateTool, updateThinking, setWakeState, () => commitLive("")); }, controller.signal); }
     catch (error) { if (!controller.signal.aborted) push(errorLine(error)); }
     finally {
       if (activeStream === controller) activeStream = null;
@@ -194,41 +205,54 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
     }
   };
   const continuePending = (): void => {
-    if (exiting || busy.active) return;
+    if (exiting || configuring || busy.active) return;
     const wakeId = queuedWakeIds.shift();
     if (wakeId) { void attachWake(wakeId); return; }
     const next = queued.shift();
     if (next) void send(next, false);
   };
   const steer = async (message: string): Promise<void> => {
-    transcriptView.addUser(message); tui.requestRender();
     try {
       const outcome = await requestControl(stateDir, { op: "ceo.steer", message });
       const queuedBySupervisor = Boolean(outcome && typeof outcome === "object" && !Array.isArray(outcome) && outcome.queued === true);
       if (queuedBySupervisor && outcome && typeof outcome === "object" && !Array.isArray(outcome) && outcome.wake && typeof outcome.wake === "object" && !Array.isArray(outcome.wake) && typeof outcome.wake.id === "string" && !queuedWakeIds.includes(outcome.wake.id)) queuedWakeIds.push(outcome.wake.id);
       statusView.setText(queuedBySupervisor ? statusText("queued", 1) : `${tuiTheme.accent("working")}  ${tuiTheme.muted("your update is steering this turn · /stop cancels")}`);
       tui.requestRender();
+      if (queuedBySupervisor && !busy.active) continuePending();
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       if (reason.includes("no longer accepting steering messages")) {
         queued.push(message);
         statusView.setText(statusText("working", queued.length));
+        if (!busy.active) continuePending();
       } else push(errorLine(error));
     }
   };
+  const submitSteer = (message: string): void => {
+    transcriptView.addUser(message); tui.requestRender();
+    steeringTail = steeringTail.then(() => exiting ? undefined : steer(message));
+  };
   const withConfigurationScreen = async (work: () => Promise<void>): Promise<void> => {
-    if (busy.active) { push("Wait for the current turn or use /stop before changing Runner configuration."); return; }
+    if (busy.active) {
+      const snapshot = await requestControl(stateDir, { op: "status" }).catch(() => null);
+      if (!snapshot) { push("Cannot inspect the current turn; use /stop before changing Runner configuration."); return; }
+      const wakes = snapshot && typeof snapshot === "object" && !Array.isArray(snapshot) && Array.isArray(snapshot.wakes) ? snapshot.wakes as Array<Record<string, unknown>> : [];
+      if (wakes.some((wake) => wake.agent === "ceo" && (wake.status === "leased" || wake.status === "running"))) { push("Wait for the current turn or use /stop before changing Runner configuration."); return; }
+      configuring = true; resumeInteractionWakeId = activeInteractionWakeId; activeStream?.abort();
+      while (busy.active) await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+    } else configuring = true;
     statusView.setText(statusText("setup"));
     tui.stop();
     try { await work(); }
     catch (error) { push(errorLine(error)); }
-    finally { if (!exiting) { tui.start(); tui.requestRender(true); statusView.setText(statusText("ready")); } }
+    finally { configuring = false; if (resumeInteractionWakeId && !queuedWakeIds.includes(resumeInteractionWakeId)) queuedWakeIds.unshift(resumeInteractionWakeId); resumeInteractionWakeId = null; if (!exiting) { tui.start(); tui.requestRender(true); statusView.setText(statusText("ready")); continuePending(); } }
   };
   const launchRunnerCommand = async (command: "model" | "auth", commandArgs: string[] = []): Promise<void> => withConfigurationScreen(async () => {
     const current = configuredRunnerProfile(configPath);
     if (!current) throw new Error("No Runner Profile is configured; use /setup first.");
     const result = await runRunnerCommandWizard(current, command, commandArgs);
-    applyWizardResult({ profile: result.profile }, existsSync(configPath) ? configPath : null);
+    try { await applyWizardResult({ profile: result.profile }, existsSync(configPath) ? configPath : null); }
+    catch (error) { await result.rollback?.(); throw error; }
     for (const line of result.output) push(line);
     push(await reloadDaemon(stateDir, configPath) ? "Configuration updated — applies to the next wake." : "Configuration saved — restart Goah to apply it.");
   });
@@ -241,12 +265,13 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
     if (section === "runner" || !current) {
       const result = await runSetupWizard(current);
       if (!result.profile) return;
-      applyWizardResult(result, existsSync(configPath) ? configPath : null);
+      await applyWizardResult(result, existsSync(configPath) ? configPath : null);
       push(await reloadDaemon(stateDir, configPath) ? "Runner profile updated — applies to the next wake." : "Runner profile saved — restart Goah to apply it.");
       return;
     }
     const result = await runRunnerCommandWizard(current, section === "model" ? "model" : "auth");
-    applyWizardResult({ profile: result.profile }, existsSync(configPath) ? configPath : null);
+    try { await applyWizardResult({ profile: result.profile }, existsSync(configPath) ? configPath : null); }
+    catch (error) { await result.rollback?.(); throw error; }
     for (const line of result.output) push(line);
     push(await reloadDaemon(stateDir, configPath) ? "Configuration updated — applies to the next wake." : "Configuration saved — restart Goah to apply it.");
   });
@@ -266,7 +291,7 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
     if (action === "goal") { void slashGoal(text, stateDir, push).finally(() => refreshGoalBar(stateDir, goalView, tui)); return; }
     if (action === "approval") { void slashApprove(text, stateDir, push); return; }
     if (action === "unknown") { push(errorLine(`Unknown command: ${text.split(/\s+/, 1)[0]}. Use /help to list commands.`)); return; }
-    if (action === "steer") { void steer(text); return; }
+    if (action === "steer") { submitSteer(text); return; }
     if (action === "send") void send(text);
   };
 
@@ -282,8 +307,13 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
     return { consume: true };
   });
   tui.start();
-  if (initialMessage) void send(initialMessage);
+  if (initialMessage) void send(initialMessage); else if (typeof liveInteractionWakeId === "string") void attachWake(liveInteractionWakeId);
   await exited;
+}
+
+export function findLiveInteractionWakeId(wakes: Array<Record<string, unknown>>): string | null {
+  const id = [...wakes].reverse().find((wake) => wake.agent === "ceo" && ["queued", "leased", "running"].includes(String(wake.status)) && String(wake.triggerRef).startsWith("interaction:"))?.id;
+  return typeof id === "string" ? id : null;
 }
 
 async function runNonInteractive(configPath: string, stateDir: string, initialMessage: string | null): Promise<void> {
@@ -321,8 +351,8 @@ export interface ToolActivity { kind: "tool"; callId: string; name: string; deta
 export interface ThinkingActivity { phase: "start" | "delta" | "done" | "clear"; text: string }
 
 /** Render one structured control-protocol frame into its own transcript channel. */
-export function renderFrame(frame: ControlFrame, push: (line: string) => void, appendLive: (text: string) => void = push, commitLive: (text: string) => void = push, pushResponse: (text: string) => void = push, updateTool: (activity: ToolActivity) => void = (activity) => push(toolActivityLine(activity)), updateThinking: (activity: ThinkingActivity) => void = () => {}, setWakeState: (state: "queued" | "working") => void = () => {}): void {
-  if (frame.type === "error") { updateThinking({ phase: "clear", text: "" }); push(`${tuiTheme.error("error")}  ${safeError(frame.error)}\n`); return; }
+export function renderFrame(frame: ControlFrame, push: (line: string) => void, appendLive: (text: string) => void = push, commitLive: (text: string) => void = push, pushResponse: (text: string) => void = push, updateTool: (activity: ToolActivity) => void = (activity) => push(toolActivityLine(activity)), updateThinking: (activity: ThinkingActivity) => void = () => {}, setWakeState: (state: "queued" | "working") => void = () => {}, clearLive: () => void = () => {}): void {
+  if (frame.type === "error") { updateThinking({ phase: "clear", text: "" }); clearLive(); push(`${tuiTheme.error("error")}  ${safeError(frame.error)}\n`); return; }
   if (frame.type === "accepted") {
     const value = frame.value && typeof frame.value === "object" && !Array.isArray(frame.value) ? frame.value as Record<string, unknown> : {};
     setWakeState(value.steered === true ? "working" : "queued");
@@ -359,6 +389,7 @@ export function renderFrame(frame: ControlFrame, push: (line: string) => void, a
   } else if (record.type === "message.assistant.completed") {
     updateThinking({ phase: "done", text: "" });
     const message = data.message && typeof data.message === "object" ? data.message as Record<string, unknown> : {};
+    if (message.stopReason === "error" || message.stopReason === "aborted") { clearLive(); return; }
     const text = messageText(message.content);
     if (text) commitLive(text);
   } else if (record.type === "handoff.recorded") {
@@ -371,6 +402,7 @@ export function renderFrame(frame: ControlFrame, push: (line: string) => void, a
     push(`${tuiTheme.warning("needs you")}  ${safeError(compact(record.data ?? {}))}`);
   } else if (record.type === "wake.abnormal_reason") {
     updateThinking({ phase: "clear", text: "" });
+    clearLive();
     push(`${tuiTheme.error("error")}  ${safeError(typeof data.reason === "string" ? data.reason : "Wake failed")}\n`);
   }
 }

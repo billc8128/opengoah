@@ -172,21 +172,34 @@ export async function* interactFrames(message: string, supervisor: Supervisor, l
 
 async function* interactionWakeFrames(wakeId: string, ledger: Ledger, isActive: () => boolean, afterSeq = 0): AsyncGenerator<ControlFrame> {
   const target = ledger.wake(wakeId);
-  if (!target || !interactionMailIdFromTrigger(target.triggerRef)) throw new Error("interaction wake not found");
+  const mailId = target ? interactionMailIdFromTrigger(target.triggerRef) : null;
+  if (!target || !mailId) throw new Error("interaction wake not found");
   let lastSeq = afterSeq;
   while (true) {
     if (!isActive()) return;
-    for (const event of ledger.eventsForWake(wakeId)) {
+    const wakes = ledger.wakes().filter((wake) => interactionMailIdFromTrigger(wake.triggerRef) === mailId).sort((left, right) => left.enqueuedSeq - right.enqueuedSeq);
+    const events = wakes.flatMap((wake) => ledger.eventsForWake(wake.id)).sort((left, right) => left.seq - right.seq);
+    for (const event of events) {
       if (event.seq <= lastSeq) continue;
       lastSeq = event.seq;
-      if (event.type === "message.assistant.delta" || event.type.startsWith("tool.") || event.type === "handoff.recorded" || event.type.startsWith("wake.")) yield { type: "event", event: event as unknown as JsonValue };
+      if (event.type === "message.assistant.delta" || event.type === "message.assistant.completed" || event.type.startsWith("tool.") || event.type === "handoff.recorded" || event.type.startsWith("wake.")) yield { type: "event", event: event as unknown as JsonValue };
     }
-    const wake = ledger.wake(wakeId);
-    if (wake && ["done", "abnormal", "merge_blocked"].includes(wake.status)) {
-      const interaction = ledger.eventsForWake(wake.id).findLast((event) => event.type === "interaction.completed");
-      yield { type: "result", value: { wake, ...(interaction ? { response: (interaction.data as { response?: JsonValue }).response ?? null } : { handoff: ledger.lastEvent("ceo", "handoff.recorded") }) } as unknown as JsonValue };
+    const interaction = events.findLast((event) => event.type === "interaction.completed");
+    if (interaction) {
+      const completedWake = wakes.find((wake) => wake.id === interaction.streamId.replace(/^wake:/, "")) ?? wakes.at(-1)!;
+      yield { type: "result", value: { wake: completedWake, response: (interaction.data as { response?: JsonValue }).response ?? null } as unknown as JsonValue };
       return;
     }
+    const terminalWake = wakes.findLast((wake) => wake.status === "done" || wake.status === "merge_blocked");
+    if (terminalWake) {
+      const handoff = ledger.eventsForWake(terminalWake.id).findLast((event) => event.type === "handoff.recorded");
+      yield { type: "result", value: { wake: terminalWake, ...(handoff ? { handoff: handoff.data } : {}) } as unknown as JsonValue };
+      return;
+    }
+    const exhausted = ledger.mailbox().find((mail) => mail.id === `interaction-redelivery-exhausted:${mailId}`);
+    if (exhausted) { yield { type: "error", error: String((exhausted.body as { message?: unknown }).message ?? "Goah could not deliver your message.") }; return; }
+    const cancelled = ledger.eventsSince(0, ["interaction.cancelled"]).find((event) => (event.data as { mailId?: string }).mailId === mailId);
+    if (cancelled) { yield { type: "result", value: { wake: wakes.at(-1) ?? target, cancelled: true } as unknown as JsonValue }; return; }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }

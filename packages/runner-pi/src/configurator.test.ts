@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -30,6 +30,22 @@ test("model command uses a scoped picker without replaying authentication for th
   assert.deepEqual(result.config, { provider: "openai", model: "gpt-5.5", authMode: "environment", apiKeyEnv: "OPENAI_API_KEY" });
 });
 
+test("model picker preserves a custom credential store and never launches authentication", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "goah-model-auth-store-")); const authFile = join(directory, "custom-auth.json");
+  await new JsonCredentialStore(authFile).modify("openai", async () => ({ type: "api_key", key: "existing-key" }));
+  const interaction: RunnerSetupInteraction = {
+    select: async ({ title, choices }) => {
+      if (title === "Choose a provider") return "openai";
+      if (title === "Choose a model") return choices.find((choice) => choice.value === "gpt-5.5")!.value;
+      throw new Error(`unexpected authentication prompt: ${title}`);
+    },
+    input: async ({ title }) => { throw new Error(`unexpected input: ${title}`); },
+    notify: () => undefined,
+  };
+  const result = await piRunnerConfigurator().runCommand!("model", [], { provider: "faux", model: "faux-goah", authFile, authMode: "local" }, interaction);
+  assert.deepEqual(result.config, { provider: "openai", model: "gpt-5.5", thinking: "medium", authFile, authMode: "stored-key" });
+});
+
 test("auth login command supports API keys without running model setup", async () => {
   const previous = process.env.GOAH_STATE_HOME;
   const state = mkdtempSync(join(tmpdir(), "goah-command-auth-"));
@@ -46,6 +62,16 @@ test("auth login command supports API keys without running model setup", async (
   } finally {
     if (previous === undefined) delete process.env.GOAH_STATE_HOME; else process.env.GOAH_STATE_HOME = previous;
   }
+});
+
+test("scoped auth refuses a concurrent update to the same provider", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "goah-auth-provider-cas-")); const authFile = join(directory, "auth.json"); const store = new JsonCredentialStore(authFile);
+  await store.modify("zai", async () => ({ type: "api_key", key: "old" }));
+  const inputReady = Promise.withResolvers<void>(); const releaseInput = Promise.withResolvers<void>();
+  const command = piRunnerConfigurator().runCommand!("auth", ["login", "zai"], { provider: "zai", model: "glm", authFile }, { select: async () => "key", input: async () => { inputReady.resolve(); await releaseInput.promise; return "command"; }, notify: () => undefined });
+  await inputReady.promise; await store.modify("zai", async () => ({ type: "api_key", key: "concurrent" })); releaseInput.resolve();
+  await assert.rejects(command, /changed in another process/);
+  assert.equal((await store.read("zai") as { key: string }).key, "concurrent");
 });
 
 test("explicit model use accepts faux and custom provider ids", async () => {
@@ -65,6 +91,7 @@ test("logout updates stored auth state and is honest about environment auth", as
     const store = new JsonCredentialStore(join(state, "auth.json"));
     await store.modify("zai", async () => ({ type: "api_key", key: "private" }));
     await store.modify("openai", async () => ({ type: "api_key", key: "openai-private" }));
+    await store.modify("retired-gateway", async () => ({ type: "api_key", key: "gateway-private" }));
     const interaction: RunnerSetupInteraction = { select: async () => null, input: async () => null, notify: () => undefined };
     const stored = await piRunnerConfigurator().runCommand!("auth", ["logout", "zai"], { provider: "zai", model: "glm", authMode: "stored-key" }, interaction);
     assert.equal((stored.config as { authMode: string }).authMode, "unconfigured");
@@ -74,6 +101,10 @@ test("logout updates stored auth state and is honest about environment auth", as
     assert.match(env.output[0]!, /unset it in your shell/);
     const switched = await piRunnerConfigurator().runCommand!("model", ["use", "openai/gpt-5.5"], { provider: "faux", model: "faux-goah", authMode: "local" }, interaction);
     assert.equal((switched.config as { authMode: string }).authMode, "stored-key");
+    const listed = await piRunnerConfigurator().runCommand!("auth", ["list"], { provider: "zai", model: "glm", authMode: "unconfigured" }, interaction);
+    assert.match(listed.output.join("\n"), /retired-gateway/);
+    await piRunnerConfigurator().runCommand!("auth", ["logout", "retired-gateway"], { provider: "zai", model: "glm", authMode: "unconfigured" }, interaction);
+    assert.equal(await store.read("retired-gateway"), undefined);
   } finally { if (previous === undefined) delete process.env.GOAH_STATE_HOME; else process.env.GOAH_STATE_HOME = previous; }
 });
 
@@ -138,16 +169,38 @@ test("setup stores a pasted API key privately through a masked interaction", asy
 test("setup transaction rolls credential changes back on cancel", async () => {
   const previous = process.env.GOAH_STATE_HOME; const state = mkdtempSync(join(tmpdir(), "goah-setup-rollback-")); process.env.GOAH_STATE_HOME = state;
   try {
-    const configurator = piRunnerConfigurator(); const transaction = await configurator.beginSetup!(null);
     const interaction: RunnerSetupInteraction = {
       select: async ({ title, choices }) => title.includes("provider") ? "zai" : title.includes("model") ? choices[0]!.value : title === "Authentication" ? "key" : null,
       input: async ({ secret }) => secret ? "temporary-key" : null,
       notify: () => undefined,
     };
-    await configurator.setup(null, interaction);
-    assert.equal((await new JsonCredentialStore(join(state, "auth.json")).read("zai") as { key: string }).key, "temporary-key");
+    const configurator = piRunnerConfigurator(); const transaction = await configurator.beginSetup!(null, interaction);
+    assert.equal((transaction.config as { authMode: string }).authMode, "stored-key");
+    assert.equal(await new JsonCredentialStore(join(state, "auth.json")).read("zai"), undefined);
     await transaction.rollback();
     assert.equal(await new JsonCredentialStore(join(state, "auth.json")).read("zai"), undefined);
+    const committed = await configurator.beginSetup!(null, interaction);
+    const committedConfig = await committed.commit();
+    assert.equal((committedConfig as { authFile: string }).authFile, join(state, "auth.json"));
+    assert.equal((await new JsonCredentialStore(join(state, "auth.json")).read("zai") as { key: string }).key, "temporary-key");
+    await committed.rollback();
+    assert.equal(await new JsonCredentialStore(join(state, "auth.json")).read("zai"), undefined);
+  } finally { if (previous === undefined) delete process.env.GOAH_STATE_HOME; else process.env.GOAH_STATE_HOME = previous; }
+});
+
+test("setup transaction refuses to overwrite concurrent credential changes", async () => {
+  const previous = process.env.GOAH_STATE_HOME; const state = mkdtempSync(join(tmpdir(), "goah-setup-conflict-")); process.env.GOAH_STATE_HOME = state;
+  try {
+    const interaction: RunnerSetupInteraction = {
+      select: async ({ title, choices }) => title.includes("provider") ? "zai" : title.includes("model") ? choices[0]!.value : title === "Authentication" ? "key" : null,
+      input: async ({ secret }) => secret ? "staged-key" : null,
+      notify: () => undefined,
+    };
+    const transaction = await piRunnerConfigurator().beginSetup!(null, interaction);
+    const realStore = new JsonCredentialStore(join(state, "auth.json")); await realStore.modify("openai", async () => ({ type: "api_key", key: "concurrent-key" }));
+    await assert.rejects(transaction.commit(), /changed in another process/);
+    assert.equal((await realStore.read("openai") as { key: string }).key, "concurrent-key");
+    assert.equal(await realStore.read("zai"), undefined);
   } finally { if (previous === undefined) delete process.env.GOAH_STATE_HOME; else process.env.GOAH_STATE_HOME = previous; }
 });
 
@@ -156,6 +209,11 @@ test("Pi ProcessRunner keeps the full credential store outside the worker enviro
   assert.equal(runner.options.envSpec?.GOAH_PI_AUTH_FILE, "");
   assert.equal(runner.options.envSpec?.OPENAI_API_KEY, undefined);
   assert.equal(typeof runner.options.prepareRuntime, "function");
+});
+
+test("Pi doctor reports the Bash sandbox backend", async () => {
+  const checks = await piRunnerConfigurator().doctor({ provider: "faux", model: "faux-goah", authMode: "local" });
+  assert.match(checks.find((check) => check.name === "bash-sandbox")!.detail, /sandbox-exec|bubblewrap|unavailable/);
 });
 
 test("Pi custom endpoints are runner-local overlays", () => {
@@ -173,4 +231,30 @@ test("credential store persists only in its private file", async () => {
   if (process.platform !== "win32") assert.equal(statSync(path).mode & 0o777, 0o600);
   await store.delete("openai-codex");
   assert.deepEqual(await store.list(), []);
+});
+
+test("credential store serializes read-modify-write across instances", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "goah-auth-lock-")); const path = join(directory, "auth.json");
+  const first = new JsonCredentialStore(path); const second = new JsonCredentialStore(path);
+  await Promise.all([
+    first.modify("one", async () => { await new Promise((resolve) => setTimeout(resolve, 50)); return { type: "api_key", key: "first" }; }),
+    second.modify("two", async () => ({ type: "api_key", key: "second" })),
+  ]);
+  assert.equal((await first.read("one") as { key: string }).key, "first");
+  assert.equal((await first.read("two") as { key: string }).key, "second");
+});
+
+test("credential store reclaims only a lock owned by a dead process", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "goah-auth-stale-lock-")); const path = join(directory, "auth.json"); const lock = `${path}.lock`;
+  mkdirSync(lock); writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid: 999_999_999, token: "dead" }));
+  const store = new JsonCredentialStore(path);
+  await store.modify("openai", async () => ({ type: "api_key", key: "recovered" }));
+  assert.equal((await store.read("openai") as { key: string }).key, "recovered");
+});
+
+test("credential store does not overwrite malformed data", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "goah-auth-malformed-")); const path = join(directory, "auth.json"); writeFileSync(path, "not-json");
+  const store = new JsonCredentialStore(path);
+  await assert.rejects(store.modify("one", async () => ({ type: "api_key", key: "new" })), /JSON/);
+  assert.equal(readFileSync(path, "utf8"), "not-json");
 });

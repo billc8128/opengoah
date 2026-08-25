@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join, resolve, sep } from "node:path";
-import { tmpdir } from "node:os";
+import { delimiter, dirname, join, resolve, sep } from "node:path";
+import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { Agent, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxText, fauxToolCall, Type, type Message } from "@earendil-works/pi-ai";
@@ -246,7 +246,7 @@ function createTools(root: string, handoff: (output: WakeOutput) => void, rpc: W
   };
   const bashTool: AgentTool<any> = {
     name: "bash", label: "Bash",
-    description: "Run a shell command inside the local runner root. The command's process group is killed after the timeout; declare timeoutMs explicitly for builds, installs, or deployment waits that need longer.",
+    description: "Run a sandboxed shell command inside the local runner root. Goah credential/control state is masked. If protected state shares the root, use the write tool to create new top-level paths. The command's process group is killed after timeout.",
     parameters: Type.Object({ command: Type.String(), timeoutMs: Type.Optional(Type.Number()) }), executionMode: "sequential",
     execute: async (_id, params, signal) => runBashCommand(root, params as { command: string; timeoutMs?: number }, signal, protectedPaths),
   };
@@ -264,7 +264,7 @@ export function bashTimeoutMs(requested: number | undefined, env: NodeJS.Process
 /** Shell execution with a process-group timeout: a hung command becomes a model-visible tool error instead of a stalled wake. */
 export async function runBashCommand(root: string, input: { command: string; timeoutMs?: number }, signal?: AbortSignal, protectedPaths: string[] = []): Promise<{ content: Array<{ type: "text"; text: string }>; details: unknown; isError?: boolean }> {
   const timeoutMs = bashTimeoutMs(input.timeoutMs);
-  const sandboxTemp = protectedPaths.length ? mkdtempSync(join(tmpdir(), "goah-bash-")) : null;
+  const sandboxTemp = mkdtempSync(join(tmpdir(), "goah-bash-"));
   const launch = sandboxedShell(input.command, root, protectedPaths, sandboxTemp);
   if (!launch) { if (sandboxTemp) rmSync(sandboxTemp, { recursive: true, force: true }); return { content: [{ type: "text", text: "Bash is unavailable because this platform cannot isolate Goah credential and control state." }], details: { command: input.command }, isError: true }; }
   const child = spawn(launch.command, launch.args, { cwd: root, env: toolEnvironment(sandboxTemp), detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
@@ -272,9 +272,15 @@ export async function runBashCommand(root: string, input: { command: string; tim
   let stderr = "";
   let timedOut = false;
   let outputOverflow = false;
-  child.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString(); if (stdout.length > 1_000_000) outputOverflow = true; });
-  child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); if (stderr.length > 1_000_000) outputOverflow = true; });
   const killGroup = () => { if (child.pid) { try { process.kill(process.platform === "win32" ? child.pid : -child.pid, "SIGKILL"); } catch {} } };
+  const appendOutput = (channel: "stdout" | "stderr", chunk: Buffer): void => {
+    if (outputOverflow) return;
+    const text = chunk.toString(); const remaining = Math.max(0, 1_000_000 - stdout.length - stderr.length);
+    if (channel === "stdout") stdout += text.slice(0, remaining); else stderr += text.slice(0, remaining);
+    if (text.length > remaining) { outputOverflow = true; killGroup(); }
+  };
+  child.stdout?.on("data", (chunk: Buffer) => appendOutput("stdout", chunk));
+  child.stderr?.on("data", (chunk: Buffer) => appendOutput("stderr", chunk));
   const timer = setTimeout(() => { timedOut = true; killGroup(); }, timeoutMs);
   const onAbort = () => killGroup();
   signal?.addEventListener("abort", onAbort, { once: true });
@@ -283,10 +289,10 @@ export async function runBashCommand(root: string, input: { command: string; tim
     child.once("close", (code, signalName) => resolve({ code, signal: signalName }));
   });
   try {
-    if (outputOverflow) killGroup();
     const result = await close;
     if (timedOut) return { content: [{ type: "text", text: `Command timed out after ${timeoutMs}ms and its process group was killed. Declare a larger timeoutMs for long-running commands.` }], details: { command: input.command, timedOutAfterMs: timeoutMs }, isError: true };
     if (signal?.aborted) return { content: [{ type: "text", text: "Command aborted with the wake." }], details: { command: input.command }, isError: true };
+    killGroup();
     const failed = outputOverflow || result.code !== 0 || result.signal !== null;
     return { content: [{ type: "text", text: `${stdout}${stderr}`.slice(-50_000) }], details: { command: input.command, exitCode: result.code, signal: result.signal, ...(outputOverflow ? { outputOverflow: true } : {}) }, ...(failed ? { isError: true } : {}) };
   } finally {
@@ -383,24 +389,50 @@ export function scopedRunnerPath(root: string, path: string, protectedPaths: str
   return resolved;
 }
 function sandboxedShell(command: string, root: string, protectedPaths: string[], sandboxTemp: string | null): { command: string; args: string[] } | null {
-  if (!protectedPaths.length) return { command: "/bin/sh", args: ["-lc", command] };
   if (process.platform === "darwin" && existsSync("/usr/bin/sandbox-exec")) {
     const workspacePaths = sandboxWorkspacePaths(canonicalPath(root), protectedPaths.map(canonicalPath));
     const workspaceAncestors = pathAncestors(canonicalPath(root));
-    const readable = ["/System", "/usr", "/bin", "/sbin", "/Library", "/etc", "/dev", "/private/etc", "/private/var/select", ...workspacePaths, ...(sandboxTemp ? [sandboxTemp] : [])].map(canonicalPath);
+    const toolchains = toolchainReadPaths(canonicalPath(root));
+    const readableAncestors = toolchains.flatMap(pathAncestors);
+    const readable = ["/System", "/usr", "/bin", "/sbin", "/Library", "/etc", "/dev", "/private/etc", "/private/var/select", "/Applications", ...toolchains, ...workspacePaths, ...(sandboxTemp ? [sandboxTemp] : [])].filter(existsSync).map(canonicalPath);
     const writable = [...workspacePaths, ...(sandboxTemp ? [sandboxTemp] : []), "/dev"].map(canonicalPath);
-    const rules = ["(version 1)", "(deny default)", "(import \"system.sb\")", "(allow process*)", "(allow signal)", "(allow network*)", "(allow sysctl-read)", "(allow mach-lookup)", ...workspaceAncestors.map((path) => `(allow file-read* (literal ${JSON.stringify(path)}))`), ...readable.map((path) => `(allow file-read* (subpath ${JSON.stringify(path)}))`), ...writable.map((path) => `(allow file-write* (subpath ${JSON.stringify(path)}))`)];
+    const rules = ["(version 1)", "(deny default)", "(import \"system.sb\")", "(allow process*)", "(allow signal)", "(allow network*)", "(allow sysctl-read)", "(allow mach-lookup)", ...[...new Set([...workspaceAncestors, ...readableAncestors])].map((path) => `(allow file-read* (literal ${JSON.stringify(path)}))`), ...readable.map((path) => `(allow file-read* (subpath ${JSON.stringify(path)}))`), ...writable.map((path) => `(allow file-write* (subpath ${JSON.stringify(path)}))`), ...protectedPaths.map(canonicalPath).map((path) => `(deny file-read* file-write* (subpath ${JSON.stringify(path)}))`)];
     return { command: "/usr/bin/sandbox-exec", args: ["-p", rules.join(" "), "/bin/sh", "-lc", command] };
   }
   if (process.platform === "linux") {
     const bwrap = ["/usr/bin/bwrap", "/bin/bwrap"].find(existsSync);
-    if (bwrap) return { command: bwrap, args: ["--bind", "/", "/", "--dev", "/dev", "--proc", "/proc", ...protectedPaths.flatMap((path) => ["--tmpfs", path]), "--chdir", root, "/bin/sh", "-lc", command] };
+    if (bwrap) {
+      const canonicalRoot = canonicalPath(root);
+      if (["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"].some((path) => canonicalRoot === path || canonicalRoot.startsWith(`${path}${sep}`))) return null;
+      return { command: bwrap, args: linuxSandboxArgs(command, canonicalRoot, protectedPaths, sandboxTemp) };
+    }
   }
   return null;
 }
-function sandboxWorkspacePaths(root: string, protectedPaths: string[]): string[] {
+export function linuxSandboxArgs(command: string, root: string, protectedPaths: string[], sandboxTemp: string | null): string[] {
+  const canonicalRoot = canonicalPath(root);
+  const workspacePaths = sandboxWorkspacePaths(canonicalRoot, protectedPaths.map(canonicalPath));
+  const systemPaths = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"].filter(existsSync).flatMap((path) => ["--ro-bind", path, path]);
+  const mounted = ["/tmp", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"];
+  const toolchains = toolchainReadPaths(canonicalRoot).filter((path) => !mounted.some((base) => path === base || path.startsWith(`${base}${sep}`)) && path !== canonicalRoot && !path.startsWith(`${canonicalRoot}${sep}`));
+  const destinations = [canonicalRoot, ...toolchains].flatMap((path) => pathAncestors(path).slice(1)).filter((path) => !mounted.some((base) => path === base || path.startsWith(`${base}${sep}`)));
+  const directories = [...new Set(destinations)].sort((left, right) => left.length - right.length).flatMap((path) => ["--dir", path]);
+  return ["--die-with-parent", "--unshare-all", "--share-net", ...systemPaths, "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", ...(sandboxTemp ? ["--dir", canonicalPath(sandboxTemp)] : []), ...directories, ...toolchains.flatMap((path) => ["--ro-bind", path, path]), ...workspacePaths.flatMap((path) => ["--bind", path, path]), "--chdir", canonicalRoot, "/bin/sh", "-lc", command];
+}
+function toolchainReadPaths(root: string): string[] {
+  const executable = canonicalPath(process.execPath);
+  const pathEntries = (process.env.PATH ?? "").split(delimiter).filter(Boolean).map((path) => resolve(path));
+  const prefixes = ["/opt/homebrew", "/usr/local"].filter((prefix) => executable.startsWith(`${prefix}${sep}`) || pathEntries.some((path) => path.startsWith(`${prefix}${sep}`)));
+  const home = canonicalPath(homedir());
+  const managedHomeRuntime = [join(home, ".nvm", "versions", "node"), join(home, ".asdf", "installs", "node"), join(home, ".volta", "tools", "image", "node")].find((prefix) => executable.startsWith(`${prefix}${sep}`));
+  const runtimeRoot = prefixes.length ? [] : managedHomeRuntime ? [executable.slice(0, executable.indexOf(`${sep}bin${sep}`, managedHomeRuntime.length))] : [dirname(executable)];
+  return [...new Set([...prefixes, ...runtimeRoot])].filter((path) => path !== root && !path.startsWith(`${root}${sep}`));
+}
+export function sandboxWorkspacePaths(root: string, protectedPaths: string[]): string[] {
   if (!protectedPaths.some((path) => path === root || path.startsWith(`${root}${sep}`))) return [root];
-  return readdirSync(root).map((name) => join(root, name)).filter((candidate) => !protectedPaths.some((path) => path === candidate || path.startsWith(`${candidate}${sep}`) || candidate.startsWith(`${path}${sep}`)));
+  return [...new Set(readdirSync(root).flatMap((name) => { try { return [canonicalPath(join(root, name))]; } catch { return []; } }))]
+    .filter((candidate) => candidate !== root && candidate.startsWith(`${root}${sep}`))
+    .filter((candidate) => !protectedPaths.some((path) => path === candidate || path.startsWith(`${candidate}${sep}`) || candidate.startsWith(`${path}${sep}`)));
 }
 function canonicalPath(path: string): string {
   let current = resolve(path); const suffix: string[] = [];
@@ -415,7 +447,19 @@ function toolEnvironment(sandboxTemp: string | null = null): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const name of ["PATH", "HOME", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "SHELL", "TERM", "USER"]) if (process.env[name] !== undefined) env[name] = process.env[name];
   if (sandboxTemp) { env.TMPDIR = sandboxTemp; env.TMP = sandboxTemp; env.TEMP = sandboxTemp; }
+  if (process.platform === "darwin") {
+    const developer = ["/Library/Developer/CommandLineTools", "/Applications/Xcode.app/Contents/Developer"].find(existsSync);
+    if (developer) env.DEVELOPER_DIR = developer;
+  }
+  Object.assign(env, gitIdentityEnvironment());
   return env;
+}
+function gitIdentityEnvironment(): NodeJS.ProcessEnv {
+  try {
+    const source = readFileSync(join(homedir(), ".gitconfig"), "utf8"); const user = source.match(/^\[user\]\s*\n((?:[ \t].*(?:\n|$))*)/m)?.[1] ?? "";
+    const name = user.match(/^\s*name\s*=\s*(.+)$/m)?.[1]?.trim(); const email = user.match(/^\s*email\s*=\s*(.+)$/m)?.[1]?.trim();
+    return { ...(name ? { GIT_AUTHOR_NAME: name, GIT_COMMITTER_NAME: name } : {}), ...(email ? { GIT_AUTHOR_EMAIL: email, GIT_COMMITTER_EMAIL: email } : {}), GIT_CONFIG_GLOBAL: "/dev/null" };
+  } catch { return { GIT_CONFIG_GLOBAL: "/dev/null" }; }
 }
 function estimateMessages(messages: AgentMessage[]): number { return Math.ceil(JSON.stringify(messages).length / 4); }
 function integerSetting(value: string | undefined, fallback: number): number {

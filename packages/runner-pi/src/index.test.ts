@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantResponse, RunRequest, WakeSnapshot, WakeOutput } from "goah-ledger-contract";
 import { PiRunnerAdapter, ProcessRunner, piWorkerPath, type PiDriver } from "./index.js";
-import { assistantResponseText, bashTimeoutMs, compactMessages, compactMessagesToTokenBudget, resolveContextPolicy, runBashCommand, scopedRunnerPath, snapshotModelConfig, validateNextWakeAt } from "./pi-worker.js";
+import { assistantResponseText, bashTimeoutMs, compactMessages, compactMessagesToTokenBudget, linuxSandboxArgs, resolveContextPolicy, runBashCommand, sandboxWorkspacePaths, scopedRunnerPath, snapshotModelConfig, validateNextWakeAt } from "./pi-worker.js";
 import { createPiModel, modelCatalog, providerCatalog } from "./model-provider.js";
 
 const wake: WakeSnapshot = { id: "w", agent: "a", triggerRef: "t", status: "running", leaseUntil: "2026-08-18T00:01:00.000Z", attempt: 1, startedAt: "2026-08-18T00:00:00.000Z", endedAt: null, enqueuedSeq: 1, leaseToken: "lease", runnerPid: null };
@@ -74,18 +74,55 @@ test("bash commands are killed by process-group timeout and become visible tool 
   const fast = await runBashCommand(process.cwd(), { command: "printf ok", timeoutMs: 5_000 });
   assert.notEqual(fast.isError, true);
   assert.match(fast.content[0]?.text ?? "", /ok/);
+  const overflow = await runBashCommand(process.cwd(), { command: "head -c 1200000 /dev/zero", timeoutMs: 5_000 });
+  assert.equal(overflow.isError, true);
+  assert.equal((overflow.details as { outputOverflow?: boolean }).outputOverflow, true);
+  assert.ok((overflow.content[0]?.text.length ?? 0) <= 50_000);
+  const root = mkdtempSync(join(tmpdir(), "goah-sandbox-root-")); const outside = join(mkdtempSync(join(tmpdir(), "goah-sandbox-outside-")), "secret.txt"); writeFileSync(outside, "host-secret");
+  const escaped = await runBashCommand(root, { command: `cat ${JSON.stringify(outside)}`, timeoutMs: 5_000 });
+  assert.equal(escaped.isError, true); assert.doesNotMatch(escaped.content[0]?.text ?? "", /host-secret/);
+  const tempVictim = join(tmpdir(), `goah-temp-victim-${process.pid}`); writeFileSync(tempVictim, "safe");
+  const tempWrite = await runBashCommand(root, { command: `printf overwritten > ${JSON.stringify(tempVictim)}`, timeoutMs: 5_000 });
+  assert.equal(tempWrite.isError, true); assert.equal(readFileSync(tempVictim, "utf8"), "safe");
+  if (existsSync(join(homedir(), ".gitconfig"))) { const gitConfig = await runBashCommand(root, { command: `cat ${JSON.stringify(join(homedir(), ".gitconfig"))}`, timeoutMs: 5_000 }); assert.equal(gitConfig.isError, true); }
+  for (const command of ["node --version", "npm --version", "git --version"]) {
+    const tool = await runBashCommand(root, { command, timeoutMs: 10_000 });
+    assert.notEqual(tool.isError, true, `${command}: ${tool.content[0]?.text ?? ""}`);
+  }
+  const marker = join(root, "background-marker");
+  const background = await runBashCommand(root, { command: `(sleep 0.2; printf escaped > ${JSON.stringify(marker)}) >/dev/null 2>&1 &`, timeoutMs: 5_000 });
+  assert.notEqual(background.isError, true); await new Promise((resolveWait) => setTimeout(resolveWait, 350)); assert.equal(existsSync(marker), false);
 });
 
 test("runner tools cannot read protected Goah state", async () => {
   const root = mkdtempSync(join(tmpdir(), "goah-protected-root-")); const state = join(root, ".goah"); mkdirSync(state);
   const auth = join(state, "auth.json"); writeFileSync(auth, "private-secret");
+  const stateLink = join(root, "state-link"); symlinkSync(state, stateLink);
+  const outside = mkdtempSync(join(tmpdir(), "goah-outside-")); const outsideLink = join(root, "outside-link"); writeFileSync(join(outside, "secret.txt"), "outside-secret"); symlinkSync(outside, outsideLink);
+  assert.equal(sandboxWorkspacePaths(root, [state]).includes(outside), false);
   assert.throws(() => scopedRunnerPath(root, auth, [state]), /protected Goah state/);
   const result = await runBashCommand(root, { command: `cat ${JSON.stringify(auth)}`, timeoutMs: 5_000 }, undefined, [state]);
   assert.equal(result.isError, true);
   assert.doesNotMatch(result.content[0]?.text ?? "", /private-secret/);
+  const overwrite = await runBashCommand(root, { command: `printf corrupted > ${JSON.stringify(auth)}`, timeoutMs: 5_000 }, undefined, [state]);
+  assert.equal(overwrite.isError, true); assert.equal(readFileSync(auth, "utf8"), "private-secret");
+  const linked = await runBashCommand(root, { command: `cat ${JSON.stringify(join(stateLink, "auth.json"))}`, timeoutMs: 5_000 }, undefined, [state]);
+  assert.equal(linked.isError, true);
+  assert.doesNotMatch(linked.content[0]?.text ?? "", /private-secret/);
+  const escaped = await runBashCommand(root, { command: `cat ${JSON.stringify(join(outsideLink, "secret.txt"))}`, timeoutMs: 5_000 }, undefined, [state]);
+  assert.equal(escaped.isError, true);
+  assert.doesNotMatch(escaped.content[0]?.text ?? "", /outside-secret/);
   const safe = await runBashCommand(root, { command: "printf ok", timeoutMs: 5_000 }, undefined, [state]);
   assert.notEqual(safe.isError, true);
   assert.equal(safe.content[0]?.text, "ok");
+});
+
+test("Linux Bash sandbox never binds the host root", () => {
+  const root = mkdtempSync(join(tmpdir(), "goah-bwrap-root-")); const state = join(root, ".goah"); const sandboxTemp = mkdtempSync(join(tmpdir(), "goah-bwrap-tmp-")); mkdirSync(state); writeFileSync(join(root, "work.txt"), "ok");
+  const args = linuxSandboxArgs("true", root, [state], sandboxTemp);
+  assert.equal(args.some((value, index) => value === "--bind" && args[index + 1] === "/"), false);
+  assert.equal(args.some((value, index) => value === "--ro-bind" && args[index + 1] === "/"), false);
+  assert.equal(args.some((value, index) => value === "--dir" && args[index + 1] === realpathSync(sandboxTemp)), true);
 });
 
 test("stopping without handoff is abnormal", async () => {

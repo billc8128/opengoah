@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { controlAvailable, controlEndpoint, diagnoseConfig, loadConfig, persistRunnerProfile, profilePath, redactValue, SupervisorLock } from "./index.js";
+import type { Clock, Runner } from "goah-ledger-contract";
+import { SqliteLedger } from "goah-ledger-sqlite";
+import { Supervisor } from "goah-supervisor";
+import { interactFrames } from "./control.js";
+import { welcomeSnapshot } from "./welcome.js";
+import { controlAvailable, controlEndpoint, diagnoseConfig, loadConfig, persistRunnerProfile, profilePath, readDefaultRunnerProfile, redactValue, SupervisorLock } from "./index.js";
 
 const cli = fileURLToPath(new URL("./cli.js", import.meta.url));
 
@@ -78,6 +83,60 @@ test("profile persistence rolls the default back when the workspace write fails"
     assert.throws(() => persistRunnerProfile({ id: "default", runner: "pi", config: { provider: "faux", model: "faux-goah" } }, join(directory, "missing", "goah.json")));
     assert.equal(existsSync(profilePath()), false);
   } finally { if (previous === undefined) delete process.env.GOAH_STATE_HOME; else process.env.GOAH_STATE_HOME = previous; }
+});
+
+test("profile persistence recovers an interrupted two-file transaction", () => {
+  const previous = process.env.GOAH_STATE_HOME; const directory = mkdtempSync(join(tmpdir(), "goah-profile-recovery-")); const state = join(directory, "state"); const workspace = join(directory, "goah.config.json"); process.env.GOAH_STATE_HOME = state;
+  try {
+    const oldProfile = `${JSON.stringify({ id: "default", runner: "pi", config: { provider: "faux", model: "old" } }, null, 2)}\n`;
+    const oldWorkspace = `${JSON.stringify({ version: 2, stateDir: join(directory, ".goah"), runnerProfiles: [] }, null, 2)}\n`;
+    mkdirSync(state, { recursive: true }); writeFileSync(profilePath(), `${JSON.stringify({ id: "default", runner: "pi", config: { provider: "faux", model: "partial" } })}\n`); writeFileSync(workspace, oldWorkspace);
+    writeFileSync(join(state, "profile-transaction.json"), `${JSON.stringify({ version: 1, snapshots: [{ path: profilePath(), content: Buffer.from(oldProfile).toString("base64") }, { path: workspace, content: Buffer.from(oldWorkspace).toString("base64") }] })}\n`);
+    assert.equal((readDefaultRunnerProfile()!.config as { model: string }).model, "old");
+    assert.equal(readFileSync(workspace, "utf8"), oldWorkspace);
+    assert.equal(existsSync(join(state, "profile-transaction.json")), false);
+  } finally { if (previous === undefined) delete process.env.GOAH_STATE_HOME; else process.env.GOAH_STATE_HOME = previous; }
+});
+
+test("profile persistence refuses concurrent writers", () => {
+  const previous = process.env.GOAH_STATE_HOME; const directory = mkdtempSync(join(tmpdir(), "goah-profile-lock-")); process.env.GOAH_STATE_HOME = join(directory, "state");
+  try {
+    mkdirSync(`${profilePath()}.lock`, { recursive: true });
+    assert.throws(() => persistRunnerProfile({ id: "default", runner: "pi", config: { provider: "faux", model: "faux-goah" } }, null), /Another Goah process/);
+    assert.equal(existsSync(profilePath()), false);
+    rmSync(`${profilePath()}.lock`, { recursive: true, force: true });
+  } finally { if (previous === undefined) delete process.env.GOAH_STATE_HOME; else process.env.GOAH_STATE_HOME = previous; }
+});
+
+test("interactive stream follows redelivery wakes through recovery", async () => {
+  const clock: Clock = { now: () => new Date("2026-08-25T00:00:00.000Z") }; const ledger = new SqliteLedger(":memory:", { clock }); let attempts = 0;
+  const runner: Runner = { isolation: "process", prepare: (request) => { const attempt = ++attempts; return { pid: null, begin: () => { if (attempt > 1) { request.emit({ type: "message.assistant.delta", data: { delta: { type: "text_delta", delta: "recovered response" } } }); request.emit({ type: "message.assistant.completed", data: { message: { role: "assistant", content: [{ type: "text", text: "recovered response" }] } } }); } }, result: Promise.resolve(attempt === 1 ? { outcome: "abnormal", reason: "temporary provider failure" } : { outcome: "response", response: { content: "recovered response" } }), terminate: async () => undefined }; }, terminateProcess: async () => undefined };
+  const supervisor = new Supervisor(ledger, runner, clock, { interactionRetryPolicy: { maxAttempts: 3, baseDelayMs: 0 } });
+  const framesPromise = (async () => { const frames = []; for await (const frame of interactFrames("hello", supervisor, ledger)) frames.push(frame); return frames; })();
+  await new Promise((resolveWait) => setTimeout(resolveWait, 0));
+  assert.equal((await supervisor.tick())?.status, "abnormal");
+  assert.equal((await supervisor.tick())?.status, "done");
+  const frames = await framesPromise;
+  assert.equal(frames.filter((frame) => frame.type === "accepted").length, 1);
+  assert.equal(frames.some((frame) => frame.type === "event" && (frame.event as { type?: string }).type === "message.assistant.completed"), true);
+  assert.equal((frames.findLast((frame) => frame.type === "result") as unknown as { value: { response: { content: string } } }).value.response.content, "recovered response");
+  ledger.close();
+});
+
+test("interactive stream terminates when a Human turn completes by handoff", async () => {
+  const clock: Clock = { now: () => new Date("2026-08-25T00:00:00.000Z") }; const ledger = new SqliteLedger(":memory:", { clock });
+  const runner: Runner = { isolation: "process", prepare: () => ({ pid: null, begin: () => undefined, result: Promise.resolve({ outcome: "handoff", output: { handoff: { observations: [], results: ["goal created"], nextSteps: [] }, mail: [], nextWakeAt: null } }), terminate: async () => undefined }), terminateProcess: async () => undefined };
+  const supervisor = new Supervisor(ledger, runner, clock);
+  const framesPromise = (async () => { const frames = []; for await (const frame of interactFrames("create a goal", supervisor, ledger)) frames.push(frame); return frames; })();
+  await new Promise((resolveWait) => setTimeout(resolveWait, 0)); assert.equal((await supervisor.tick())?.status, "done");
+  const result = (await framesPromise).findLast((frame) => frame.type === "result") as unknown as { value: { handoff: { results: string[] } } };
+  assert.deepEqual(result.value.handoff.results, ["goal created"]); ledger.close();
+});
+
+test("welcome snapshot restores ordinary Human conversation", async () => {
+  const state = mkdtempSync(join(tmpdir(), "goah-welcome-conversation-")); const clock: Clock = { now: () => new Date("2026-08-25T00:00:00.000Z") }; const ledger = new SqliteLedger(join(state, "ledger.sqlite"), { clock });
+  const runner: Runner = { isolation: "process", prepare: () => ({ pid: null, begin: () => undefined, result: Promise.resolve({ outcome: "response", response: { content: "restored answer" } }), terminate: async () => undefined }), terminateProcess: async () => undefined }; const supervisor = new Supervisor(ledger, runner, clock); supervisor.interactWithCeo("remember this question"); assert.equal((await supervisor.tick())?.status, "done"); ledger.close();
+  assert.deepEqual(welcomeSnapshot(state, { runner: "pi", target: "test/model" }).conversation.map((row) => row.text), ["remember this question", "restored answer"]);
 });
 
 test("version-one Pi config migrates in memory to an opaque Runner Profile", () => {

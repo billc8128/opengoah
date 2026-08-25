@@ -6,7 +6,7 @@ import { createInterface, type Interface as ReadlineInterface } from "node:readl
 import { runGoahTui } from "./tui.js";
 import { chooseSetupSection, runRunnerCommandWizard, runSetupWizard, applyWizardResult, type SetupSection } from "./setup-wizard.js";
 import { memoryStream, type JsonValue, type RunnerCommandResult, type RunnerProfile, type RunnerSetupInteraction } from "goah-ledger-contract";
-import { controlAvailable, createRuntime, diagnoseConfig, exportSession, listSessions, loadConfig, persistRunnerProfile, readConsoleMetadata, readDefaultRunnerProfile, replayWakeSession, requestControl, runControlServer, runWebConsole, showSession, showSessionContext, statusSnapshot, streamControl, streamEvents, SupervisorLock, updateWorkspaceRunnerProfile, writeDefaultConfig, writeDefaultRunnerProfile, type ConsoleMetadata, type ControlFrame, type ControlRequest, type GoahConfig } from "./index.js";
+import { controlAvailable, createRuntime, diagnoseConfig, exportSession, listSessions, loadConfig, persistRunnerProfile, readConsoleMetadata, readDefaultRunnerProfile, replayWakeSession, requestControl, runControlServer, runWebConsole, showSession, showSessionContext, statusSnapshot, streamControl, streamEvents, SupervisorLock, updateWorkspaceRunnerProfile, writeDefaultConfig, type ConsoleMetadata, type ControlFrame, type ControlRequest, type GoahConfig } from "./index.js";
 import { runnerPlugin } from "./runner-registry.js";
 import { stdioQueue } from "./prompt-queue.js";
 import { runUpdate } from "./update.js";
@@ -41,10 +41,11 @@ async function main(): Promise<void> {
     if (section === "runner" || !current) {
       const result = await runSetupWizard(current);
       if (!result.profile) { console.log("Setup cancelled; nothing changed."); return; }
-      applyWizardResult(result, existsSync(configPath) ? configPath : null);
+      await applyWizardResult(result, existsSync(configPath) ? configPath : null);
     } else {
       const result = await runRunnerCommandWizard(current, section === "model" ? "model" : "auth");
-      persistRunnerProfile(result.profile, existsSync(configPath) ? configPath : null);
+      try { persistRunnerProfile(result.profile, existsSync(configPath) ? configPath : null); }
+      catch (error) { await result.rollback?.(); throw error; }
       for (const line of result.output) console.log(line);
     }
     console.log(`Profile saved to ~/.goah/profile.json${existsSync(configPath) ? " and this workspace was updated" : " (run \`goah\` in any directory to create a workspace)"}`);
@@ -81,9 +82,9 @@ async function main(): Promise<void> {
     const result = diagnoseConfig(config);
     const runnerChecks = await diagnoseRunnerProfiles(config, configPath);
     const checks = [...result.checks, ...runnerChecks];
-    const ok = checks.every((item) => item.ok);
+    const ok = checks.every(checkPasses);
     if (flag("--json")) console.log(JSON.stringify({ ok, checks }, null, 2));
-    else for (const check of checks) console.log(`${check.ok ? "✓" : "✗"} ${check.name}: ${check.detail}`);
+    else for (const check of checks) console.log(`${checkIcon(check)} ${check.name}: ${check.detail}`);
     if (!ok) process.exitCode = 1;
     return;
   }
@@ -356,7 +357,7 @@ async function bootstrapWorkspace(configPath: string): Promise<void> {
     console.log(profile ? "Your Goah setup is incomplete — resuming setup now." : "No Goah profile found — running first-use setup.");
     const result = await runSetupWizard();
     if (!result.profile) throw new Error("Setup cancelled; no workspace was created.");
-    applyWizardResult(result, null);
+    await applyWizardResult(result, null);
     profile = result.profile;
   }
   updateWorkspaceRunnerProfile(configPath, profile);
@@ -372,7 +373,8 @@ async function runRunnerWizardEarly(command: string, commandArgs: string[], conf
   const profile = currentRunnerProfile(configPath);
   if (!profile) throw new Error("No Runner Profile is configured; run `goah setup` first.");
   const result = await runRunnerCommandWizard(profile, command, commandArgs);
-  persistRunnerProfile(result.profile, existsSync(configPath) ? configPath : null);
+  try { persistRunnerProfile(result.profile, existsSync(configPath) ? configPath : null); }
+  catch (error) { await result.rollback?.(); throw error; }
   for (const line of result.output) console.log(line);
 }
 
@@ -385,11 +387,12 @@ async function runRunnerCommand(command: string, commandArgs: string[], configPa
   let result: RunnerCommandResult;
   try { result = await plugin.configurator.runCommand(command, commandArgs, profile.config, interaction); }
   finally { interaction.close(); }
-  for (const line of result.output) console.log(line);
   if (result.config !== undefined) {
     const updated: RunnerProfile = { ...profile, config: result.config };
-    persistRunnerProfile(updated, existsSync(configPath) ? configPath : null);
+    try { persistRunnerProfile(updated, existsSync(configPath) ? configPath : null); }
+    catch (error) { await result.rollback?.(); throw error; }
   }
+  for (const line of result.output) console.log(line);
 }
 
 async function runRunnerEarly(configPath: string): Promise<void> {
@@ -401,8 +404,10 @@ async function runRunnerEarly(configPath: string): Promise<void> {
   const result = await runSetupWizard(current);
   if (!result.profile) { console.log("Runner setup cancelled; nothing changed."); return; }
   const profile = { ...result.profile, id: profileId };
-  if (profileId === "default") writeDefaultRunnerProfile(profile);
-  if (existsSync(configPath)) updateWorkspaceRunnerProfile(configPath, profile);
+  try {
+    if (profileId === "default") persistRunnerProfile(profile, existsSync(configPath) ? configPath : null);
+    else if (existsSync(configPath)) updateWorkspaceRunnerProfile(configPath, profile);
+  } catch (error) { await result.rollback?.(); throw error; }
   console.log(`Saved Runner Profile ${profile.id} (${profile.runner}).`);
 }
 
@@ -412,14 +417,14 @@ async function runRunnerManagement(config: GoahConfig, configPath: string): Prom
     for (const profile of config.runnerProfiles ?? []) {
       const checks = await runnerPlugin(profile.runner).configurator.doctor(profile.config, { root: process.cwd() });
       console.log(`${profile.id} · ${profile.runner}`);
-      for (const check of checks) console.log(`  ${check.ok ? "✓" : "✗"} ${check.name}: ${check.detail}`);
+      for (const check of checks) console.log(`  ${checkIcon(check)} ${check.name}: ${check.detail}`);
     }
     return;
   }
   if (action === "doctor") {
     const checks = await diagnoseRunnerProfiles(config, configPath);
-    for (const check of checks) console.log(`${check.ok ? "✓" : "✗"} ${check.name}: ${check.detail}`);
-    if (checks.some((check) => !check.ok)) process.exitCode = 1;
+    for (const check of checks) console.log(`${checkIcon(check)} ${check.name}: ${check.detail}`);
+    if (checks.some((check) => !checkPasses(check))) process.exitCode = 1;
     return;
   }
   if (action === "profile") {
@@ -448,8 +453,8 @@ async function runRunnerManagement(config: GoahConfig, configPath: string): Prom
   throw new Error(`Unknown runner command: ${action}`);
 }
 
-async function diagnoseRunnerProfiles(config: GoahConfig, configPath = "goah.config.json"): Promise<Array<{ ok: boolean; name: string; detail: string }>> {
-  const checks: Array<{ ok: boolean; name: string; detail: string }> = [];
+async function diagnoseRunnerProfiles(config: GoahConfig, configPath = "goah.config.json"): Promise<Array<{ ok: boolean; name: string; detail: string; severity?: "warning" | "error" }>> {
+  const checks: Array<{ ok: boolean; name: string; detail: string; severity?: "warning" | "error" }> = [];
   for (const profile of config.runnerProfiles ?? []) {
     try {
       for (const check of await runnerPlugin(profile.runner).configurator.doctor(profile.config, { root: resolve(configPath, "..") })) checks.push({ ...check, name: `runner:${profile.id}:${check.name}` });
@@ -457,6 +462,8 @@ async function diagnoseRunnerProfiles(config: GoahConfig, configPath = "goah.con
   }
   return checks;
 }
+function checkPasses(check: { ok: boolean; severity?: "warning" | "error" }): boolean { return check.ok || check.severity === "warning"; }
+function checkIcon(check: { ok: boolean; severity?: "warning" | "error" }): string { return check.ok ? "✓" : check.severity === "warning" ? "!" : "✗"; }
 
 async function runDaemonCommand(config: GoahConfig, configPath: string): Promise<void> {
   const action = args[1] ?? "status";

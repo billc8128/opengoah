@@ -1,10 +1,11 @@
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import type { Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
 
 /** Small file-backed implementation of Pi's credential contract. */
 export class JsonCredentialStore implements CredentialStore {
-  readonly #tails = new Map<string, Promise<unknown>>();
+  #tail: Promise<void> = Promise.resolve();
   constructor(readonly path: string) {}
 
   async read(providerId: string): Promise<Credential | undefined> { return (await this.#readAll())[providerId]; }
@@ -13,34 +14,78 @@ export class JsonCredentialStore implements CredentialStore {
   }
 
   async modify(providerId: string, fn: (current: Credential | undefined) => Promise<Credential | undefined>): Promise<Credential | undefined> {
-    const previous = this.#tails.get(providerId) ?? Promise.resolve();
-    let result: Credential | undefined;
-    const next = previous.then(async () => {
+    return this.#enqueue(async () => {
       const all = await this.#readAll();
-      result = await fn(all[providerId]);
+      const result = await fn(all[providerId]);
       if (result !== undefined) { all[providerId] = result; await this.#writeAll(all); }
+      return result;
     });
-    this.#tails.set(providerId, next);
-    try { await next; } finally { if (this.#tails.get(providerId) === next) this.#tails.delete(providerId); }
-    return result;
   }
 
   async delete(providerId: string): Promise<void> {
-    const previous = this.#tails.get(providerId) ?? Promise.resolve();
-    const next = previous.then(async () => {
+    await this.#enqueue(async () => {
       const all = await this.#readAll();
       if (!(providerId in all)) return;
       delete all[providerId];
       await this.#writeAll(all);
     });
-    this.#tails.set(providerId, next);
-    try { await next; } finally { if (this.#tails.get(providerId) === next) this.#tails.delete(providerId); }
+  }
+
+  async replaceFileIfUnchanged(expected: Buffer | null, next: Buffer | null): Promise<void> {
+    await this.#enqueue(async () => {
+      const current = await this.#readRaw();
+      if (!buffersEqual(current, expected)) throw new Error("Credentials changed in another process during setup; retry to avoid overwriting them.");
+      if (next === null) await rm(this.path, { force: true });
+      else { await mkdir(dirname(this.path), { recursive: true }); const temporary = `${this.path}.${process.pid}.replace.tmp`; await writeFile(temporary, next, { mode: 0o600 }); await rename(temporary, this.path); await chmod(this.path, 0o600); }
+    });
+  }
+
+  async replaceProviderIfUnchanged(providerId: string, expected: Credential | undefined, next: Credential | undefined): Promise<void> {
+    await this.#enqueue(async () => {
+      const all = await this.#readAll();
+      if (!sameCredential(all[providerId], expected)) throw new Error(`Credentials for ${providerId} changed in another process; refusing to overwrite them.`);
+      if (next === undefined) delete all[providerId]; else all[providerId] = next;
+      await this.#writeAll(all);
+    });
+  }
+
+  #enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.#tail.then(() => this.#withFileLock(operation));
+    this.#tail = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  async #withFileLock<T>(operation: () => Promise<T>): Promise<T> {
+    const lock = `${this.path}.lock`; const ownerPath = `${lock}/owner.json`; const token = randomUUID(); const deadline = Date.now() + 5_000;
+    await mkdir(dirname(this.path), { recursive: true });
+    while (true) {
+      let acquired = false;
+      try { await mkdir(lock); acquired = true; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        const owner = await readLockOwner(ownerPath);
+        const info = owner ? null : await stat(lock).catch((statError: NodeJS.ErrnoException) => statError.code === "ENOENT" ? null : Promise.reject(statError));
+        if (!owner && !info) continue;
+        if (owner ? !processIsAlive(owner.pid) : Date.now() - info!.mtimeMs > 5_000) {
+          const stale = `${lock}.stale.${token}`;
+          try { await rename(lock, stale); await rm(stale, { recursive: true, force: true }); } catch (reclaimError) { if ((reclaimError as NodeJS.ErrnoException).code !== "ENOENT") throw reclaimError; }
+          continue;
+        }
+        if (Date.now() >= deadline) throw new Error("Timed out waiting for the credential store lock");
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      if (acquired) { try { await writeFile(ownerPath, JSON.stringify({ pid: process.pid, token })); } catch (error) { await rm(lock, { recursive: true, force: true }); throw error; } break; }
+    }
+    try { return await operation(); }
+    finally { if ((await readLockOwner(ownerPath))?.token === token) await rm(lock, { recursive: true, force: true }); }
   }
 
   async #readAll(): Promise<Record<string, Credential>> {
     try { return JSON.parse(await readFile(this.path, "utf8")) as Record<string, Credential>; }
-    catch { return {}; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return {}; throw error; }
   }
+
+  async #readRaw(): Promise<Buffer | null> { return readFile(this.path).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? null : Promise.reject(error)); }
 
   async #writeAll(value: Record<string, Credential>): Promise<void> {
     await mkdir(dirname(this.path), { recursive: true });
@@ -49,4 +94,15 @@ export class JsonCredentialStore implements CredentialStore {
     await rename(temporary, this.path);
     await chmod(this.path, 0o600);
   }
+}
+
+function buffersEqual(left: Buffer | null, right: Buffer | null): boolean { return left === null || right === null ? left === right : left.equals(right); }
+function sameCredential(left: Credential | undefined, right: Credential | undefined): boolean { return JSON.stringify(left) === JSON.stringify(right); }
+async function readLockOwner(path: string): Promise<{ pid: number; token: string } | null> {
+  try { const value = JSON.parse(await readFile(path, "utf8")) as { pid?: unknown; token?: unknown }; return Number.isInteger(value.pid) && Number(value.pid) > 0 && typeof value.token === "string" ? value as { pid: number; token: string } : null; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) return null; throw error; }
+}
+function processIsAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 }

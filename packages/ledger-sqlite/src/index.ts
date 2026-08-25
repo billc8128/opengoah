@@ -18,6 +18,7 @@ import {
   type GoalCompletionRequest,
   type HandoffCommit,
   type InteractionCommit,
+  type InteractionFailureCommit,
   type JsonValue,
   type Ledger,
   type MailSnapshot,
@@ -529,7 +530,8 @@ export class SqliteLedger implements Ledger {
       const wake = this.#requiredWake(commit.wakeId);
       if (wake.status !== "running" || wake.agent !== commit.agent) throw new Error("handoff does not match a running wake");
       const event = this.#insertEvent({ streamId: wakeStream(commit.wakeId), ts: commit.ts, actor: commit.agent, type: "handoff.recorded", data: commit.output.handoff as unknown as JsonValue });
-      for (const mail of this.unreadMail(commit.agent)) {
+      const delivered = new Set(commit.mailIds);
+      for (const mail of this.unreadMail(commit.agent).filter((candidate) => delivered.has(candidate.id))) {
         this.#recordProjection("mailbox", { ...mail, readAt: commit.ts }, "supervisor", "mail.read", commit.wakeId, commit.ts);
       }
       for (const mail of commit.outgoingMail) {
@@ -559,6 +561,27 @@ export class SqliteLedger implements Ledger {
       });
       const event = this.#insertEvent({ streamId: wakeStream(commit.wakeId), ts: commit.ts, actor: commit.agent, type: "interaction.completed", data: { mailId: commit.mailId, mailIds: ids, response: commit.response } as unknown as JsonValue });
       for (const mail of mails) this.#recordProjection("mailbox", { ...mail, readAt: commit.ts }, "supervisor", "mail.read", commit.wakeId, commit.ts);
+      return event;
+    });
+  }
+
+  failInteraction(commit: InteractionFailureCommit): EventRecord {
+    return this.#transaction(() => {
+      const ids = [...new Set(commit.mailIds)];
+      if (!ids.includes(commit.mailId)) throw new Error("primary interaction mail is missing from the failure commit");
+      const mails = ids.map((id) => {
+        const row = this.db.prepare("SELECT * FROM mailbox WHERE id=?").get(id) as Row | undefined;
+        if (!row) throw new Error("interaction mail does not exist");
+        const mail = mapMail(row);
+        if (mail.to !== commit.agent || mail.readAt !== null) throw new Error("interaction mail is not unread for the agent");
+        return mail;
+      });
+      const event = this.#insertEvent({ streamId: controlStream("interactions"), ts: commit.ts, actor: "supervisor", type: `interaction.${commit.outcome}`, data: { mailId: commit.mailId, mailIds: ids, reason: commit.reason } as unknown as JsonValue });
+      for (const mail of mails) this.#recordProjection("mailbox", { ...mail, readAt: commit.ts }, "supervisor", "mail.read", undefined, commit.ts);
+      if (commit.notification) {
+        if (commit.notification.from !== "supervisor" || commit.notification.to !== "human") throw new Error("interaction failure notification must come from supervisor to human");
+        this.#recordProjection("mailbox", commit.notification, "supervisor", "mail.put", undefined, commit.ts);
+      }
       return event;
     });
   }

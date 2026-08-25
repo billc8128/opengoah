@@ -57,7 +57,7 @@ Handoff remains an event-level control result rather than a current-state projec
 
 The only Ledger writer in the resident process. It validates authority, Goal and Work Record revisions, leases, capabilities, atomic delegation, Action gates, Mail acknowledgement, scheduling, recovery, and Human interaction priority. Human input preempts automatic CEO work; follow-ups steer an active Human Turn through an optional RunnerHandle channel while remaining durable Mail.
 
-Human interaction Mail is decision-level control input. Accepted steering is attached to the active Turn; rejected, timed-out, or abnormal interaction Mail is redelivered through a new fenced Wake without creating a second Mail record.
+Human interaction Mail is decision-level control input. Accepted steering is attached to the active Turn; a follow-up received between retry attempts is durably attached to the pending interaction and included in its next context. Rejected, timed-out, or abnormal interaction Mail is redelivered through a new fenced Wake without creating a second primary Mail record. Delivery uses bounded exponential backoff; exhaustion leaves the original Mail unread and creates one Human decision notification instead of hot-looping.
 
 ### Runner
 
