@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Pi now returns normal responses for unbound Turns and exposes Goal/Work Record tools; Goal Turns update their record before compact Handoff.
+- Pi workers accept legacy daemon requests without Turn metadata during an in-place update.
 
 ## 0.5.0
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.1
+
+- Automatically replaces a stale resident daemon after self-update and reduces worker stack traces to actionable error summaries.
+
 ## 0.11.0
 
 - Ordinary chat no longer starts a Goal, `/goal` creates or revises explicitly, `/records` and `/history` expose shared timelines, and default output hides internal narration and raw tool arguments.

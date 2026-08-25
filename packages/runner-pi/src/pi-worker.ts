@@ -23,7 +23,9 @@ export function compactMessages(messages: AgentMessage[], maxRecent = 8): AgentM
 export async function runPiWorker(): Promise<void> {
   await runProcessWorker(async (request, emit, rpc): Promise<RunnerResult> => {
     const contextRecord = typeof request.context === "object" && request.context !== null && !Array.isArray(request.context) ? request.context : {};
-    const goalState: { bound: boolean; binding?: { goalId: string; goalRevision: number }; recordRevision?: number } = { bound: request.turn.goalBinding !== undefined, ...(request.turn.goalBinding ? { binding: request.turn.goalBinding } : {}) };
+    const legacyRequest = request.turn === undefined;
+    const binding = request.turn?.goalBinding;
+    const goalState: { bound: boolean; binding?: { goalId: string; goalRevision: number }; recordRevision?: number } = { bound: legacyRequest || binding !== undefined, ...(binding ? { binding } : {}) };
     const profile = contextRecord.runnerProfile && typeof contextRecord.runnerProfile === "object" && !Array.isArray(contextRecord.runnerProfile) ? contextRecord.runnerProfile as Record<string, unknown> : {};
     const runnerConfig = profile.config && typeof profile.config === "object" && !Array.isArray(profile.config) ? profile.config as Record<string, unknown> : {};
     const provider = typeof runnerConfig.provider === "string" ? runnerConfig.provider : process.env.GOAH_PI_PROVIDER ?? "anthropic";
@@ -35,7 +37,7 @@ export async function runPiWorker(): Promise<void> {
     const model = typeof privateAuth.baseUrl === "string" ? { ...configured.model, baseUrl: privateAuth.baseUrl } : configured.model;
     if (provider === "faux") {
       const faux = configured.faux!;
-      if (goalState.bound) {
+      if (goalState.bound && !legacyRequest) {
         const handoff = JSON.parse(process.env.GOAH_PI_FAUX_HANDOFF ?? "{}") as Record<string, unknown>;
         const current = contextRecord.workRecord && typeof contextRecord.workRecord === "object" && !Array.isArray(contextRecord.workRecord) ? contextRecord.workRecord as Record<string, unknown> : {};
         const evidence = Array.isArray(contextRecord.sourceSeqs) ? contextRecord.sourceSeqs.filter((value): value is number => typeof value === "number") : [];
@@ -44,8 +46,11 @@ export async function runPiWorker(): Promise<void> {
           fauxAssistantMessage(fauxToolCall("work_record_update", { expectedRevision: Number(current.recordRevision ?? 0), content: record, reason: "record faux Goal progress", evidence: evidence.length ? [Math.max(...evidence)] : [] }), { stopReason: "toolUse" }),
           fauxAssistantMessage(fauxToolCall("handoff", handoff), { stopReason: "toolUse" }),
         ]);
-      } else {
+      } else if (!goalState.bound) {
         faux.setResponses([fauxAssistantMessage([fauxText(process.env.GOAH_PI_FAUX_RESPONSE ?? "Hello from Goah.")])]);
+      } else {
+        const handoff = JSON.parse(process.env.GOAH_PI_FAUX_HANDOFF ?? "{}") as Record<string, unknown>;
+        faux.setResponses([fauxAssistantMessage(fauxToolCall("handoff", handoff), { stopReason: "toolUse" })]);
       }
     }
 

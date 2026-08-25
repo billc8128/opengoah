@@ -11,6 +11,7 @@ import {
   type Runner,
   type RunnerHandle,
   type RunnerResult,
+  type TurnContext,
   type WakeOutput,
 } from "goah-ledger-contract";
 
@@ -88,7 +89,7 @@ export interface ProcessRunnerOptions {
 export function piWorkerPath(): string { return fileURLToPath(new URL("./pi-worker.js", import.meta.url)); }
 export function verificationWorkerPath(): string { return fileURLToPath(new URL("./verification-worker.js", import.meta.url)); }
 
-type WorkerRequest = Omit<RunRequest, "now" | "emit" | "rpc"> & { runtime?: JsonValue };
+type WorkerRequest = Omit<RunRequest, "now" | "emit" | "rpc" | "turn"> & { turn?: TurnContext; runtime?: JsonValue };
 type WorkerMessage =
   | { type: "trace"; event: { type: string; data: JsonValue } }
   | { type: "rpc_request"; id: string; method: AgentCapability; params: JsonValue }

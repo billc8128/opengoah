@@ -6,6 +6,7 @@ import type { Supervisor } from "goah-supervisor";
 import type { ProcessRunner } from "goah-runner-pi";
 import type { SqliteLedger } from "goah-ledger-sqlite";
 import type { JsonValue, Ledger } from "goah-ledger-contract";
+import { installedVersion } from "./update.js";
 
 export type ControlRequest =
   | { op: "ping" }
@@ -27,6 +28,7 @@ export type ControlRequest =
   | { op: "action.reject"; id: string; reason: string; evidence: number[] }
   | { op: "wake.stop"; agent: string }
   | { op: "daemon.stop" }
+  | { op: "daemon.version" }
   | { op: "config.reload"; configPath: string };
 
 export type ControlFrame =
@@ -120,7 +122,8 @@ async function dispatch(request: ControlRequest, socket: Socket, supervisor: Sup
   if (request.op === "daemon.stop") {
     value = { stopping: true };
     setTimeout(() => stop?.(), 10);
-  } else if (request.op === "config.reload") {
+  } else if (request.op === "daemon.version") value = installedVersion();
+  else if (request.op === "config.reload") {
     const swap = reloadRuntime ? await reloadRuntime(request.configPath) : undefined;
     if (swap) { supervisor.swapRunner(swap.runner, swap.profiles); if (swap.ledger) { ledger.close(); ledger = swap.ledger; } }
     value = { reloaded: Boolean(swap) };

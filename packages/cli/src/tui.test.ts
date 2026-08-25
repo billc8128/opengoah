@@ -30,4 +30,7 @@ test("TUI hides internal wake ids and credential-shaped environment errors", () 
   renderFrame({ type: "accepted", wakeId: "private-wake-id", value: {} }, (line) => lines.push(line));
   renderFrame({ type: "event", event: { type: "wake.abnormal_reason", data: { reason: "environment variable is missing: pasted-secret-ZAI_API_KEY (set it)" } } }, (line) => lines.push(line));
   assert.deepEqual(lines, ["! environment variable is missing: [REDACTED] (set it)"]);
+  const stack: string[] = [];
+  renderFrame({ type: "event", event: { type: "wake.abnormal_reason", data: { reason: "file:///Users/test/pi-worker.js:24\n  const x = missing.value\n            ^\n\nTypeError: Cannot read properties of undefined (reading 'value')\n    at file:///Users/test/pi-worker.js:24:9" } } }, (line) => stack.push(line));
+  assert.deepEqual(stack, ["! TypeError: Cannot read properties of undefined (reading 'value')"]);
 });

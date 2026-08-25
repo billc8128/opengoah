@@ -32,7 +32,7 @@ export async function runUpdate(options: { check?: boolean; dryRun?: boolean; ta
   await inherit(plan.command, plan.args);
   const updated = installedVersion();
   if (updated !== target) throw new Error(`npm completed but the active installation reports ${updated}, expected ${target}`);
-  console.log(`Updated Goah to ${updated}. Restart goah to use the new version.`);
+  console.log(`Updated Goah to ${updated}. The next goah launch will restart the resident daemon automatically.`);
 }
 
 function isInside(path: string, directory: string): boolean { const prefix = resolve(directory); return path === prefix || path.startsWith(`${prefix}${sep}`); }

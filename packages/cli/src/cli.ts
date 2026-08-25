@@ -206,7 +206,13 @@ async function waitForConsole(stateDir: string): Promise<ConsoleMetadata> {
   throw new Error("Goah Console did not start; restart the resident Supervisor");
 }
 async function ensureDaemon(configPath: string, stateDir: string): Promise<void> {
-  if (await controlAvailable(stateDir)) return;
+  if (await controlAvailable(stateDir)) {
+    const version = await requestControl(stateDir, { op: "daemon.version" }).catch(() => null);
+    if (version === packageVersion()) return;
+    await requestControl(stateDir, { op: "daemon.stop" }).catch(() => undefined);
+    const stopDeadline = Date.now() + 5_000;
+    while (await controlAvailable(stateDir) && Date.now() < stopDeadline) await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+  }
   mkdirSync(stateDir, { recursive: true });
   const log = openSync(join(stateDir, "daemon.log"), "a");
   const child = spawn(process.execPath, [process.argv[1]!, "start", "--config", resolve(configPath)], { cwd: process.cwd(), detached: true, stdio: ["ignore", log, log], env: process.env });

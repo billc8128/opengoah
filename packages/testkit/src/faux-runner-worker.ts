@@ -20,7 +20,7 @@ await runProcessWorker(async (request, emit, rpc): Promise<RunnerResult> => {
   const byTrigger = JSON.parse(process.env.GOAH_FAUX_STEPS_BY_TRIGGER ?? "{}") as Record<string, WorkerStep[]>;
   const triggerSteps = Object.entries(byTrigger).find(([prefix]) => request.wake.triggerRef.startsWith(prefix))?.[1];
   const steps = triggerSteps ?? byAgent[request.wake.agent] ?? JSON.parse(process.env.GOAH_FAUX_STEPS ?? "[]") as WorkerStep[];
-  let goalBinding = request.turn.goalBinding;
+  let goalBinding = request.turn?.goalBinding;
   let recordUpdated = false;
   for (const step of steps) {
     if (step.write) {

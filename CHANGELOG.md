@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.1
+
+- Added compatibility for a pre-0.11 resident daemon spawning the updated Pi worker, automatic daemon version detection/restart on the next CLI launch, and concise runtime error rendering instead of raw stacks.
+
 ## 0.11.0
 
 - Ordinary CEO interaction no longer creates a Root Goal or requires Handoff; durable Human intent can bind the open Turn through Goal tools.

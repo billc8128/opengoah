@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AssistantResponse, RunRequest, WakeSnapshot, WakeOutput } from "goah-ledger-contract";
-import { PiRunnerAdapter, ProcessRunner, type PiDriver } from "./index.js";
+import { PiRunnerAdapter, ProcessRunner, piWorkerPath, type PiDriver } from "./index.js";
 import { bashTimeoutMs, compactMessages, compactMessagesToTokenBudget, resolveContextPolicy, runBashCommand, snapshotModelConfig, validateNextWakeAt } from "./pi-worker.js";
 import { createPiModel, modelCatalog, providerCatalog } from "./model-provider.js";
 
@@ -81,6 +81,15 @@ test("ProcessRunner may opt into its own timeout policy", async () => {
   const result = await handle.result;
   assert.equal(result.outcome, "abnormal");
   assert.throws(() => process.kill(handle.pid!, 0));
+});
+
+test("the Pi worker accepts a pre-0.11 daemon request without Turn metadata", async () => {
+  const runner = new ProcessRunner({ command: process.execPath, args: [piWorkerPath()], env: { GOAH_PI_PROVIDER: "faux", GOAH_PI_MODEL: "faux-goah", GOAH_PI_FAUX_HANDOFF: JSON.stringify({ observations: ["legacy"], results: [], nextSteps: [] }) } });
+  const legacy = { wake, context: {}, now: () => "2026-08-18T00:00:00.000Z", emit: () => undefined } as unknown as RunRequest;
+  const handle = runner.prepare(legacy);
+  handle.begin();
+  const result = await handle.result;
+  assert.equal(result.outcome, "handoff");
 });
 
 test("mid-turn compaction changes only the model view and preserves boundary messages", () => {
