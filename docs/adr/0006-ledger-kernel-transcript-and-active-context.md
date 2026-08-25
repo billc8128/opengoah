@@ -1,19 +1,19 @@
-# ADR 0006: Separate the ledger kernel, replayable sessions, and active context
+# ADR 0006: Separate the ledger kernel, replayable transcripts, and active context
 
-Status: accepted; Session/Wake identity superseded by ADR 0012
+Status: accepted; Wake-scoped replay identity superseded by ADR 0012
 
 ## Context
 
 The original design used one `EventRecord` and one `Ledger` interface for event storage, Goal metrics, wake scheduling, mailbox delivery, actions, runner traces, roles, and connector policy. Pi traces were durable but retained Pi's private event shapes, so the ledger could audit a wake without promising that it could reconstruct the exact model-visible conversation. The load path handed structured JSON to the runner and relied on handoff as the primary semantic compression.
 
-This made the framework core look like one particular organization design. It also left a gap between the statement that events are the source of truth and the absence of a versioned Session replay contract.
+This made the framework core look like one particular organization design. It also left a gap between the statement that events are the source of truth and the absence of a versioned Transcript replay contract.
 
 ## Decision
 
 Goah 0.3 introduces three logical layers without adding a service boundary:
 
 1. The ledger kernel owns generic typed events, a global sequence, a contiguous per-stream sequence, append/read operations, and persistence. It does not know standard projection names.
-2. Session runtime normalizes runner events into Goah-owned message, tool, request, compaction, and terminal events. `replaySession()` derives model-visible messages. Recovery closes open tool calls with an explicit `unknown` result.
+2. Transcript runtime normalizes runner events into Goah-owned message, tool, request, compaction, and terminal events. `replayTranscript()` derives model-visible messages. Recovery closes open tool calls with an explicit `unknown` result.
 3. Execution modules own Goal, Wake, Schedule, Mailbox, Action, and Handoff semantics. Their SQLite projections remain transactionally updated with the source event in the default implementation.
 
 Supervisor builds an ephemeral Active Context View by deterministically rendering structured projections to Markdown. The composer does not call a model. The runner records the exact rendered context, system prompt, messages, tools, and behavior-affecting model configuration in `request.prepared` immediately before dispatch. Authentication values, authorization headers, abort handles, and transport-private objects are excluded mechanically.
@@ -24,7 +24,7 @@ The layers remain source modules and public contract sections inside the existin
 
 ## Consequences
 
-- Superseded by ADR 0012: a Session contains multiple Turns and Items; a Goal Wake may create one Turn. The retained invariant is that Goah Session history, not a provider thread, is the replay authority.
+- Superseded by ADR 0012: a Thread contains multiple Turns and Items; a Goal Wake may create one Turn. The retained invariant is that Goah's canonical Turn transcript, not a provider session, is the replay authority.
 - Raw deltas remain auditable while completed messages drive conversation replay.
 - Compaction changes only the active surface; original events remain immutable.
 - The SQLite schema moves to version 6 and migrates versions 1 through 5.

@@ -10,7 +10,7 @@ const githubUrl = "https://github.com/billc8128/opengoah"
 const npmUrl = "https://www.npmjs.com/package/@goah/cli"
 
 const principles = [
-  { icon: Database, name: "Ledger", detail: "Every session, tool call, handoff, and decision becomes durable history." },
+  { icon: Database, name: "Ledger", detail: "Every Turn, tool call, handoff, and decision becomes durable history." },
   { icon: Eye, name: "Observation", detail: "Every goal keeps one explicit method for judging progress and completion." },
   { icon: TimerReset, name: "Time", detail: "Schedules, wakes, and mail let the organization continue after the process exits." },
   { icon: Network, name: "Organization", detail: "A CEO delegates bounded goals and changes the team as evidence arrives." },
@@ -82,7 +82,7 @@ export default function Home() {
               <span className="block text-black/46 xl:whitespace-nowrap">Goah holds the goal.</span>
             </h1>
             <p className="mt-7 max-w-[620px] text-[17px] leading-7 text-black/62 sm:text-lg sm:leading-8">
-              A local-first harness for long-running agent organizations. One CEO agent delegates work while durable memory, schedules, wakes, and mail keep the objective moving across sessions.
+              A local-first harness for long-running agent organizations. One CEO agent delegates work while durable Threads, schedules, Wakes, and mail keep the objective moving across time.
             </p>
             <div className="mt-9 flex flex-col gap-3 sm:flex-row">
               <Button asChild className="h-11 rounded-full bg-[#2447d8] px-5 text-white shadow-none hover:bg-[#1d3bb8]">

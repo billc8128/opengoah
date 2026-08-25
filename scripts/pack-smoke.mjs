@@ -18,10 +18,10 @@ writeFileSync(join(app, "package.json"), `${JSON.stringify({ name: "goah-install
 execFileSync("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", tarball], { cwd: app, stdio: "pipe" });
 execFileSync(process.execPath, ["--input-type=module", "-e", `
   const modules = await Promise.all([
-    import('@goah/cli/kernel'), import('@goah/cli/session'), import('@goah/cli/execution'), import('@goah/cli/metrics'),
+    import('@goah/cli/kernel'), import('@goah/cli/transcript'), import('@goah/cli/execution'), import('@goah/cli/metrics'),
     import('@goah/cli/sqlite'), import('@goah/cli/supervisor'), import('@goah/cli/runner-pi'), import('@goah/cli/testkit'), import('@goah/cli')
   ]);
-  const names = ['controlStream','replaySession','assertHandoff','evaluateMetric','SqliteLedger','Supervisor','ProcessRunner','SimulatedClock','controlEndpoint'];
+  const names = ['controlStream','replayTranscript','assertHandoff','evaluateMetric','SqliteLedger','Supervisor','ProcessRunner','SimulatedClock','controlEndpoint'];
   for (let index = 0; index < names.length; index += 1) if (typeof modules[index][names[index]] !== 'function') throw new Error('missing public subpath export: '+names[index]);
 `], { cwd: app, stdio: "pipe" });
 execFileSync("git", ["init", "-b", "main"], { cwd: app });
@@ -43,12 +43,12 @@ run("goal-resume", "pack-smoke");
 const wake = JSON.parse(run("run-once")).wake;
 const status = JSON.parse(run("status"));
 if (wake?.status !== "done" || status.wakes?.length !== 1 || status.recentHandoffs?.length !== 1) throw new Error("packed CLI did not complete the first handoff");
-const sessions = JSON.parse(run("session", "list"));
-const session = sessions.find((candidate) => candidate.turnCount > 0);
-const detail = JSON.parse(run("session", "show", session.sessionId));
-const exported = join(app, "session.json");
-run("session", "export", session.sessionId, "--output", exported);
-if (session.turnCount !== 1 || detail.turns?.[0]?.id !== wake.id || detail.turns[0].items.length === 0 || JSON.parse(readFileSync(exported, "utf8")).redacted !== true) throw new Error("packed CLI session inspector failed");
+const threads = JSON.parse(run("thread", "list"));
+const thread = threads.find((candidate) => candidate.turnCount > 0);
+const detail = JSON.parse(run("thread", "show", thread.threadId));
+const exported = join(app, "thread.json");
+run("thread", "export", thread.threadId, "--output", exported);
+if (thread.turnCount !== 1 || detail.turns?.[0]?.id !== wake.id || detail.turns[0].items.length === 0 || JSON.parse(readFileSync(exported, "utf8")).redacted !== true) throw new Error("packed CLI thread inspector failed");
 run("goal-show", "pack-smoke");
 const completedGoal = JSON.parse(run("goal-complete", "pack-smoke", "--reason", "fresh packed-runner handoff satisfies the observation method", "--evidence", String(status.recentHandoffs.at(-1).seq))).goal;
 if (completedGoal.phase !== "complete" || completedGoal.revision !== 3) throw new Error("packed CLI goal lifecycle failed");

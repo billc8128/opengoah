@@ -13,7 +13,7 @@ import {
   type WakeOutput,
 } from "goah-ledger-contract";
 import { SqliteLedger, type SqliteLedgerOptions } from "goah-ledger-sqlite";
-import type { PiDriver, PiSession } from "goah-runner-pi";
+import type { PiDriver, PiRunnerSession } from "goah-runner-pi";
 
 export class SimulatedClock implements Clock {
   #value: Date;
@@ -38,11 +38,11 @@ export interface FauxStep {
 
 export class FauxPiDriver implements PiDriver {
   readonly requests: RunRequest[] = [];
-  #sessions: FauxStep[][];
-  constructor(readonly clock: SimulatedClock, sessions: FauxStep[][], readonly directory = process.cwd()) { this.#sessions = sessions.map((steps) => [...steps]); }
-  async createSession(request: RunRequest): Promise<PiSession> {
+  #runnerSessions: FauxStep[][];
+  constructor(readonly clock: SimulatedClock, runnerSessions: FauxStep[][], readonly directory = process.cwd()) { this.#runnerSessions = runnerSessions.map((steps) => [...steps]); }
+  async createRunnerSession(request: RunRequest): Promise<PiRunnerSession> {
     this.requests.push(request);
-    const steps = this.#sessions.shift() ?? [];
+    const steps = this.#runnerSessions.shift() ?? [];
     return {
       step: async () => {
         const step = steps.shift();
@@ -111,7 +111,7 @@ export function assertLedgerConformance(create: LedgerConformanceFactory): void 
     ledger.requestAction({ id: "bad", agent: "a", kind: "mock", connector: "mock", payload: {}, reason: "bad", evidence: [999_999], gated: false, status: "requested", reconciledAt: null, externalRef: null, auditAdvice: null, adviceAcked: false }, "a");
   } catch { rejected = true; }
   if (!rejected) throw new Error("ledger conformance: nonexistent evidence was accepted");
-  const informational = ledger.appendEvent({ streamId: "conformance:events", ts: clock.now().toISOString(), actor: "a", type: "session.conformance_info", data: {}, ignorable: true });
+  const informational = ledger.appendEvent({ streamId: "conformance:events", ts: clock.now().toISOString(), actor: "a", type: "transcript.conformance_info", data: {}, ignorable: true });
   if (ledger.latestEvent()?.seq !== informational.seq) throw new Error("ledger conformance: latest event was not the globally last append");
   const before = JSON.stringify({ goals: ledger.goals(), wakes: ledger.wakes() });
   ledger.rebuildProjections();

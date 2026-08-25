@@ -10,7 +10,7 @@ This model supersedes the interaction and continuity model in [Goah CEO Agent Op
 
 ## 1. Decision summary
 
-Goah has two operating surfaces over one Session/Turn/Item runtime:
+Goah has two operating surfaces over one Thread/Turn/Item runtime:
 
 1. **Ordinary interaction** — CEO behaves like a normal coding Agent. Greetings, questions, inspections, and bounded work do not require a Goal, Work Record, organization, or Handoff.
 2. **Goal-bound operation** — a Turn explicitly bound to a Goal enters Goah's strict operating protocol: durable Work Record update, observation and verification methods, evidence, Goal Handoff, scheduling, and CEO-managed child Agents.
@@ -20,7 +20,7 @@ The distinction is mechanical. A Turn's producer and its Goal binding are separa
 ```ts
 interface Turn {
   id: string;
-  sessionId: string;
+  threadId: string;
   source: "human" | "goal" | "system";
   goalId: string | null;
   goalRevision: number | null;
@@ -60,7 +60,7 @@ Every delegated Child Goal has an observation method and a verification method. 
 
 This model evolves two implemented references:
 
-- [Goah architecture v2](../../Goah-%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1-v2.html), which defines the Ledger, execution modules, replayable Session, Wake/Lease lifecycle, Runner boundary, and failure semantics;
+- [Goah architecture v2](../../Goah-%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1-v2.html), which defines the Ledger, execution modules, replayable Thread, Wake/Lease lifecycle, Runner boundary, and failure semantics;
 - [Goah CEO Agent Operating Layer v0.4](./ceo-agent-operating-layer.md), which defines CEO as the Human-facing identity, Goal-owned organization, observation methods, atomic delegation, motion validation, and Human root authority.
 
 The change is not a move from a Goal-oriented system to a task-oriented Agent. It makes ordinary interaction an unbound surface while preserving the strict Goal operating layer.
@@ -70,7 +70,7 @@ The change is not a move from a Goal-oriented system to a task-oriented Agent. I
 | Previous design | Inherited decision | Why it remains |
 |---|---|---|
 | Append-only Ledger plus rebuildable projections | Ledger remains the only durable fact source | Global order, replay, audit, and transaction boundaries are foundational guarantees |
-| Replayable normalized Sessions | Runner messages, tool calls/results, requests, compaction, and interruption remain normalized events | Goah must own the context and recovery record rather than depend on provider session state |
+| Replayable normalized Turn transcripts | Runner messages, tool calls/results, requests, compaction, and interruption remain normalized events | Goah must own the context and recovery record rather than depend on provider session state |
 | CEO as the sole normal Human-facing Agent | Human still interacts through CEO instead of coordinating Child Agents directly | One accountable interface hides organization mechanics without hiding their records |
 | Goal-driven organization | Every Child Agent still owns a Child Goal | Goah coordinates durable outcomes, not disposable task workers |
 | Observation method | Goal execution still defines how current reality is inspected | Separately reconstructed Turns must not silently change their source of truth |
@@ -151,7 +151,7 @@ This proposal does not introduce generic task Sub-agents, relax Child Goal obser
 Human / TUI
     │ turn.start / turn.steer / turn.interrupt
     ▼
-CEO Agent Session
+CEO Agent Thread
     └── Turn + Items
           ├── ordinary Human Turn ───────── normal response
           └── optional Goal binding
@@ -268,7 +268,7 @@ GoalDriver creates:
 
 Human steering always has priority over automatic continuation.
 
-GoalDriver does not run a second execution protocol. It creates a Goal-bound Turn in the owner Agent's Session. Provider retry remains inside that Turn and never creates a Wake or another Turn.
+GoalDriver does not run a second execution protocol. It creates a Goal-bound Turn in the owner Agent's Thread. Provider retry remains inside that Turn and never creates a Wake or another Turn.
 
 ## 7. Goal model
 
@@ -666,10 +666,10 @@ The current design has three possible semantic carriers: Handoff prose, `memory.
 
 - Goal semantic continuity lives in Work Record;
 - Goal Handoff points to a Work Record revision;
-- raw execution history remains in Session/Ledger events;
+- raw execution history remains in Turn transcript/Ledger events;
 - Goal Agents no longer write separate free-form `memory.appended` facts;
 - legacy memory and Handoffs remain readable and seed migrated Work Records;
-- future non-Goal personal/session memory is a separate concern.
+- future non-Goal personal/thread memory is a separate concern.
 
 ## 15. Runner boundary
 
@@ -740,13 +740,13 @@ Hide by default:
 
 ## 18. Migration
 
-This development release has no external users, so the Session/Turn/Item transition does not migrate local pre-v2 data. Development workspaces are recreated. Goal and Work Record semantics remain the target schema; only interaction/session storage is replaced.
+This development release has no external users, so the Thread/Turn/Item transition does not migrate local pre-v2 data. Development workspaces are recreated. Goal and Work Record semantics remain the target schema; only interaction/thread storage is replaced.
 
 ## 19. Implementation sequence
 
 ### Phase A — unified runtime
 
-- add durable Session, Turn, and Turn Item projections;
+- add durable Thread, Turn, and Turn Item projections;
 - move lease, fencing, cancellation, retry, and recovery to Turn;
 - start Human Turns directly and keep provider retry inside the Turn;
 - make Wake create future Goal Turns and reserve Mail for asynchronous communication.
@@ -777,7 +777,7 @@ This development release has no external users, so the Session/Turn/Item transit
 - add record browsing commands;
 - suppress internal protocol noise in the default TUI;
 - expose complete audit detail through explicit commands.
-- rebuild and subscribe to complete Session/Turn/Item history by stable ids.
+- rebuild and subscribe to complete Thread/Turn/Item history by stable ids.
 
 ### Phase F — migration and documentation
 

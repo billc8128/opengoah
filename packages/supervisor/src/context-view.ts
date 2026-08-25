@@ -25,11 +25,11 @@ export interface ActiveContextInput {
   workingMemory?: readonly EventRecord[];
 }
 
-/** Keep recovery actionable and bounded; raw Session history remains queryable in the ledger. */
+/** Keep recovery actionable and bounded; raw Turn transcript remains queryable in the ledger. */
 export function selectRecoveryEvents(events: EventRecord[]): EventRecord[] {
   const unknownCalls = new Set(events.filter((event) => event.type === "tool.completed" && field(field(event.data, "result"), "outcome") === "unknown").map((event) => String(field(event.data, "callId"))));
   return events.filter((event) => {
-    if (["wake.abnormal_reason", "session.interrupted", "context.compacted", "ceo.motion_invalid"].includes(event.type)) return true;
+    if (["wake.abnormal_reason", "transcript.interrupted", "context.compacted", "ceo.motion_invalid"].includes(event.type)) return true;
     if (event.type === "tool.called") return unknownCalls.has(String(field(event.data, "callId")));
     if (event.type === "tool.completed") return unknownCalls.has(String(field(event.data, "callId")));
     return false;

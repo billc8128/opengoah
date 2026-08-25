@@ -19,7 +19,7 @@
 ## 0.3.0
 
 - Added deterministic Markdown Active Context composition with evidence source sequences.
-- Repairs interrupted Session tool calls as unknown before scheduling recovery.
+- Repairs interrupted Turn transcript tool calls as unknown before scheduling recovery.
 - Metric policy is registered independently of Goal.
 
 ## 0.2.0

@@ -37,6 +37,14 @@ export const demoSnapshot: ConsoleSnapshot = {
     { agent: "operations", goalIds: ["orders"], status: "scheduled", lastHandoffSeq: 12835, lastWakeStatus: "done", nextWakeAt: "2026-08-20T14:30:00.000+08:00" },
     { agent: "web", goalIds: ["storefront"], status: "queued", lastHandoffSeq: 12836, lastWakeStatus: "queued", nextWakeAt: "2026-08-20T14:30:00.000+08:00" },
   ],
+  threads: [
+    { id: "thread:growth", agent: "growth", parentThreadId: null, createdAt: "2026-08-20T14:11:00.000+08:00", updatedAt: "2026-08-20T14:18:18.000+08:00" },
+    { id: "thread:web", agent: "web", parentThreadId: null, createdAt: "2026-08-20T14:14:18.000+08:00", updatedAt: "2026-08-20T14:14:18.000+08:00" },
+  ],
+  turns: [
+    { id: "growth-8", threadId: "thread:growth", source: "goal", goalId: "growth", goalRevision: 2, status: "in_progress", error: null, startedAt: "2026-08-20T14:18:02.000+08:00", endedAt: null, leaseUntil: "2026-08-20T14:19:00.000+08:00", leaseToken: "demo", runnerPid: 21874 },
+    { id: "web-4", threadId: "thread:web", source: "goal", goalId: "storefront", goalRevision: 1, status: "in_progress", error: null, startedAt: "2026-08-20T14:14:18.000+08:00", endedAt: null, leaseUntil: null, leaseToken: null, runnerPid: null },
+  ],
   wakes: [
     { id: "growth-8", agent: "growth", triggerRef: "mail:decision-growth", status: "running", leaseUntil: "2026-08-20T14:19:00.000+08:00", startedAt: "2026-08-20T14:11:00.000+08:00", endedAt: null, runnerPid: 21874, enqueuedSeq: 12846 },
     { id: "web-4", agent: "web", triggerRef: "goal:storefront", status: "queued", leaseUntil: null, startedAt: null, endedAt: null, runnerPid: null, enqueuedSeq: 12844 },

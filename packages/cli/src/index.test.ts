@@ -163,21 +163,21 @@ test("CLI runs the install-to-first-handoff path with the faux provider", () => 
   assert.equal(status.wakes[0].status, "done");
   assert.equal(status.modelCapabilities.provider, "faux");
   assert.equal(status.recentHandoffs.length, 1);
-  const sessions = JSON.parse(invoke(directory, "session", "list"));
-  const workerSession = sessions.find((session: { turnCount: number }) => session.turnCount === 1);
-  assert.equal(workerSession.status, "idle");
-  const sessionId = workerSession.sessionId;
-  const detail = JSON.parse(invoke(directory, "session", "show", "--config", "goah.config.json", sessionId));
+  const threads = JSON.parse(invoke(directory, "thread", "list"));
+  const workerThread = threads.find((thread: { turnCount: number }) => thread.turnCount === 1);
+  assert.equal(workerThread.status, "idle");
+  const threadId = workerThread.threadId;
+  const detail = JSON.parse(invoke(directory, "thread", "show", "--config", "goah.config.json", threadId));
   assert.ok(detail.turns[0].items.length > 0);
   assert.equal(JSON.stringify(detail).includes("apiKey"), false);
   const context = JSON.parse(invoke(directory, "context", "show", wakeId));
   assert.match(context.text, /Complete the first handoff/);
   const events = JSON.parse(invoke(directory, "events", "--stream", `wake:${wakeId}`));
   assert.equal(events.at(-1).type, "wake.done");
-  const exportedPath = join(directory, "session.json");
-  const exported = JSON.parse(invoke(directory, "session", "export", sessionId, "--output", exportedPath));
+  const exportedPath = join(directory, "thread.json");
+  const exported = JSON.parse(invoke(directory, "thread", "export", threadId, "--output", exportedPath));
   assert.equal(exported.redacted, true);
-  assert.equal(JSON.parse(readFileSync(exportedPath, "utf8")).format, "goah.session-export.v2");
+  assert.equal(JSON.parse(readFileSync(exportedPath, "utf8")).format, "goah.thread-export.v1");
   const queued = JSON.parse(invoke(directory, "wake", "worker", "--reason", "manual follow-up"));
   assert.equal(queued.wake.status, "queued");
   assert.equal(JSON.parse(invoke(directory, "run-once")).wake.status, "done");
@@ -192,7 +192,7 @@ test("CLI rejects an unsupported legacy Ark provider", () => {
   assert.match(result.stderr, /Model not found/);
 });
 
-test("session export redaction preserves structure while removing common secrets and home paths", () => {
+test("thread export redaction preserves structure while removing common secrets and home paths", () => {
   const redacted = redactValue({ token: "top-secret", nested: { text: `Bearer abcdef /Users/example key-abcdefghijklmnop ${process.env.HOME}` } }) as { token: string; nested: { text: string } };
   assert.equal(redacted.token, "[REDACTED]");
   assert.doesNotMatch(redacted.nested.text, /abcdef|abcdefghijklmnop/);

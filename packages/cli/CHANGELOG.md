@@ -66,12 +66,12 @@
 ## 0.4.0
 
 - Added `goal-show`, `goal-update`, `goal-pause`, `goal-resume`, and `goal-complete`.
-- Session listings expose their stored format version.
+- Thread listings expose their stored format version.
 
 ## 0.3.1
 
-- Added `session list/show/replay/export`, `context show`, and stream-scoped `events` commands.
-- Session export defaults to structural redaction and read-only inspection no longer requires provider credentials.
+- Added `thread list/show/replay/export`, `context show`, and stream-scoped `events` commands.
+- Thread export defaults to structural redaction and read-only inspection no longer requires provider credentials.
 
 ## 0.3.0
 

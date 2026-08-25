@@ -10,7 +10,7 @@ import { assistantResponseText, bashTimeoutMs, compactMessages, compactMessagesT
 import { createPiModel, modelCatalog, providerCatalog } from "./model-provider.js";
 
 const wake: WakeSnapshot = { id: "w", agent: "a", triggerRef: "t", status: "running", leaseUntil: "2026-08-18T00:01:00.000Z", attempt: 1, startedAt: "2026-08-18T00:00:00.000Z", endedAt: null, enqueuedSeq: 1, leaseToken: "lease", runnerPid: null };
-const execution: TurnSnapshot = { id:"w",sessionId:"session",source:"goal",goalId:"goal",goalRevision:0,status:"in_progress",error:null,startedAt:"2026-08-18T00:00:00.000Z",endedAt:null,leaseUntil:wake.leaseUntil,leaseToken:"lease",runnerPid:null };
+const execution: TurnSnapshot = { id:"w",threadId:"thread",source:"goal",goalId:"goal",goalRevision:0,status:"in_progress",error:null,startedAt:"2026-08-18T00:00:00.000Z",endedAt:null,leaseUntil:wake.leaseUntil,leaseToken:"lease",runnerPid:null };
 const requestBase = { agent:wake.agent,execution,sourceWake:wake };
 const goalTurn = { source: { kind: "goal" as const, round: 1 }, goalBinding: { goalId: "goal", goalRevision: 0 } };
 
@@ -28,7 +28,7 @@ test("assistant response excludes thinking and tool blocks", () => {
 
 function driver(steps: Array<{ stop?: boolean; response?: AssistantResponse; handoff?: WakeOutput }>): PiDriver {
   return {
-    createSession: async () => ({
+    createRunnerSession: async () => ({
       step: async () => {
         const step = steps.shift() ?? { stop: true };
         return { ...(step.stop ? { stopped: true } : {}), ...(step.response ? { response: step.response } : {}), ...(step.handoff ? { handoff: step.handoff } : {}) };

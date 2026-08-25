@@ -23,20 +23,20 @@ import {
 
 import { Accordion, Collapsible, Dialog, ScrollArea, Select, Tabs } from "./components/ui/primitives"
 import { demoSnapshot } from "./demo"
-import type { ConsoleSnapshot, EventView, GoalView, SessionView, TeamView, TrajectoryItemView, TrajectoryPageView } from "./types"
+import type { ConsoleSnapshot, EventView, GoalView, TeamView, ThreadDetailView, ThreadView, TrajectoryItemView, TrajectoryPageView, TurnItemView, TurnView } from "./types"
 
-type View = "overview" | "chat" | "trajectory" | "session" | "ledger" | "agents" | "settings"
+type View = "overview" | "chat" | "trajectory" | "thread" | "ledger" | "agents" | "settings"
 
 const searchParams = new URLSearchParams(window.location.search)
 const isDemo = searchParams.has("demo")
 const requestedView = searchParams.get("view")
-const initialView: View = requestedView && ["overview", "chat", "trajectory", "session", "ledger", "agents", "settings"].includes(requestedView) ? requestedView as View : "overview"
+const initialView: View = requestedView && ["overview", "chat", "trajectory", "thread", "ledger", "agents", "settings"].includes(requestedView) ? requestedView as View : "overview"
 
 export function App() {
   const [snapshot, setSnapshot] = useState<ConsoleSnapshot | null>(isDemo ? demoSnapshot : null)
   const [view, setView] = useState<View>(initialView)
   const [selectedAgent, setSelectedAgent] = useState("growth")
-  const [selectedWakeId, setSelectedWakeId] = useState<string | null>(null)
+  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null)
   const [connection, setConnection] = useState<"loading" | "live" | "error">(isDemo ? "live" : "loading")
   const [approvalsOpen, setApprovalsOpen] = useState(false)
 
@@ -61,7 +61,7 @@ export function App() {
   if (!snapshot) return <LoadingState connection={connection} />
 
   const root = snapshot.goals.find((goal) => goal.parentId === null) ?? snapshot.goals[0] ?? null
-  const openSession = (wakeId: string) => { setSelectedWakeId(wakeId); setView("session") }
+  const openThread = (threadId: string) => { setSelectedThreadId(threadId); setView("thread") }
   return (
     <div className="console-shell">
       <Sidebar view={view} onView={setView} />
@@ -69,10 +69,10 @@ export function App() {
         {connection === "error" && <div className="connection-banner">Live refresh paused. Retrying the local Supervisor…</div>}
         {view === "overview" && <Overview snapshot={snapshot} root={root} onView={setView} onTalk={() => setView("chat")} onApprovals={() => setApprovalsOpen(true)} />}
         {view === "chat" && <ChatView snapshot={snapshot} onRefresh={load} />}
-        {view === "trajectory" && <OrganizationTrajectory snapshot={snapshot} onOpenSession={openSession} />}
-        {view === "session" && <SessionTrace snapshot={snapshot} selectedWakeId={selectedWakeId} onSelectWake={setSelectedWakeId} onBack={() => setView("trajectory")} />}
+        {view === "trajectory" && <OrganizationTrajectory snapshot={snapshot} onOpenThread={openThread} />}
+        {view === "thread" && <ThreadTrace snapshot={snapshot} selectedThreadId={selectedThreadId} onSelectThread={setSelectedThreadId} onBack={() => setView("trajectory")} />}
         {view === "ledger" && <Ledger snapshot={snapshot} />}
-        {view === "agents" && <Agents snapshot={snapshot} selected={selectedAgent} onSelect={setSelectedAgent} onOpenSession={openSession} />}
+        {view === "agents" && <Agents snapshot={snapshot} selected={selectedAgent} onSelect={setSelectedAgent} onOpenThread={openThread} />}
         {view === "settings" && <SettingsView snapshot={snapshot} />}
       </main>
       {approvalsOpen && <ApprovalDialog snapshot={snapshot} onRefresh={load} onClose={() => setApprovalsOpen(false)} />}
@@ -93,7 +93,7 @@ function Sidebar({ view, onView }: { view: View; onView(view: View): void }) {
       <div className="brand"><img src="/goah-orbital-mark.png" alt="" /><span>Goah Console</span></div>
       <nav aria-label="Console views">
         {items.map(({ id, label, icon: Icon }) => (
-          <button key={id} className={view === id || id === "trajectory" && view === "session" ? "nav-item active" : "nav-item"} onClick={() => onView(id)}>
+          <button key={id} className={view === id || id === "trajectory" && view === "thread" ? "nav-item active" : "nav-item"} onClick={() => onView(id)}>
             <Icon aria-hidden="true" /><span>{label}</span>
           </button>
         ))}
@@ -181,7 +181,7 @@ function AgentTreeRow({ goal, member, now }: { goal: GoalView; member?: TeamView
   )
 }
 
-function OrganizationTrajectory({ snapshot, onOpenSession }: { snapshot: ConsoleSnapshot; onOpenSession(wakeId: string): void }) {
+function OrganizationTrajectory({ snapshot, onOpenThread }: { snapshot: ConsoleSnapshot; onOpenThread(threadId: string): void }) {
   const [agent, setAgent] = useState("all")
   const [category, setCategory] = useState("all")
   const [remote, setRemote] = useState<TrajectoryPageView | null>(null)
@@ -217,62 +217,68 @@ function OrganizationTrajectory({ snapshot, onOpenSession }: { snapshot: Console
     } finally { setLoading(false) }
   }
 
-  return <Page title="Organization trajectory" description="Goal, wake, handoff, mail, action, and observation milestones across every agent."><div className="org-trajectory-toolbar"><TrajectorySelect label="Agent" value={agent} onValueChange={setAgent} options={[{ value: "all", label: "All agents" }, ...snapshot.team.map((member) => ({ value: member.agent, label: displayAgent(member.agent) }))]} /><TrajectorySelect label="Event" value={category} onValueChange={setCategory} options={[{ value: "all", label: "All milestones" }, ...["goal", "delegation", "wake", "handoff", "mail", "schedule", "action", "metric"].map((value) => ({ value, label: capitalize(value) }))]} /></div><div className="org-event-list">{items.map((item) => <OrganizationEvent key={item.event.seq} item={item} wake={item.wakeId ? snapshot.wakes.find((wake) => wake.id === item.wakeId) : undefined} onOpenSession={onOpenSession} />)}{!items.length && <Empty text="No organization milestones match these filters." />}</div>{remote?.nextBeforeSeq && <button className="load-older" disabled={loading} onClick={loadOlder}>{loading ? "Loading…" : "Load older events"}</button>}</Page>
+  return <Page title="Organization trajectory" description="Goal, wake, handoff, mail, action, and observation milestones across every agent."><div className="org-trajectory-toolbar"><TrajectorySelect label="Agent" value={agent} onValueChange={setAgent} options={[{ value: "all", label: "All agents" }, ...snapshot.team.map((member) => ({ value: member.agent, label: displayAgent(member.agent) }))]} /><TrajectorySelect label="Event" value={category} onValueChange={setCategory} options={[{ value: "all", label: "All milestones" }, ...["goal", "delegation", "wake", "handoff", "mail", "schedule", "action", "metric"].map((value) => ({ value, label: capitalize(value) }))]} /></div><div className="org-event-list">{items.map((item) => <OrganizationEvent key={item.event.seq} item={item} wake={item.wakeId ? snapshot.wakes.find((wake) => wake.id === item.wakeId) : undefined} thread={item.wakeId ? threadForWake(snapshot, item.wakeId) : undefined} onOpenThread={onOpenThread} />)}{!items.length && <Empty text="No organization milestones match these filters." />}</div>{remote?.nextBeforeSeq && <button className="load-older" disabled={loading} onClick={loadOlder}>{loading ? "Loading…" : "Load older events"}</button>}</Page>
 }
 
 function TrajectorySelect({ label, value, onValueChange, options }: { label: string; value: string; onValueChange(value: string): void; options: Array<{ value: string; label: string }> }) {
-  return <div className="trajectory-filter"><span>{label}</span><Select.Root value={value} onValueChange={onValueChange}><Select.Trigger aria-label={label}><Select.Value /><Select.Icon><ChevronDown /></Select.Icon></Select.Trigger><Select.Portal><Select.Content className="session-select-content" position="popper" sideOffset={6}><Select.Viewport>{options.map((option) => <Select.Item className="session-select-item" value={option.value} key={option.value}><Select.ItemText>{option.label}</Select.ItemText><Select.ItemIndicator className="session-check"><Check /></Select.ItemIndicator></Select.Item>)}</Select.Viewport></Select.Content></Select.Portal></Select.Root></div>
+  return <div className="trajectory-filter"><span>{label}</span><Select.Root value={value} onValueChange={onValueChange}><Select.Trigger aria-label={label}><Select.Value /><Select.Icon><ChevronDown /></Select.Icon></Select.Trigger><Select.Portal><Select.Content className="thread-select-content" position="popper" sideOffset={6}><Select.Viewport>{options.map((option) => <Select.Item className="thread-select-item" value={option.value} key={option.value}><Select.ItemText>{option.label}</Select.ItemText><Select.ItemIndicator className="thread-check"><Check /></Select.ItemIndicator></Select.Item>)}</Select.Viewport></Select.Content></Select.Portal></Select.Root></div>
 }
 
-function OrganizationEvent({ item, wake, onOpenSession }: { item: TrajectoryItemView; wake?: ConsoleSnapshot["wakes"][number]; onOpenSession(wakeId: string): void }) {
-  return <article className="org-event"><time>{formatDateTime(item.event.ts)}</time><i className={`event-dot ${eventTone(item.event)}`} /><div><header><strong>{displayAgent(item.agent)}</strong><span>{item.event.type}</span></header><p>{eventNarrative(item.event, item.agent)}</p><small>Seq #{item.event.seq}</small></div>{wake && item.wakeId && <button onClick={() => onOpenSession(item.wakeId!)}>Session<ChevronRight /></button>}{wake && <Status status={wake.status} />}</article>
+function OrganizationEvent({ item, wake, thread, onOpenThread }: { item: TrajectoryItemView; wake?: ConsoleSnapshot["wakes"][number]; thread?: ThreadView; onOpenThread(threadId: string): void }) {
+  return <article className="org-event"><time>{formatDateTime(item.event.ts)}</time><i className={`event-dot ${eventTone(item.event)}`} /><div><header><strong>{displayAgent(item.agent)}</strong><span>{item.event.type}</span></header><p>{eventNarrative(item.event, item.agent)}</p><small>Seq #{item.event.seq}</small></div>{thread && <button onClick={() => onOpenThread(thread.id)}>Thread<ChevronRight /></button>}{wake && <Status status={wake.status} />}</article>
 }
 
-function SessionTrace({ snapshot, selectedWakeId, onSelectWake, onBack }: { snapshot: ConsoleSnapshot; selectedWakeId: string | null; onSelectWake(wakeId: string): void; onBack(): void }) {
-  const sessions = snapshot.wakes
-  const selected = sessions.find((wake) => wake.id === selectedWakeId) ?? sessions.find((wake) => wake.status === "running") ?? sessions[0]
+function ThreadTrace({ snapshot, selectedThreadId, onSelectThread, onBack }: { snapshot: ConsoleSnapshot; selectedThreadId: string | null; onSelectThread(threadId: string): void; onBack(): void }) {
+  const threads = [...snapshot.threads].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  const selected = threads.find((thread) => thread.id === selectedThreadId) ?? threads.find((thread) => snapshot.turns.some((turn) => turn.threadId === thread.id && turn.status === "in_progress")) ?? threads[0]
   const [query, setQuery] = useState("")
-  const [remoteSession, setRemoteSession] = useState<SessionView | null>(null)
+  const [remoteThread, setRemoteThread] = useState<ThreadDetailView | null>(null)
   useEffect(() => {
-    if (isDemo || !selected) return
+    if (!selected) return
+    if (isDemo) { setRemoteThread(demoThreadDetail(snapshot, selected)); return }
     let active = true
     const load = async () => {
-      const response = await fetch(`/api/sessions/${encodeURIComponent(selected.id)}`, { cache: "no-store" })
+      const response = await fetch(`/api/threads/${encodeURIComponent(selected.id)}`, { cache: "no-store" })
       if (!response.ok) return
-      const session = await response.json() as SessionView
-      if (active) setRemoteSession(session)
+      const thread = await response.json() as ThreadDetailView
+      if (active) setRemoteThread(thread)
     }
     void load()
     const timer = window.setInterval(load, 2_000)
     return () => { active = false; window.clearInterval(timer) }
   }, [selected?.id])
-  const wakeEvents = !isDemo && remoteSession?.wake.id === selected?.id ? remoteSession.events : snapshot.events.filter((event) => event.streamId === `wake:${selected?.id}`)
-  const sessionEvents = wakeEvents.filter(isTraceEvent)
-  const visibleEvents = sessionEvents.filter((event) => `${event.type} ${JSON.stringify(event.data)}`.toLowerCase().includes(query.toLowerCase()))
-  const rows = traceRows(visibleEvents)
-  const turns = traceRows(sessionEvents).at(-1)?.turn ?? 0
-  const calls = sessionEvents.filter((event) => event.type === "tool.called").length
-  const selectSession = (wakeId: string) => { setQuery(""); onSelectWake(wakeId) }
+  const detail = remoteThread?.thread.id === selected?.id ? remoteThread : null
+  const turns = detail?.turns ?? []
+  const items = turns.flatMap((turn) => turn.items)
+  const visibleTurns = turns.map((turn) => ({ ...turn, items: turn.items.filter((item) => `${item.type} ${JSON.stringify(item.data)}`.toLowerCase().includes(query.toLowerCase())) })).filter((turn) => turn.items.length)
+  const calls = items.filter((item) => item.type === "tool_call").length
+  const selectThread = (threadId: string) => { setQuery(""); setRemoteThread(null); onSelectThread(threadId) }
   return (
-    <Page title="Session" description="One wake, turn by turn.">
+    <Page title="Thread" description="A durable agent conversation, organized into turns and typed items.">
       <button className="back-to-trajectory" onClick={onBack}><ArrowLeft /> Organization trajectory</button>
       <div className="trace-toolbar">
-        <div className="session-field"><span>Session</span><Select.Root value={selected?.id ?? ""} onValueChange={selectSession}><Select.Trigger className="session-select" aria-label="Session"><Select.Value /><Select.Icon><ChevronDown /></Select.Icon></Select.Trigger><Select.Portal><Select.Content className="session-select-content" position="popper" sideOffset={6}><Select.Viewport>{sessions.map((wake) => <Select.Item className="session-select-item" value={wake.id} key={wake.id}><Select.ItemText>{displayAgent(wake.agent)} · {wake.id} · {wake.status}</Select.ItemText><Select.ItemIndicator className="session-check"><Check /></Select.ItemIndicator></Select.Item>)}</Select.Viewport></Select.Content></Select.Portal></Select.Root></div>
-        <div className="trace-stats"><span><Clock3 /> {traceDuration(sessionEvents)}</span><span><Route /> {turns} turns</span><span><Activity /> {calls} calls</span></div>
-        <label className="trace-search"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search this session" /></label>
+        <div className="thread-field"><span>Thread</span><Select.Root value={selected?.id ?? ""} onValueChange={selectThread}><Select.Trigger className="thread-select" aria-label="Thread"><Select.Value /><Select.Icon><ChevronDown /></Select.Icon></Select.Trigger><Select.Portal><Select.Content className="thread-select-content" position="popper" sideOffset={6}><Select.Viewport>{threads.map((thread) => <Select.Item className="thread-select-item" value={thread.id} key={thread.id}><Select.ItemText>{displayAgent(thread.agent)} · {thread.id}</Select.ItemText><Select.ItemIndicator className="thread-check"><Check /></Select.ItemIndicator></Select.Item>)}</Select.Viewport></Select.Content></Select.Portal></Select.Root></div>
+        <div className="trace-stats"><span><Clock3 /> {threadDuration(turns)}</span><span><Route /> {turns.length} turns</span><span><Activity /> {calls} calls</span></div>
+        <label className="trace-search"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search this thread" /></label>
       </div>
-      {sessionEvents.length === 0 ? <TraceEmptyState wake={selected} /> : <section className="trace-surface"><TraceMap events={sessionEvents} />{visibleEvents.length === 0 ? <TraceNoResults query={query} /> : <TraceEventList rows={rows} />}</section>}
+      {!selected || items.length === 0 ? <ThreadEmptyState /> : visibleTurns.length === 0 ? <TraceNoResults query={query} /> : <ThreadTurnList turns={visibleTurns} />}
     </Page>
   )
 }
 
-function TraceEventList({ rows }: { rows: ReturnType<typeof traceRows> }) {
-  return <ScrollArea.Root className="trace-scroll"><ScrollArea.Viewport><div className="trace-list">{rows.map(({ event, turnStart, turn }) => <TraceRow key={event.seq} event={event} turnStart={turnStart} turn={turn} />)}</div></ScrollArea.Viewport><ScrollArea.Scrollbar className="trace-scrollbar" orientation="vertical"><ScrollArea.Thumb /></ScrollArea.Scrollbar></ScrollArea.Root>
+function ThreadTurnList({ turns }: { turns: Array<TurnView & { items: TurnItemView[] }> }) {
+  return <section className="trace-surface"><ScrollArea.Root className="trace-scroll"><ScrollArea.Viewport><div className="trace-list">{turns.map((turn, index) => <div className="thread-turn" key={turn.id}><header><span>Turn {index + 1}</span><code>{turn.id}</code><Status status={turn.status} /><time>{formatDateTime(turn.startedAt)}</time></header>{turn.items.map((item) => <ThreadItemRow item={item} key={item.id} />)}</div>)}</div></ScrollArea.Viewport><ScrollArea.Scrollbar className="trace-scrollbar" orientation="vertical"><ScrollArea.Thumb /></ScrollArea.Scrollbar></ScrollArea.Root></section>
 }
 
-function TraceEmptyState({ wake }: { wake: ConsoleSnapshot["wakes"][number] | undefined }) {
-  const queued = wake?.status === "queued"
-  return <section className="trace-empty-state"><Activity /><h2>{queued ? "Trace begins when this wake runs" : "No session trace yet"}</h2><p>{queued ? `${displayAgent(wake.agent)} is queued. Input, model, and tool events will appear after the Supervisor starts this wake.` : "The Supervisor has not recorded any input, model, or tool events for this wake."}</p>{wake && <Status status={wake.status} />}</section>
+function ThreadItemRow({ item }: { item: TurnItemView }) {
+  const label = item.type.replaceAll("_", " ")
+  const row = <><span className={`trace-kind trace-${itemTone(item.type)}`}>{label}</span><div className="trace-content"><strong>{turnItemText(item)}</strong></div><time>{formatTime(item.createdAt)}</time><code className="trace-seq">#{item.ordinal}</code></>
+  if (!item.type.startsWith("tool_")) return <div className="thread-item">{row}</div>
+  return <Collapsible.Root><Collapsible.Trigger className="thread-item trace-row-trigger" aria-label={`Show payload for ${label}`}>{row}<ChevronRight className="trace-expand" /></Collapsible.Trigger><Collapsible.Content className="trace-payload"><TracePayload value={item.data} /></Collapsible.Content></Collapsible.Root>
+}
+
+function ThreadEmptyState() {
+  return <section className="trace-empty-state"><Activity /><h2>No thread items yet</h2><p>The first user message, model response, reasoning block, or tool call will appear here when a turn begins.</p></section>
 }
 
 function TraceNoResults({ query }: { query: string }) {
@@ -290,37 +296,25 @@ function Ledger({ snapshot }: { snapshot: ConsoleSnapshot }) {
       <Tabs.Root value={mode} onValueChange={(value) => setMode(value as "work" | "raw")}>
         <div className="ledger-mode"><Tabs.List aria-label="Ledger view"><Tabs.Trigger value="work">Work records</Tabs.Trigger><Tabs.Trigger value="raw">Raw events</Tabs.Trigger></Tabs.List><label><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={mode === "work" ? "Search work records" : "Search events"} /></label></div>
         <Tabs.Content value="work"><div className="work-ledger">{records.map((event) => <WorkRecord key={event.seq} event={event} onRaw={() => setMode("raw")} />)}{!records.length && <Empty text="No agent-authored work records yet." />}</div></Tabs.Content>
-        <Tabs.Content value="raw"><div className="ledger-toolbar"><div>{["all", "goal", "wake", "mail", "action", "session"].map((item) => <button className={filter === item ? "selected" : ""} key={item} onClick={() => setFilter(item)}>{capitalize(item)}</button>)}</div></div><div className="ledger-table" role="table"><div className="ledger-head" role="row"><span>Seq</span><span>Local time</span><span>Stream</span><span>Actor</span><span>Event</span><span>Fact</span></div>{filtered.map((event) => <div className="ledger-row" role="row" key={event.seq}><code>{event.seq}</code><time>{formatTime(event.ts)}</time><code>{event.streamId}</code><span>{displayAgent(event.actor)}</span><strong>{event.type}</strong><span>{summarize(event.data)}</span></div>)}{!filtered.length && <Empty text="No matching events." />}</div></Tabs.Content>
+        <Tabs.Content value="raw"><div className="ledger-toolbar"><div>{["all", "goal", "wake", "mail", "action", "thread", "turn", "item", "transcript"].map((item) => <button className={filter === item ? "selected" : ""} key={item} onClick={() => setFilter(item)}>{capitalize(item)}</button>)}</div></div><div className="ledger-table" role="table"><div className="ledger-head" role="row"><span>Seq</span><span>Local time</span><span>Stream</span><span>Actor</span><span>Event</span><span>Fact</span></div>{filtered.map((event) => <div className="ledger-row" role="row" key={event.seq}><code>{event.seq}</code><time>{formatTime(event.ts)}</time><code>{event.streamId}</code><span>{displayAgent(event.actor)}</span><strong>{event.type}</strong><span>{summarize(event.data)}</span></div>)}{!filtered.length && <Empty text="No matching events." />}</div></Tabs.Content>
       </Tabs.Root>
     </Page>
   )
 }
 
-function Agents({ snapshot, selected, onSelect, onOpenSession }: { snapshot: ConsoleSnapshot; selected: string; onSelect(agent: string): void; onOpenSession(wakeId: string): void }) {
+function Agents({ snapshot, selected, onSelect, onOpenThread }: { snapshot: ConsoleSnapshot; selected: string; onSelect(agent: string): void; onOpenThread(threadId: string): void }) {
   const member = snapshot.team.find((item) => item.agent === selected) ?? snapshot.team[0]
   const goals = snapshot.goals.filter((goal) => goal.owner === member?.agent)
-  const sessions = snapshot.wakes.filter((wake) => wake.agent === member?.agent).sort((a, b) => b.enqueuedSeq - a.enqueuedSeq)
+  const threads = snapshot.threads.filter((thread) => thread.agent === member?.agent).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
   const workRecords = snapshot.events.filter((event) => event.actor === member?.agent && event.type === "handoff.recorded").reverse()
   return (
     <Page title="Agents">
       <div className="agents-workbench">
         <div className="agent-roster">{snapshot.team.map((item) => <button key={item.agent} className={item.agent === member?.agent ? "selected" : ""} onClick={() => onSelect(item.agent)}><Bot /><span><strong>{displayAgent(item.agent)}</strong><small>{snapshot.goals.find((goal) => goal.owner === item.agent)?.objective ?? "No owned goal"}</small></span><Status status={item.status} /></button>)}</div>
-        {member && <div className="agent-detail"><div className="agent-detail-head"><Bot /><div><h2>{displayAgent(member.agent)}</h2><Status status={member.status} /></div></div><section><h3>Owned goals</h3>{goals.map((goal) => <div className="owned-goal" key={goal.id}><strong>{goal.objective}</strong><span>{goal.observationMethod ?? "Observation method pending"}</span></div>)}</section><section><h3>Sessions</h3><div className="session-list">{sessions.map((wake) => <button key={wake.id} onClick={() => onOpenSession(wake.id)}><span><strong>{wake.id}</strong><small>{wake.triggerRef}</small></span><Status status={wake.status} /><ChevronRight /></button>)}{!sessions.length && <Empty text="No sessions for this agent yet." />}</div></section><section><h3>Work records</h3>{workRecords.map((event) => <WorkRecord key={event.seq} event={event} compact onOpen={() => onOpenSession(event.streamId.replace("wake:", ""))} />)}{!workRecords.length && <Empty text="No agent-authored work records yet." />}</section></div>}
+        {member && <div className="agent-detail"><div className="agent-detail-head"><Bot /><div><h2>{displayAgent(member.agent)}</h2><Status status={member.status} /></div></div><section><h3>Owned goals</h3>{goals.map((goal) => <div className="owned-goal" key={goal.id}><strong>{goal.objective}</strong><span>{goal.observationMethod ?? "Observation method pending"}</span></div>)}</section><section><h3>Threads</h3><div className="thread-list">{threads.map((thread) => <button key={thread.id} onClick={() => onOpenThread(thread.id)}><span><strong>{thread.id}</strong><small>{formatDateTime(thread.updatedAt)}</small></span><ChevronRight /></button>)}{!threads.length && <Empty text="No threads for this agent yet." />}</div></section><section><h3>Work records</h3>{workRecords.map((event) => { const thread = event.streamId.startsWith("wake:") ? threadForWake(snapshot, event.streamId.slice("wake:".length)) : undefined; return <WorkRecord key={event.seq} event={event} compact onOpen={thread ? () => onOpenThread(thread.id) : undefined} /> })}{!workRecords.length && <Empty text="No agent-authored work records yet." />}</section></div>}
       </div>
     </Page>
   )
-}
-
-function TraceMap({ events }: { events: EventView[] }) {
-  return <section className="trace-map" aria-label="Session activity map"><div className="trace-labels"><span>Input</span><span>Model</span><span>Tools</span></div><div className="trace-lanes">{["input", "model", "tool"].map((lane) => <div className={`trace-lane ${lane}`} key={lane}>{events.map((event) => <i key={`${lane}-${event.seq}`} className={traceLane(event) === lane ? "filled" : ""} />)}</div>)}</div></section>
-}
-
-function TraceRow({ event, turnStart, turn }: { event: EventView; turnStart: boolean; turn: number }) {
-  const label = traceLabel(event)
-  const isTool = ["tool.called", "tool.completed"].includes(event.type)
-  const row = <><span className="trace-rail-cell">{turnStart && <span className="turn-label">Turn {turn}</span>}<i className="trace-node" /></span><span className={`trace-kind trace-${label.toLowerCase()}`}>{label}</span><div className="trace-content"><strong>{traceText(event)}</strong></div><time>{formatTime(event.ts)}</time><code className="trace-seq">#{event.seq}</code></>
-  if (!isTool) return <div className={turnStart ? "trace-row turn-start" : "trace-row"}>{row}</div>
-  return <Collapsible.Root className={turnStart ? "trace-collapsible turn-start" : "trace-collapsible"}><Collapsible.Trigger className="trace-row trace-row-trigger" aria-label={`Show payload for ${traceText(event)}`}>{row}<ChevronRight className="trace-expand" /></Collapsible.Trigger><Collapsible.Content className="trace-payload"><TracePayload value={event.data} /></Collapsible.Content></Collapsible.Root>
 }
 
 function TracePayload({ value }: { value: unknown }) {
@@ -341,7 +335,7 @@ function WorkRecord({ event, compact = false, onOpen, onRaw }: { event: EventVie
   const nextSteps = stringArray(data.nextSteps)
   const blocker = typeof data.blocker === "string" ? data.blocker : null
   const summary = results[0] ?? observations[0] ?? "Work recorded"
-  return <Accordion.Root className={compact ? "work-record compact" : "work-record"} type="single" collapsible><Accordion.Item value={`record-${event.seq}`}><Accordion.Header><Accordion.Trigger className="work-record-summary"><Bot /><span className="record-agent"><strong>{displayAgent(event.actor)}</strong><small>{formatDateTime(event.ts)} · #{event.seq}</small></span><span className="record-outcome">{summary}</span>{nextSteps[0] && <span className="record-next">Next: {nextSteps[0]}</span>}<ChevronRight /></Accordion.Trigger></Accordion.Header><Accordion.Content className="work-record-content"><div className="work-record-body"><RecordSection title="Observed" values={observations} /><RecordSection title="Completed" values={results} /><RecordSection title="Next" values={nextSteps} />{blocker && <RecordSection title="Blocked" values={[blocker]} tone="danger" />}</div>{(onOpen || onRaw) && <footer>{onOpen && <button onClick={onOpen}>Open session</button>}{onRaw && <button onClick={onRaw}>Raw events</button>}</footer>}</Accordion.Content></Accordion.Item></Accordion.Root>
+  return <Accordion.Root className={compact ? "work-record compact" : "work-record"} type="single" collapsible><Accordion.Item value={`record-${event.seq}`}><Accordion.Header><Accordion.Trigger className="work-record-summary"><Bot /><span className="record-agent"><strong>{displayAgent(event.actor)}</strong><small>{formatDateTime(event.ts)} · #{event.seq}</small></span><span className="record-outcome">{summary}</span>{nextSteps[0] && <span className="record-next">Next: {nextSteps[0]}</span>}<ChevronRight /></Accordion.Trigger></Accordion.Header><Accordion.Content className="work-record-content"><div className="work-record-body"><RecordSection title="Observed" values={observations} /><RecordSection title="Completed" values={results} /><RecordSection title="Next" values={nextSteps} />{blocker && <RecordSection title="Blocked" values={[blocker]} tone="danger" />}</div>{(onOpen || onRaw) && <footer>{onOpen && <button onClick={onOpen}>Open thread</button>}{onRaw && <button onClick={onRaw}>Raw events</button>}</footer>}</Accordion.Content></Accordion.Item></Accordion.Root>
 }
 
 function RecordSection({ title, values, tone }: { title: string; values: string[]; tone?: string }) {
@@ -586,21 +580,36 @@ function handoffOf(value: unknown): NonNullable<ChatExchange["handoff"]> {
 function stringList(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [] }
 function firstString(value: unknown): string { return Array.isArray(value) && typeof value[0] === "string" ? value[0] : "" }
 function stringArray(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [] }
-function isTraceEvent(event: EventView): boolean { return ["session.started", "request.prepared", "turn.started", "message.user", "message.assistant.completed", "tool.called", "tool.completed", "context.compacted", "turn.completed", "handoff.recorded", "session.completed", "session.interrupted"].includes(event.type) }
-function traceLane(event: EventView): "input" | "model" | "tool" | "none" { if (["message.user", "request.prepared", "context.compacted"].includes(event.type)) return "input"; if (event.type.startsWith("message.assistant")) return "model"; if (event.type.startsWith("tool.")) return "tool"; return "none" }
-function traceLabel(event: EventView): string { if (event.type === "message.user") return "User"; if (event.type === "message.assistant.completed") return "Assistant"; if (event.type === "request.prepared") return "Context"; if (event.type === "context.compacted") return "Compact"; if (event.type.startsWith("tool.")) return "Tool"; if (event.type === "handoff.recorded") return "Handoff"; return "System" }
-function traceText(event: EventView): string {
-  const data = record(event.data)
-  if (event.type === "message.user" || event.type === "message.assistant.completed") return messageContent(data.message)
-  if (event.type === "request.prepared") return typeof data.activeContext === "string" ? data.activeContext : "Model request prepared from Active Context"
-  if (event.type === "context.compacted") return typeof data.summary === "string" ? data.summary : "Earlier messages compacted into a summary"
-  if (event.type === "tool.called") return `${String(data.name ?? "tool")} called`
-  if (event.type === "tool.completed") return `${String(data.name ?? "tool")} completed${data.isError ? " with error" : ""}`
-  if (event.type === "handoff.recorded") return `Work record: ${firstString(data.results) || firstString(data.observations) || "handoff recorded"}`
-  return event.type.replaceAll(".", " ")
-}
 function messageContent(value: unknown): string { const message = record(value); const content = message.content; if (typeof content === "string") return content; if (!Array.isArray(content)) return "Message recorded"; return content.map((item) => typeof item === "string" ? item : typeof item === "object" && item !== null && "text" in item ? String((item as { text?: unknown }).text ?? "") : "").filter(Boolean).join(" ") }
-function traceRows(events: EventView[]): Array<{ event: EventView; turnStart: boolean; turn: number }> { let turn = 0; return events.map((event, index) => { const turnStart = event.type === "message.user" || event.type === "turn.started" || turn === 0 && index === 0; if (turnStart) turn += 1; return { event, turnStart, turn: Math.max(turn, 1) } }) }
-function traceDuration(events: EventView[]): string { if (events.length < 2) return "0s"; const milliseconds = new Date(events.at(-1)!.ts).getTime() - new Date(events[0]!.ts).getTime(); const seconds = Math.max(0, Math.round(milliseconds / 1_000)); return seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s` }
+function threadForWake(snapshot: ConsoleSnapshot, wakeId: string): ThreadView | undefined { const turn = snapshot.turns.find((candidate) => candidate.id === wakeId); return turn ? snapshot.threads.find((thread) => thread.id === turn.threadId) : undefined }
+function threadDuration(turns: TurnView[]): string { if (!turns.length) return "0s"; const start = new Date(turns[0]!.startedAt).getTime(); const end = new Date(turns.at(-1)!.endedAt ?? turns.at(-1)!.startedAt).getTime(); const seconds = Math.max(0, Math.round((end - start) / 1_000)); return seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s` }
+function itemTone(type: TurnItemView["type"]): string { if (type === "user_message") return "user"; if (type === "assistant_message" || type === "reasoning") return "assistant"; if (type.startsWith("tool_")) return "tool"; if (type === "handoff") return "handoff"; return "context" }
+function turnItemText(item: TurnItemView): string {
+  const data = record(item.data)
+  if (typeof data.text === "string") return data.text
+  if (item.type === "tool_call") return `${String(data.tool ?? "tool")} called`
+  if (item.type === "tool_result") return `${String(data.callId ?? "tool")} returned ${summarize(data.result)}`
+  if (item.type === "handoff") return firstString(data.results) || firstString(data.observations) || "Work record updated"
+  return summarize(item.data)
+}
+function demoThreadDetail(snapshot: ConsoleSnapshot, thread: ThreadView): ThreadDetailView {
+  const turns = snapshot.turns.filter((turn) => turn.threadId === thread.id).map((turn) => {
+    const events = snapshot.events.filter((event) => event.streamId === `wake:${turn.id}`)
+    const items = events.flatMap((event, index): TurnItemView[] => {
+      const data = record(event.data)
+      let type: TurnItemView["type"] | null = null
+      let itemData = event.data
+      if (event.type === "message.user") { type = "user_message"; itemData = { text: messageContent(data.message) } }
+      else if (event.type === "message.assistant.completed") { type = "assistant_message"; itemData = { text: messageContent(data.message) } }
+      else if (event.type === "tool.called") { type = "tool_call"; itemData = { tool: String(data.name ?? "tool"), arguments: (data.arguments ?? null) as TurnItemView["data"] } }
+      else if (event.type === "tool.completed") { type = "tool_result"; itemData = { callId: String(data.callId ?? "tool"), result: (data.result ?? null) as TurnItemView["data"] } }
+      else if (event.type === "handoff.recorded") type = "handoff"
+      if (!type) return []
+      return [{ id: `demo:${event.seq}`, turnId: turn.id, ordinal: index + 1, type, status: "completed", data: itemData, createdAt: event.ts, completedAt: event.ts }]
+    })
+    return { ...turn, items }
+  })
+  return { thread, turns }
+}
 function summarize(value: unknown): string { const text = typeof value === "string" ? value : JSON.stringify(value); return text.length > 110 ? `${text.slice(0, 107)}…` : text }
 function formatPayload(value: unknown): string { return typeof value === "string" ? value : JSON.stringify(value, null, 2) }

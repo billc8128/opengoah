@@ -26,8 +26,8 @@ export interface PiStep {
   handoff?: WakeOutput;
   stopped?: boolean;
 }
-export interface PiSession { step(): Promise<PiStep>; close(): Promise<void> }
-export interface PiDriver { createSession(request: RunRequest): Promise<PiSession> }
+export interface PiRunnerSession { step(): Promise<PiStep>; close(): Promise<void> }
+export interface PiDriver { createRunnerSession(request: RunRequest): Promise<PiRunnerSession> }
 
 /** In-process adapter for tests and for use inside a ProcessRunner worker. */
 export class PiRunnerAdapter {
@@ -52,10 +52,10 @@ export class PiRunnerAdapter {
   async terminateProcess(pid: number): Promise<void> { await terminatePid(pid, 500); }
 
   async #run(request: RunRequest): Promise<RunnerResult> {
-    const session = await this.driver.createSession(request);
+    const runnerSession = await this.driver.createRunnerSession(request);
     try {
       while (true) {
-        const step = await session.step();
+        const step = await runnerSession.step();
         for (const trace of step.trace ?? []) request.emit(trace);
         if (step.response) return { outcome: "response", response: step.response };
         if (step.handoff) {
@@ -67,7 +67,7 @@ export class PiRunnerAdapter {
     } catch (error) {
       return { outcome: "abnormal", reason: error instanceof Error ? error.message : String(error) };
     } finally {
-      await session.close();
+      await runnerSession.close();
     }
   }
 }

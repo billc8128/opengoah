@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { controlStream, wakeStream, type ActionSnapshot, type Clock, type EventInput, type GoalSnapshot, type JsonValue, type WakeSnapshot } from "goah-ledger-contract";
-import { SqliteLedger } from "./index.js";
+import { SQLITE_SCHEMA_VERSION, SqliteLedger } from "./index.js";
 
 const metric = { source: "test", window: "1h", direction: "at_least" as const, target: 1, freshnessMs: 60_000, onMissing: "abnormal" as const, onStale: "wake_owner" as const };
 function event(actor: string, type: string, data: JsonValue = {}, wakeId?: string): EventInput { return { streamId: wakeId ? wakeStream(wakeId) : controlStream(actor), ts: "2030-01-01T00:00:00.000Z", actor, type, data }; }
@@ -13,15 +13,23 @@ class FixedClock implements Clock { constructor(readonly value = "2030-01-01T00:
 function wake(id: string, agent = "agent-1"): WakeSnapshot { return { id, agent, triggerRef: `trigger:${id}`, status: "queued", leaseUntil: null, attempt: 0, startedAt: null, endedAt: null, enqueuedSeq: 0, leaseToken: null, runnerPid: null }; }
 function action(id: string, evidence: number[]): ActionSnapshot { return { id, agent: "a", kind: "mock.write", connector: "mock", payload: {}, reason: "evidence supports it", evidence, gated: false, status: "requested", reconciledAt: null, externalRef: null, auditAdvice: null, adviceAcked: false }; }
 
-test("Session Turn and Item projections form one resumable execution history", () => {
+test("Thread Turn and Item projections form one resumable execution history", () => {
   const ledger = new SqliteLedger(":memory:", { clock: new FixedClock() }); const now = "2030-01-01T00:00:00.000Z";
-  ledger.putSession({ id: "session", agent: "ceo", parentSessionId: null, createdAt: now, updatedAt: now }, "supervisor");
-  ledger.putTurn({ id: "turn", sessionId: "session", source: "human", goalId: null, goalRevision: null, status: "in_progress", error: null, startedAt: now, endedAt: null, leaseUntil: null, leaseToken: null, runnerPid: null }, "human");
+  ledger.putThread({ id: "thread", agent: "ceo", parentThreadId: null, createdAt: now, updatedAt: now }, "supervisor");
+  ledger.putTurn({ id: "turn", threadId: "thread", source: "human", goalId: null, goalRevision: null, status: "in_progress", error: null, startedAt: now, endedAt: null, leaseUntil: null, leaseToken: null, runnerPid: null }, "human");
   ledger.putTurnItem({ id: "user", turnId: "turn", ordinal: 1, type: "user_message", status: "completed", data: { text: "hello" }, createdAt: now, completedAt: now }, "human");
   ledger.putTurnItem({ id: "assistant", turnId: "turn", ordinal: 2, type: "assistant_message", status: "completed", data: { text: "hi" }, createdAt: now, completedAt: now }, "ceo");
   ledger.putTurn({ ...ledger.turn("turn")!, status: "completed", endedAt: now }, "supervisor");
-  assert.equal(ledger.activeTurn("session"), null); assert.equal(ledger.turns("session").length, 1); assert.deepEqual(ledger.turnItems("turn").map((item) => item.type), ["user_message", "assistant_message"]);
+  assert.equal(ledger.activeTurn("thread"), null); assert.equal(ledger.turns("thread").length, 1); assert.deepEqual(ledger.turnItems("turn").map((item) => item.type), ["user_message", "assistant_message"]);
   ledger.close();
+});
+
+test("schema 10 is rejected instead of being mistaken for the Thread model", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "goah-retired-schema-")), "ledger.sqlite");
+  const raw = new DatabaseSync(path);
+  raw.exec("PRAGMA user_version=10");
+  raw.close();
+  assert.throws(() => new SqliteLedger(path, { clock: new FixedClock() }), /predates the Thread model/);
 });
 
 test("event and projection roll back together at the injected transaction boundary", () => {
@@ -51,7 +59,7 @@ test("schema v6 adds the ignorable event envelope and goal phase constraints", (
   const migrated = new SqliteLedger(path, { clock: new FixedClock() });
   const columns = (migrated.db.prepare("PRAGMA table_info(events)").all() as Array<{ name: string }>).map((row) => row.name);
   assert.equal(columns.includes("ignorable"), true);
-  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 10);
+  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, SQLITE_SCHEMA_VERSION);
   migrated.close();
 });
 
@@ -69,7 +77,7 @@ test("schema v7 adds nullable Goal observation methods without rewriting history
   const migrated = new SqliteLedger(path, { clock: new FixedClock() });
   const columns = (migrated.db.prepare("PRAGMA table_info(goals)").all() as Array<{ name: string }>).map((row) => row.name);
   assert.equal(columns.includes("observation_method"), true);
-  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 10);
+  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, SQLITE_SCHEMA_VERSION);
   migrated.close();
 });
 
@@ -229,7 +237,7 @@ test("schema v1 is migrated without rewriting event history", () => {
   assert.equal(ledger.wake("w")?.enqueuedSeq, 1);
   assert.match(ledger.wake("w")?.leaseToken ?? "", /^legacy:/);
   assert.equal(ledger.action("a")?.connector, "legacy");
-  assert.equal((ledger.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 10);
+  assert.equal((ledger.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, SQLITE_SCHEMA_VERSION);
   assert.equal(ledger.events().length, 2);
   ledger.rebuildProjections();
   assert.equal(ledger.wake("w")?.enqueuedSeq, 1);
@@ -247,7 +255,7 @@ test("schema v2 migration builds the FTS index from existing events", () => {
   raw.close();
   const migrated = new SqliteLedger(path, { clock: new FixedClock() });
   assert.equal(migrated.searchEvents("migrationsearchterm").length, 1);
-  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 10);
+  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, SQLITE_SCHEMA_VERSION);
   migrated.close();
 });
 
@@ -262,7 +270,7 @@ test("schema v3 migration indexes coalesced wake triggers", () => {
   raw.close();
   const migrated = new SqliteLedger(path, { clock: new FixedClock() });
   assert.equal(migrated.wakeByTrigger("a", "metric:g:missing:none")?.id, "w");
-  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 10);
+  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, SQLITE_SCHEMA_VERSION);
   migrated.close();
 });
 
@@ -280,7 +288,7 @@ test("schema v4 migration removes the legacy goal budget column", () => {
   assert.equal("budget" in migrated.goal("legacy")!, false);
   const columns = (migrated.db.prepare("PRAGMA table_info(goals)").all() as Array<{ name: string }>).map((row) => row.name);
   assert.equal(columns.includes("budget"), false);
-  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 10);
+  assert.equal((migrated.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, SQLITE_SCHEMA_VERSION);
   migrated.close();
 });
 

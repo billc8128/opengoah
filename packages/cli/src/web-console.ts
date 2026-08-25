@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url"
 import type { JsonValue, Ledger } from "goah-ledger-contract"
 import type { Supervisor } from "goah-supervisor"
 import { interactFrames } from "./control.js"
-import { redactValue } from "./inspect.js"
+import { redactValue } from "./thread-inspect.js"
 
 export interface ConsoleMetadata { url: string; host: string; port: number; pid: number; token: string }
 export interface TrajectoryItem { event: JsonValue; agent: string; wakeId: string | null }
@@ -33,6 +33,8 @@ export function consoleSnapshot(ledger: Ledger, supervisor: Supervisor, now = ne
     now,
     goals: ledger.goals(),
     team: supervisor.teamList(now),
+    threads: ledger.threads(),
+    turns: ledger.turns(),
     wakes: ledger.wakes(),
     actions: ledger.actions(),
     schedules: ledger.schedules(),
@@ -109,11 +111,11 @@ async function route(request: IncomingMessage, response: ServerResponse, supervi
       sendJson(response, 200, organizationTrajectory(ledger, options))
       return
     }
-    if (request.method === "GET" && url.pathname.startsWith("/api/sessions/")) {
-      const sessionId = decodeURIComponent(url.pathname.slice("/api/sessions/".length))
-      const session = ledger.session(sessionId)
-      if (!session) { sendJson(response, 404, { error: "session not found" }); return }
-      const turns = ledger.turns(sessionId); sendJson(response, 200, redactValue({ session, turns: turns.map((turn) => ({ ...turn, items: ledger.turnItems(turn.id) })) }))
+    if (request.method === "GET" && url.pathname.startsWith("/api/threads/")) {
+      const threadId = decodeURIComponent(url.pathname.slice("/api/threads/".length))
+      const thread = ledger.thread(threadId)
+      if (!thread) { sendJson(response, 404, { error: "thread not found" }); return }
+      const turns = ledger.turns(threadId); sendJson(response, 200, redactValue({ thread, turns: turns.map((turn) => ({ ...turn, items: ledger.turnItems(turn.id) })) }))
       return
     }
     if (request.method === "POST" && url.pathname === "/api/ceo") {

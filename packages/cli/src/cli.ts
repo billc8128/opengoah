@@ -6,7 +6,7 @@ import { createInterface, type Interface as ReadlineInterface } from "node:readl
 import { runGoahTui } from "./tui.js";
 import { chooseSetupSection, runRunnerCommandWizard, runSetupWizard, applyWizardResult, type SetupSection } from "./setup-wizard.js";
 import { memoryStream, type JsonValue, type RunnerCommandResult, type RunnerProfile, type RunnerSetupInteraction } from "goah-ledger-contract";
-import { controlAvailable, createRuntime, diagnoseConfig, exportSession, listSessions, loadConfig, persistRunnerProfile, readConsoleMetadata, readDefaultRunnerProfile, replayWakeSession, requestControl, runControlServer, runWebConsole, showSession, showSessionContext, statusSnapshot, streamControl, streamEvents, SupervisorLock, updateWorkspaceRunnerProfile, writeDefaultConfig, type ConsoleMetadata, type ControlFrame, type ControlRequest, type GoahConfig } from "./index.js";
+import { controlAvailable, createRuntime, diagnoseConfig, exportThread, listThreads, loadConfig, persistRunnerProfile, readConsoleMetadata, readDefaultRunnerProfile, replayThread, requestControl, runControlServer, runWebConsole, showThread, showTurnContext, statusSnapshot, streamControl, streamEvents, SupervisorLock, updateWorkspaceRunnerProfile, writeDefaultConfig, type ConsoleMetadata, type ControlFrame, type ControlRequest, type GoahConfig } from "./index.js";
 import { runnerPlugin } from "./runner-registry.js";
 import { stdioQueue } from "./prompt-queue.js";
 import { runUpdate } from "./update.js";
@@ -148,22 +148,22 @@ async function main(): Promise<void> {
       }, null, 2));
     } else if (command === "ceo-inbox") {
       console.log(JSON.stringify(ledger.unreadMail("human"), null, 2));
-    } else if (command === "session") {
-      const subcommand = requiredPositional(1, "session command");
-      if (subcommand === "list") console.log(JSON.stringify(listSessions(ledger), null, 2));
+    } else if (command === "thread") {
+      const subcommand = requiredPositional(1, "thread command");
+      if (subcommand === "list") console.log(JSON.stringify(listThreads(ledger), null, 2));
       else {
-        const wakeId = requiredPositional(2, "wake id");
-        if (subcommand === "show") console.log(JSON.stringify(showSession(ledger, wakeId), null, 2));
-        else if (subcommand === "replay") console.log(JSON.stringify(replayWakeSession(ledger, wakeId), null, 2));
+        const threadId = requiredPositional(2, "thread id");
+        if (subcommand === "show") console.log(JSON.stringify(showThread(ledger, threadId), null, 2));
+        else if (subcommand === "replay") console.log(JSON.stringify(replayThread(ledger, threadId), null, 2));
         else if (subcommand === "export") {
-          const output = option("--output") ?? `${wakeId}.session.json`;
-          writeFileSync(output, `${JSON.stringify(exportSession(ledger, wakeId, { raw: flag("--raw") }), null, 2)}\n`);
+          const output = option("--output") ?? `${threadId}.thread.json`;
+          writeFileSync(output, `${JSON.stringify(exportThread(ledger, threadId, { raw: flag("--raw") }), null, 2)}\n`);
           console.log(JSON.stringify({ output, redacted: !flag("--raw") }, null, 2));
-        } else throw new Error(`unknown session command: ${subcommand}`);
+        } else throw new Error(`unknown thread command: ${subcommand}`);
       }
     } else if (command === "context") {
       if (requiredPositional(1, "context command") !== "show") throw new Error("unknown context command");
-      console.log(JSON.stringify(showSessionContext(ledger, requiredPositional(2, "wake id")), null, 2));
+      console.log(JSON.stringify(showTurnContext(ledger, requiredPositional(2, "turn id")), null, 2));
     } else if (command === "events") {
       console.log(JSON.stringify(streamEvents(ledger, required("--stream"), option("--from") ? numberOption("--from") : 1), null, 2));
     } else if (command === "memory") {
@@ -289,9 +289,9 @@ goah goal-pause|goal-resume ID [--actor ACTOR]
 goah goal-complete ID --reason TEXT --evidence SEQ[,SEQ] [--actor ACTOR]
 goah wake AGENT [--reason TEXT]
 goah run-once
-goah session list
-goah session show|replay|export WAKE_ID [--output FILE] [--raw]
-goah context show WAKE_ID
+goah thread list
+goah thread show|replay|export THREAD_ID [--output FILE] [--raw]
+goah context show TURN_ID
 goah events --stream STREAM_ID [--from N]
 goah memory AGENT [--tail N]
 goah start | web [--open] | status | goal-list | action-list | approve | reject | dashboard
@@ -341,7 +341,7 @@ function normalizeArgs(values: string[]): string[] {
   if ((values[0] === "goal" || values[0] === "ceo") && values[1] && !values[1].startsWith("--")) return [`${values[0]}-${values[1]}`, ...values.slice(2)];
   return values;
 }
-function knownCommand(value: string): boolean { return ["setup", "help", "version", "update", "runner", "daemon", "auth", "login", "logout", "model", "init", "doctor", "web", "start", "run-once", "wake", "status", "session", "context", "events", "memory", "goal-list", "goal-show", "goal-create", "goal-update", "goal-pause", "goal-resume", "goal-complete", "goal-start", "ceo-send", "ceo-status", "ceo-inbox", "ceo-approve", "action-list", "approve", "reject", "dashboard"].includes(value); }
+function knownCommand(value: string): boolean { return ["setup", "help", "version", "update", "runner", "daemon", "auth", "login", "logout", "model", "init", "doctor", "web", "start", "run-once", "wake", "status", "thread", "context", "events", "memory", "goal-list", "goal-show", "goal-create", "goal-update", "goal-pause", "goal-resume", "goal-complete", "goal-start", "ceo-send", "ceo-status", "ceo-inbox", "ceo-approve", "action-list", "approve", "reject", "dashboard"].includes(value); }
 function asRecord(value: JsonValue): Record<string, JsonValue> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("expected an object"); return value; }
 function firstRecord(value: JsonValue | undefined): Record<string, JsonValue> | null { return Array.isArray(value) && value[0] && typeof value[0] === "object" && !Array.isArray(value[0]) ? value[0] : null; }
 function messageText(value: JsonValue | undefined): string {
@@ -505,7 +505,7 @@ function stdioInteraction(): RunnerSetupInteraction & { close(): void } {
 function packageVersion(): string { return (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version; }
 function closestCommand(value: string): string | null {
   let best: { command: string; distance: number } | null = null;
-  for (const command of ["setup", "help", "auth", "login", "logout", "model", "doctor", "web", "start", "status", "session", "context", "events", "memory", "goal", "ceo", "approve", "reject", "dashboard"]) {
+  for (const command of ["setup", "help", "auth", "login", "logout", "model", "doctor", "web", "start", "status", "thread", "context", "events", "memory", "goal", "ceo", "approve", "reject", "dashboard"]) {
     const distance = editDistance(value, command);
     if (!best || distance < best.distance) best = { command, distance };
   }

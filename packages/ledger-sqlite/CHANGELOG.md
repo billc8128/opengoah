@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Renamed Goah conversation storage to Thread/Turn/Item under schema v11. Schema v10 development ledgers are intentionally rejected instead of partially opened.
 - Added schema v9 with event-sourced Work Records, history/diff/search, verification methods, Human interaction commits, legacy Handoff/memory seeding, and Human Wake priority.
 
 ## 0.6.0

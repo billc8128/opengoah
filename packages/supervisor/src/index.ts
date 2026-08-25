@@ -5,7 +5,7 @@ import {
   controlStream,
   evaluateMetric,
   goalStream,
-  interruptedSessionEvents,
+  interruptedTranscriptEvents,
   type ActionSnapshot,
   type AgentCapability,
   type AgentProfile,
@@ -157,25 +157,25 @@ export class Supervisor {
     return { goal, wake };
   }
 
-  sessionFor(agent = "ceo"): import("goah-ledger-contract").SessionSnapshot {
-    const parentSessionId = agent === "ceo" ? null : this.sessionFor("ceo").id;
-    const existing = this.ledger.sessions().find((session) => session.agent === agent && session.parentSessionId === parentSessionId);
+  threadFor(agent = "ceo"): import("goah-ledger-contract").ThreadSnapshot {
+    const parentThreadId = agent === "ceo" ? null : this.threadFor("ceo").id;
+    const existing = this.ledger.threads().find((thread) => thread.agent === agent && thread.parentThreadId === parentThreadId);
     if (existing) return existing;
-    const now = this.#now(); const session = { id: randomUUID(), agent, parentSessionId, createdAt: now, updatedAt: now };
-    this.ledger.putSession(session, "supervisor"); return session;
+    const now = this.#now(); const thread = { id: randomUUID(), agent, parentThreadId, createdAt: now, updatedAt: now };
+    this.ledger.putThread(thread, "supervisor"); return thread;
   }
 
-  async startHumanTurn(message: string): Promise<{ sessionId: string; turnId: string; steered: boolean }> {
+  async startHumanTurn(message: string): Promise<{ threadId: string; turnId: string; steered: boolean }> {
     if (!message.trim()) throw new Error("message is required");
     const automatic = this.ledger.wakes().find((wake) => wake.agent === "ceo" && (wake.status === "leased" || wake.status === "running")); if (automatic) { const execution = this.ledger.turn(automatic.id); if (execution?.status === "in_progress") this.ledger.putTurn({ ...execution,status:"interrupted",endedAt:this.#now(),leaseUntil:null,leaseToken:null,runnerPid:null },"human"); await this.#stopWake(automatic); }
-    const session = this.sessionFor("ceo"); const active = this.ledger.activeTurn(session.id);
+    const thread = this.threadFor("ceo"); const active = this.ledger.activeTurn(thread.id);
     if (active) {
-      const handle = this.#handles.get(active.id); this.#appendTurnItem(active.id, "user_message", { text: message }, "human"); if (handle?.steer) await handle.steer(message); return { sessionId: session.id, turnId: active.id, steered: true };
+      const handle = this.#handles.get(active.id); this.#appendTurnItem(active.id, "user_message", { text: message }, "human"); if (handle?.steer) await handle.steer(message); return { threadId: thread.id, turnId: active.id, steered: true };
     }
-    const now = this.#now(); this.ledger.putSession({ ...session,updatedAt:now },"supervisor"); const leaseToken = randomUUID();
-    const turn: TurnSnapshot = { id: randomUUID(), sessionId: session.id, source: "human", goalId: null, goalRevision: null, status: "in_progress", error: null, startedAt: now, endedAt: null, leaseUntil: new Date(this.clock.now().getTime() + this.#leaseMs).toISOString(), leaseToken, runnerPid: null };
+    const now = this.#now(); this.ledger.putThread({ ...thread,updatedAt:now },"supervisor"); const leaseToken = randomUUID();
+    const turn: TurnSnapshot = { id: randomUUID(), threadId: thread.id, source: "human", goalId: null, goalRevision: null, status: "in_progress", error: null, startedAt: now, endedAt: null, leaseUntil: new Date(this.clock.now().getTime() + this.#leaseMs).toISOString(), leaseToken, runnerPid: null };
     this.ledger.putTurn(turn, "human"); this.#appendTurnItem(turn.id, "user_message", { text: message }, "human");
-    void this.#runDirectTurn(turn, message, leaseToken); return { sessionId: session.id, turnId: turn.id, steered: false };
+    void this.#runDirectTurn(turn, message, leaseToken); return { threadId: thread.id, turnId: turn.id, steered: false };
   }
 
   async interruptTurn(turnId: string): Promise<TurnSnapshot> {
@@ -187,7 +187,7 @@ export class Supervisor {
   async #runDirectTurn(initial: TurnSnapshot, message: string, leaseToken: string): Promise<void> {
     if (initial.status !== "in_progress") return;
     const turnContext: TurnContext = { source: { kind: "human" }, ...(initial.goalId && initial.goalRevision !== null ? { goalBinding:{ goalId:initial.goalId,goalRevision:initial.goalRevision } } : {}) }; const profile = this.#profiles.get("ceo") ?? { agent: "ceo", role: "ceo" as const }; const runnerProfile = this.#runnerProfiles.get(profile.runnerProfile ?? "default");
-    const recent = this.ledger.turns(initial.sessionId).filter((turn) => turn.id !== initial.id && turn.status === "completed").slice(-8).flatMap((turn) => this.ledger.turnItems(turn.id).filter((item) => item.type === "user_message" || item.type === "assistant_message").map((item) => `${item.type === "user_message" ? "Human" : "Assistant"}: ${String((item.data as { text?: unknown }).text ?? "")}`));
+    const recent = this.ledger.turns(initial.threadId).filter((turn) => turn.id !== initial.id && turn.status === "completed").slice(-8).flatMap((turn) => this.ledger.turnItems(turn.id).filter((item) => item.type === "user_message" || item.type === "assistant_message").map((item) => `${item.type === "user_message" ? "Human" : "Assistant"}: ${String((item.data as { text?: unknown }).text ?? "")}`));
     const currentMessages = this.ledger.turnItems(initial.id).filter((item) => item.type === "user_message").map((item) => String((item.data as { text?: unknown }).text ?? ""));
     const sourceSeqs = this.ledger.readStream(`turn:${initial.id}`).filter((event) => event.type === "item.user_message.started").map((event) => event.seq);
     const context = { text: [...(recent.length ? [`# Recent conversation\n\n${recent.join("\n")}`] : []), `# Human message\n\n${currentMessages.join("\n\nFollow-up: ")}`].join("\n\n"), sourceSeqs, capabilities: profile.capabilities ?? defaultCapabilities(profile.role), systemPrompt: profile.systemPrompt ?? "You are Goah's primary Agent. Respond naturally and use tools when useful.", ...(runnerProfile ? { runnerProfile } : {}) } as unknown as JsonValue;
@@ -316,9 +316,9 @@ export class Supervisor {
     try {
       running = this.ledger.markWakeRunning(wake.id, this.#now(), leaseToken);
       const turn = this.#turnContext(running);
-      const session = this.sessionFor(running.agent); const existingTurn = this.ledger.turn(running.id);
-      this.ledger.putSession({ ...session,updatedAt:this.#now() },"supervisor");
-      if (!existingTurn) this.ledger.putTurn({ id:running.id,sessionId:session.id,source:turn.source.kind === "human" ? "human" : turn.source.kind === "goal" ? "goal" : "system",goalId:turn.goalBinding?.goalId??null,goalRevision:turn.goalBinding?.goalRevision??null,status:"in_progress",error:null,startedAt:this.#now(),endedAt:null,leaseUntil:running.leaseUntil,leaseToken,runnerPid:running.runnerPid },"supervisor");
+      const thread = this.threadFor(running.agent); const existingTurn = this.ledger.turn(running.id);
+      this.ledger.putThread({ ...thread,updatedAt:this.#now() },"supervisor");
+      if (!existingTurn) this.ledger.putTurn({ id:running.id,threadId:thread.id,source:turn.source.kind === "human" ? "human" : turn.source.kind === "goal" ? "goal" : "system",goalId:turn.goalBinding?.goalId??null,goalRevision:turn.goalBinding?.goalRevision??null,status:"in_progress",error:null,startedAt:this.#now(),endedAt:null,leaseUntil:running.leaseUntil,leaseToken,runnerPid:running.runnerPid },"supervisor");
       const deliveredMailIds = this.ledger.unreadMail(running.agent).map((mail) => mail.id);
       this.ledger.appendRunnerEvent({ streamId: wakeStream(running.id), ts: this.#now(), actor: running.agent, type: "run.admitted", data: turn as unknown as JsonValue }, leaseToken);
       const workRecordRevisionAtStart = turn.goalBinding ? this.ledger.workRecord(turn.goalBinding.goalId)?.recordRevision ?? -1 : -1;
@@ -507,7 +507,7 @@ export class Supervisor {
     const current = this.#wake(wake.id);
     if (current.runnerPid) await this.runner.terminateProcess(current.runnerPid);
     this.ledger.appendEvent({ streamId: wakeStream(current.id), ts: this.#now(), actor: current.agent, type: "wake.abnormal_reason", data: { reason } });
-    const repairs = interruptedSessionEvents(this.ledger.eventsForWake(current.id), this.#now(), "supervisor");
+    const repairs = interruptedTranscriptEvents(this.ledger.eventsForWake(current.id), this.#now(), "supervisor");
     if (repairs.length) this.ledger.appendEvents(repairs);
     if (["leased", "running", "queued"].includes(current.status)) {
       this.ledger.finishWake(current.id, "abnormal", this.#now());

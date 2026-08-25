@@ -3,7 +3,7 @@
 Status: current
 Date: 2026-08-25
 
-Goah is a Goal-oriented Agent Harness with a normal interactive CEO surface. The complete Goal operating model is defined in [Goal-bound Agent Operating Model](./proposals/goal-bound-agent-operating-model.md). [ADR 0012](./adr/0012-unified-session-turn-item-runtime.md) defines the unified Session/Turn/Item runtime; [ADR 0011](./adr/0011-goal-bound-turns-and-work-record-filesystem.md) defines Goal binding and Work Records.
+Goah is a Goal-oriented Agent Harness with a normal interactive CEO surface. The complete Goal operating model is defined in [Goal-bound Agent Operating Model](./proposals/goal-bound-agent-operating-model.md). [ADR 0012](./adr/0012-unified-thread-turn-item-runtime.md) defines the unified Thread/Turn/Item runtime; [ADR 0011](./adr/0011-goal-bound-turns-and-work-record-filesystem.md) defines Goal binding and Work Records.
 
 ## Product boundary
 
@@ -13,7 +13,7 @@ Goah does not replace an Agent Runner. Runner owns its Agent loop, provider/mode
 Human / TUI
     │ turn.start / turn.steer / turn.interrupt
     ▼
-CEO Session
+CEO Thread
     └── Turn
         ├── user / reasoning / assistant Items
         ├── tool call / result Items
@@ -22,7 +22,7 @@ CEO Session
               ├── Child Goal organization
               └── compact Goal Handoff
 
-Goal ── Wake ──► Goal-bound Turn in the owner's Session
+Goal ── Wake ──► Goal-bound Turn in the owner's Thread
 
 Supervisor + Ledger ──► Runner-owned agent loop
 ```
@@ -35,15 +35,15 @@ Ordinary interaction is not weakened Goal execution; it is an unbound surface. O
 
 Append-only typed events with global `seq`, per-stream `streamSeq`, atomic append, replay, and future-version refusal. It does not decide Goal or Runner policy.
 
-### Replayable Session, Turn, and Item
+### Replayable Thread, Turn, and Item
 
-Session is a durable Goah transcript, not a provider thread. Turns are the sole execution identity. Normalized user, assistant, reasoning, tool, request, compaction, completion, and interruption Items reconstruct what the model saw and did. Open tool calls become explicit `unknown` outcomes after interruption.
+A Thread is a durable Goah conversation, not a provider thread. Turns are the sole execution identity. Normalized user, assistant, reasoning, tool, request, compaction, completion, and interruption Items reconstruct what the model saw and did. Open tool calls become explicit `unknown` outcomes after interruption.
 
 ### Execution modules
 
 Current projections are rebuilt from events:
 
-- Sessions
+- Threads
 - Turns
 - Turn Items
 - Goals
@@ -82,7 +82,7 @@ Receives a `RunRequest` containing Turn identity, source, optional Goal binding,
 Ledger events     exact facts and global history
 Goal projection   current objective, methods, owner, phase, revision
 Work Record FS    current semantic understanding plus version timeline
-Session/Turn Items exact model conversation and tool trace
+Thread/Turn Items exact model conversation and tool trace
 Handoff           Goal/record revision, outcome, evidence, next motion
 ```
 

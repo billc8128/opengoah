@@ -293,8 +293,8 @@ export function statusSnapshot(ledger: SqliteLedger): object {
   });
   const goals = ledger.goals().map((goal) => ({ ...goal, evaluation: [...events].reverse().find((event) => event.streamId === `metric:${goal.id}` && event.type === "metric.evaluated")?.data ?? null }));
   const handoffs = events.filter((event) => event.type === "handoff.recorded").slice(-20).map((event) => ({ seq: event.seq, ts: event.ts, agent: event.actor, streamId: event.streamId, handoff: event.data }));
-  const modelCapabilities = [...events].reverse().find((event) => event.type === "session.started")?.data ?? null;
-  return { seq: events.at(-1)?.seq ?? 0, sessions: ledger.sessions(), turns: ledger.turns(), goals, wakes, actions: ledger.actions(), modelCapabilities, recentHandoffs: handoffs };
+  const modelCapabilities = [...events].reverse().find((event) => event.type === "transcript.started")?.data ?? null;
+  return { seq: events.at(-1)?.seq ?? 0, threads: ledger.threads(), turns: ledger.turns(), goals, wakes, actions: ledger.actions(), modelCapabilities, recentHandoffs: handoffs };
 }
 
 function defaultModel(provider: string): string {
@@ -324,8 +324,8 @@ function resolveCommand(command: string): string { return command === "$NODE" ? 
 function absolutePath(base: string, value: string): string { return isAbsolute(value) ? value : resolve(base, value); }
 function alive(pid: number): boolean { try { process.kill(pid, 0); return true; } catch { return false; } }
 export function configRoot(config: GoahConfig): string { return configRoots.get(config) ?? process.cwd(); }
-export { exportSession, listSessions, redactValue, replayWakeSession, showSession, showSessionContext, streamEvents } from "./inspect.js";
+export { exportThread, listThreads, redactValue, replayThread, showThread, showTurnContext, streamEvents } from "./thread-inspect.js";
 export { controlAvailable, controlEndpoint, requestControl, runControlServer, streamControl, type ControlFrame, type ControlRequest } from "./control.js";
 export { consoleMetadataPath, consoleSnapshot, organizationTrajectory, readConsoleMetadata, runWebConsole, type ConsoleMetadata, type TrajectoryItem, type TrajectoryPage } from "./web-console.js";
-export type { SessionContextSnapshot, SessionDetail, SessionExport, SessionListItem } from "./inspect.js";
+export type { TurnContextSnapshot, ThreadDetail, ThreadExport, ThreadListItem } from "./thread-inspect.js";
 export { CONTRACT_VERSION };

@@ -24,7 +24,7 @@
   "exports": {
     ".": "./dist/index.js",
     "./kernel": "./dist/kernel.js",
-    "./session": "./dist/session.js",
+    "./transcript": "./dist/transcript.js",
     "./execution": "./dist/execution.js",
     "./metrics": "./dist/metrics.js",
     "./sqlite": "./dist/sqlite.js",

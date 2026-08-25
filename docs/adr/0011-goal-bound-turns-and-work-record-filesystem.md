@@ -33,7 +33,7 @@ Each Goal owns one virtual Markdown document at `/goals/<goal-id>.md`. The docum
 
 Every Goal-bound Turn must create a newer Work Record revision authored in that Turn and under the current Goal revision. Updates use revision CAS and cite existing Ledger evidence. Every Goal Agent may list, read, search, inspect history for, and diff every Work Record. Goal owner and parent owner write authority is enforced mechanically.
 
-The Ledger remains the only durable fact source. Work Record contains semantic understanding and references exact facts by event sequence; it does not replace Goal, Wake, Action, Session, or evidence state.
+The Ledger remains the only durable fact source. Work Record contains semantic understanding and references exact facts by event sequence; it does not replace Goal, Wake, Action, Thread, Turn, or evidence state.
 
 ### Goal model and Multi-agent
 
@@ -69,7 +69,7 @@ This ADR supersedes only the following scopes:
 - ADR 0010's Goal continuity carrier: Work Record replaces new Goal-owned `memory.appended` notes and narrative Handoff summaries.
 - CEO Agent Operating Layer v0.4 sections that require every CEO Wake to execute the full organization loop regardless of Goal binding.
 
-All other Ledger, Session, Goal lifecycle, observation, authority, delegation, Action, Wake, lease, failure, and Runner decisions remain in force.
+All other Ledger, Thread/Turn, Goal lifecycle, observation, authority, delegation, Action, Wake, lease, failure, and Runner decisions remain in force.
 
 ## Consequences
 

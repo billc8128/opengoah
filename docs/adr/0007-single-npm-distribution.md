@@ -13,7 +13,7 @@ Physically merging the source modules would weaken dependency boundaries solely 
 Only `@goah/cli` is public from 0.3.0 onward. The other five workspaces are private source modules and are included in the `@goah/cli` tarball as bundled dependencies. Framework APIs remain public through subpath exports:
 
 - `@goah/cli/kernel`
-- `@goah/cli/session`
+- `@goah/cli/transcript`
 - `@goah/cli/execution`
 - `@goah/cli/metrics`
 - `@goah/cli/sqlite`

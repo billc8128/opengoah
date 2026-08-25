@@ -12,7 +12,7 @@ import { assertLedgerConformance, createMemoryLedger, fauxRunnerWorkerPath, Mock
 const metric = { source: "test", window: "1h", direction: "at_least" as const, target: 1, freshnessMs: 60_000, onMissing: "abnormal" as const, onStale: "wake_owner" as const };
 function queuedWake(id: string, agent = "worker", triggerRef = `trigger:${id}`): WakeSnapshot { return { id, agent, triggerRef, status: "queued", leaseUntil: null, attempt: 0, startedAt: null, endedAt: null, enqueuedSeq: 0, leaseToken: null, runnerPid: null }; }
 function goal(): GoalSnapshot { return { id: "root", parentId: null, objective: "produce a checked artifact", observationMethod: null, verificationMethod: null, owner: "worker", phase: "active", revision: 0 }; }
-function event(actor: string, type: string, data: JsonValue = {}, wakeId?: string): EventInput { return { streamId: wakeId ? wakeStream(wakeId) : controlStream(actor), ts: "2026-08-18T00:00:00.000Z", actor, type, data }; }
+function event(actor: string, type: string, data: JsonValue = {}, turnId?: string): EventInput { return { streamId: turnId ? wakeStream(turnId) : controlStream(actor), ts: "2026-08-18T00:00:00.000Z", actor, type, data }; }
 function repository(): string {
   const path = mkdtempSync(join(tmpdir(), "goah-runner-root-"));
   git(path, ["init", "-b", "main"]); git(path, ["config", "user.email", "goah@example.test"]); git(path, ["config", "user.name", "GOAH Test"]);
@@ -216,7 +216,7 @@ test("recovery kills the recorded runner before another wake can use its local r
   ledger.enqueueWake(queuedWake("running"), "supervisor");
   const leased = ledger.claimNextWake(clock.now().toISOString(), new Date(clock.now().getTime() + 100).toISOString(), "lease")!;
   const running = ledger.markWakeRunning(leased.id, clock.now().toISOString(), "lease");
-  const handle = runner.prepare({ agent:running.agent,sourceWake:running,execution:{ id:running.id,sessionId:"session",source:"system",goalId:null,goalRevision:null,status:"in_progress",error:null,startedAt:clock.now().toISOString(),endedAt:null,leaseUntil:running.leaseUntil,leaseToken:running.leaseToken,runnerPid:null }, turn: { source: { kind: "system", reason: "test" } }, context: {}, now: () => clock.now().toISOString(), emit: () => undefined });
+  const handle = runner.prepare({ agent:running.agent,sourceWake:running,execution:{ id:running.id,threadId:"thread",source:"system",goalId:null,goalRevision:null,status:"in_progress",error:null,startedAt:clock.now().toISOString(),endedAt:null,leaseUntil:running.leaseUntil,leaseToken:running.leaseToken,runnerPid:null }, turn: { source: { kind: "system", reason: "test" } }, context: {}, now: () => clock.now().toISOString(), emit: () => undefined });
   ledger.attachWakeProcess(running.id, "lease", handle.pid!, clock.now().toISOString());
   handle.begin();
   await waitFor(() => existsSync(join(repo, "running.txt")));
@@ -332,12 +332,12 @@ test("verification plane enforces blind-first audit and reports calibrated metri
   ledger.appendEvent({ ...event("worker", "handoff.recorded", { results: ["claimed"] }, "w"), ts: clock.now().toISOString() });
   let blindPayload = "";
   const model: VerifierModel = {
-    verifySession: async () => ({ findings: [{ actionId: "a", body: { issue: "unsupported" }, evidence: [evidence.seq], riskWeight: 2 }], tokensUsed: 10 }),
+    verifyTurn: async () => ({ findings: [{ actionId: "a", body: { issue: "unsupported" }, evidence: [evidence.seq], riskWeight: 2 }], tokensUsed: 10 }),
     blindAudit: async (facts) => { blindPayload = JSON.stringify(facts); return { findings: [], tokensUsed: 5 }; },
     reasonAudit: async () => ({ findings: [], tokensUsed: 5 }),
   };
   const plane = new VerificationPlane(ledger, supervisor, model);
-  await plane.verifySession("w");
+  await plane.verifyTurn("w");
   assert.equal(ledger.unackedAuditAdvice("worker").length, 1);
   await plane.auditGlobal();
   assert.doesNotMatch(blindPayload, /private rationale|claimed/);
@@ -411,7 +411,7 @@ test("official Pi agent core worker completes a structured handoff through the p
   const supervisor = new Supervisor(ledger, runner, clock);
   supervisor.createGoal(goal()); supervisor.planWake("worker", clock.now().toISOString(), "pi integration");
   assert.equal((await supervisor.tick())?.status, "done");
-  const started = ledger.events().find((event) => event.type === "session.started");
+  const started = ledger.events().find((event) => event.type === "transcript.started");
   assert.equal((started?.data as { formatVersion?: number }).formatVersion, 1);
   assert.equal(ledger.events().some((event) => event.type === "request.prepared"), true);
   const prepared = ledger.events().find((event) => event.type === "request.prepared")?.data as { tools?: Array<{ name?: string }> };
@@ -479,8 +479,8 @@ test("legacy Goal memory remains readable while Goal Agents write Work Records i
   const staleNote = `legacy survey: ${"x".repeat(500)}`;
   const supervisor = new Supervisor(ledger, fauxRunner([]), clock, { memoryTailChars: 200 });
   supervisor.createGoal(goal());
-  ledger.appendEvent({ streamId: "memory:worker", ts: clock.now().toISOString(), actor: "worker", type: "memory.appended", data: { note: staleNote, wakeId: "legacy-1" } });
-  ledger.appendEvent({ streamId: "memory:worker", ts: clock.now().toISOString(), actor: "worker", type: "memory.appended", data: { note: "integration tests fake-fail when the clock is mocked; approach A rejected: metric freshness window", wakeId: "legacy-2" } });
+  ledger.appendEvent({ streamId: "memory:worker", ts: clock.now().toISOString(), actor: "worker", type: "memory.appended", data: { note: staleNote, turnId: "legacy-1" } });
+  ledger.appendEvent({ streamId: "memory:worker", ts: clock.now().toISOString(), actor: "worker", type: "memory.appended", data: { note: "integration tests fake-fail when the clock is mocked; approach A rejected: metric freshness window", turnId: "legacy-2" } });
   const memoryEvents = ledger.readStream(`memory:worker`).filter((item) => item.type === "memory.appended");
   assert.equal(memoryEvents.length, 2);
 
@@ -642,7 +642,7 @@ test("process verifier model runs on official Pi core and writes advice", async 
   const evidence = ledger.appendEvent({ ...event("worker", "fact", {}, "verify-wake"), ts: clock.now().toISOString() });
   ledger.requestAction({ id: "verify-action", agent: "worker", kind: "mock", connector: "mock", payload: {}, reason: "r", evidence: [evidence.seq], gated: false, status: "requested", reconciledAt: null, externalRef: null, auditAdvice: null, adviceAcked: false }, "worker", "verify-wake");
   const model = new ProcessVerifierModel({ command: process.execPath, args: [verificationWorkerPath()], env: { GOAH_PI_PROVIDER: "faux", GOAH_PI_MODEL: "faux-verifier", GOAH_VERIFIER_FAUX_FINDINGS: JSON.stringify([{ actionId: "verify-action", body: { issue: "found" }, evidence: [evidence.seq], riskWeight: 3 }]) } });
-  await new VerificationPlane(ledger, supervisor, model).verifySession("verify-wake");
+  await new VerificationPlane(ledger, supervisor, model).verifyTurn("verify-wake");
   assert.equal(ledger.unackedAuditAdvice("worker").length, 1);
   ledger.close();
 });

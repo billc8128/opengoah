@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Added Turn source/Goal binding, ordinary Runner responses, Goal verification methods, Work Record contracts, compact Goal Handoffs, and shared-record capabilities.
-- Session assistant messages retain provider stop reasons and error messages.
+- Transcript assistant messages retain provider stop reasons and error messages.
 
 ## 0.6.0
 
@@ -16,13 +16,13 @@
 ## 0.4.0
 
 - Added the closed Goal phase lifecycle and transition assertion.
-- Added Session format v1, legacy upgrade, corruption/unsupported errors, and the event `ignorable` marker.
+- Added Transcript format v1, legacy upgrade, corruption/unsupported errors, and the event `ignorable` marker.
 
 ## 0.3.0
 
 - Replaced the wake-specific event envelope with generic `streamId` / `streamSeq` events.
-- Added normalized Session event types, replay, request snapshots, and interrupted-session repair.
-- Split kernel, execution, Session, and optional metric contracts into source modules.
+- Added normalized Transcript event types, replay, request snapshots, and interrupted-transcript repair.
+- Split kernel, execution, Transcript, and optional metric contracts into source modules.
 - Removed mandatory Goal metric and target fields.
 
 ## 0.2.0

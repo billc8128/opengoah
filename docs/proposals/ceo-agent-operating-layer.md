@@ -61,7 +61,7 @@ This proposal completes the product promise:
 
 ### 3.1 Normal user surface
 
-The normal product entry is an interactive CEO session in the current directory:
+The normal product entry is an interactive CEO Thread in the current directory:
 
 ```bash
 goah
@@ -185,7 +185,7 @@ New owners use the default child profile unless configuration maps the owner to 
 
 ### 5.1 Purpose
 
-An objective says what should become true. Its observation method says how an Agent must inspect reality to decide whether the objective is progressing or complete. Without this durable companion, separately reconstructed Sessions can silently change definitions, data sources, commands, or acceptance criteria.
+An objective says what should become true. Its observation method says how an Agent must inspect reality to decide whether the objective is progressing or complete. Without this durable companion, separately executed Goal Turns can silently change definitions, data sources, commands, or acceptance criteria.
 
 The method is Markdown text, intentionally not a universal metric object. It behaves like a Goal-specific micro-skill and may describe a query, script, checklist, artifact inspection, external data source, or human confirmation.
 
@@ -478,7 +478,7 @@ CEO receives a bounded organizational view, not raw team transcripts.
 # Wake trigger
 ```
 
-Raw Session events remain accessible through `ledger_search` and Inspector. Recovery uses the same semantic filtering already applied to ordinary Agents.
+Raw Transcript events remain accessible through `ledger_search` and Inspector. Recovery uses the same semantic filtering already applied to ordinary Agents.
 
 ## 10. Mechanical invariants
 
@@ -510,7 +510,7 @@ Raw Session events remain accessible through `ledger_search` and Inspector. Reco
 
 ### Child crash
 
-- Existing Session/Wake recovery applies.
+- Existing Turn/Wake recovery applies.
 - Retry exhaustion emits a CEO trigger carrying abnormal reason and last durable handoff.
 
 ### Duplicate or conflicting delegation

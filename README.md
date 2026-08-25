@@ -10,15 +10,15 @@ Agents handle tasks. goah holds the goal.
 
 ## Why
 
-Coding agents are good at bounded tasks: you give one a prompt, it works, it stops. Give one a goal measured in weeks — "keep this repo healthy", "grow revenue to $X/day" — and everything between sessions is on you: remembering the goal, scheduling the next run, checking what the agent actually did, recovering when it crashes mid-flight.
+Coding agents are good at bounded tasks: you give one a prompt, it works, it stops. Give one a goal measured in weeks — "keep this repo healthy", "grow revenue to $X/day" — and everything between runs is on you: remembering the goal, scheduling the next run, checking what the agent actually did, recovering when it crashes mid-flight.
 
 goah is the harness around the agent that owns exactly that layer:
 
 - **The ledger is the agent.** Agent processes are short-lived: hydrate → work → response or Goal Handoff → exit. Everything durable lives in an append-only event ledger; every table is a projection that can be rebuilt from events. Crash recovery is replay, not heuristics.
-- **The session is replayable.** User messages, assistant deltas and completed messages, tool calls/results, compaction replacements, and the exact prepared model request are normalized into typed event streams. The active conversation surface is derived from those facts.
+- **The Thread is resumable.** A Thread contains durable Turns and Items. Each Turn transcript records user/assistant messages, tools, compaction, and the exact prepared model request. Runner/provider sessions are never the fact authority.
 - **Every action is accountable.** An external action carries its `reason` and `evidence` (references to ledger events), passes a gate before dispatch, and has crash-safe delivery semantics — a crash mid-dispatch resolves to `unknown`, which is reconciled by querying, never blindly retried.
 - **Execution stays local and inspectable.** The runner owns local files, bash, and Git under the directory containing `goah.config.json`. GOAH records process failure and recovery context; coding skills decide how to branch, commit, merge, or preserve partial Git work.
-- **Lease ownership is bounded, runner policy is not prescribed.** A live runner continuously renews its fenced wake lease; if the supervisor dies, renewal stops and recovery can terminate the old process. Token, cost, timeout, and handoff-reserve policy belong to each runner implementation.
+- **Lease ownership is bounded, runner policy is not prescribed.** A live Runner execution renews its fenced Turn lease; Wake only schedules future Goal motion. Token, cost, timeout, and compaction policy belong to each Runner.
 
 goah does not replace your agent runner (pi, or any runner that implements the `Runner` interface). It sits above it.
 
@@ -28,8 +28,8 @@ goah does not replace your agent runner (pi, or any runner that implements the `
 
 Implemented and tested today:
 
-- Stream-aware append-only SQLite event kernel with global `seq`, contiguous per-stream `streamSeq`, required/ignorable event semantics, and five standard execution-module projections (`goals`, `schedule`, `wakes`, `mailbox`, `actions`)
-- Versioned replayable Session vocabulary with a v0→v1 upgrader, future-version refusal, exact request snapshots, user/assistant/tool events, compaction replacements, and interrupted-tool `unknown` repair
+- Stream-aware append-only SQLite event kernel with durable Thread, Turn, Item, Goal, Work Record, Wake, Mailbox, and Action projections
+- Versioned Turn transcript vocabulary with future-version refusal, exact request snapshots, normalized user/assistant/tool events, compaction replacements, and interrupted-tool `unknown` repair
 - Deterministic Active Context composition: structured projections render to short Markdown, and the exact model-visible value is retained by `request.prepared`
 - FIFO wake lifecycle with leases: per-agent concurrency of one, trigger deduplication, fencing tokens, recorded runner PIDs, and kill-before-recovery semantics
 - Action state machine with real evidence validation, human approval/rejection, `unknown` semantics, and query-based reconciliation
@@ -39,14 +39,14 @@ Implemented and tested today:
 - Real runner subprocess boundary with sliding lease renewal, process-group termination, optional runner-specific timeout, and stale-event rejection
 - Ordinary Human Turns return normal responses; Goal-bound Turns require a current Work Record revision and compact Goal Handoff
 - Mail acknowledged atomically with a valid response or Goal Handoff; abnormal Human interactions and rejected steering are redelivered from the same unread Mail
-- Injected clocks, schema v1→v8 migrations, indexed bounded queries, and a public ledger conformance suite
+- Injected clocks, schema v1→v9 migrations, schema v11 Thread storage, indexed bounded queries, and a public ledger conformance suite
 - Optional mechanical metric evaluation (missing/stale/sustain/guardrails), a total-silence tripwire, trigger coalescing, FTS5 fact search, and generic evidence-backed actions; Goal itself has no required metric or target
 - Official Pi 0.84.2 worker binding with `read`, `write`, `edit`, and `bash` for every Agent plus model-view-only mid-turn compaction
 - Durable textual Goal observation methods with root human confirmation, atomic child assignment, revision invalidation, replay, and evidence-backed completion
 - Interactive `goah` CEO shell over a resident Supervisor local control socket, including live goal revisions while Supervisor remains the only SQLite writer
 - Event-sourced Work Record filesystem: one versioned semantic document per Goal, organization-wide reads, ownership-checked CAS updates, history, diff, search, and deterministic migration from legacy Handoff/memory
 - CEO sole-entry interaction with explicit Human-authorized Goal binding, filesystem-first Goal onboarding, ledger-derived team roster, atomic delegation/reassignment, stale-child action barriers, motion validation, concurrent Goal-owning Agents, and a read-only team dashboard
-- Session verifier plus blind-first global audit interfaces, audit-advice delivery, and precision/risk-weighted-recall evaluation
+- Transcript verifier plus blind-first global audit interfaces, audit-advice delivery, and precision/risk-weighted-recall evaluation
 - Repo-guardian reference application, systemd/launchd templates, and an accelerated 30-day replay/continuity soak
 - Bidirectional fenced RPC with role capabilities, executable CEO/verifier/audit prompts, versioned configuration, and singleton CLI controls
 
@@ -115,20 +115,20 @@ goah status
 
 `goah` starts the resident Supervisor when necessary and attaches the interactive CEO. `/model` opens the scoped model picker; `/login` and `/logout` manage credentials without replaying onboarding; `/setup` opens returning-user settings with `model`, `auth`, and `runner` sections. Unknown slash commands fail locally and never wake the CEO. `/goal ...` revises the active root and invalidates its old observation method; `/observe ...` confirms the replacement through human authority. `goah start` remains the explicit daemon command and `goah wake <agent>` queues a manual wake. `goah daemon status|logs|restart|stop` manages the resident process.
 
-Goah Core knows only Runner Profiles. Each Runner owns its configuration semantics: the Pi Runner exposes Pi's built-in provider/model registry, OAuth, stored API keys, environment references, custom endpoints, and local Ollama/LM Studio/llama.cpp targets. `goah model` is the interactive picker, while `model list/use` remain scriptable; `goah login [PROVIDER]` is the friendly authentication entry and `goah auth ...` is the explicit credential-management surface. OAuth credentials stay in the Runner credential store; only the selected wake's resolved request credential crosses the private worker pipe, never Agent context or the Ledger. For an offline installation check, use `goah init --provider faux`.
+Goah Core knows only Runner Profiles. Each Runner owns its provider/model/auth semantics. OAuth credentials stay in the Runner credential store; only the selected Turn's scoped credential crosses the private worker pipe, never Agent context or the Ledger.
 
-Inspect and export the replayable Session ledger without requiring provider credentials:
+Inspect and export the replayable Thread ledger without requiring provider credentials:
 
 ```bash
-goah session list
-goah session show <wake-id>
-goah session replay <wake-id>
-goah context show <wake-id>
+goah thread list
+goah thread show <thread-id>
+goah thread replay <thread-id>
+goah context show <turn-id>
 goah events --stream wake:<wake-id> [--from 1]
-goah session export <wake-id> --output session.json
+goah thread export <thread-id> --output thread.json
 ```
 
-`session show` summarizes event types, request count, replayed messages, and the last Active Context. Export is redacted by default: common secret fields, bearer/API-key patterns, and the current home path are removed while event identities remain intact. `--raw` is an explicit local-only escape hatch and may contain sensitive prompts and tool results.
+`thread show` returns its Turns and Items. Export is redacted by default; `--raw` is an explicit local-only escape hatch and may contain sensitive prompts and tool results.
 
 Runner Profiles allow different Agents to use different execution backends or Pi targets:
 
@@ -157,18 +157,18 @@ Ark is not a built-in special case. If needed later, configure it as a Pi custom
             └──────────────────────────────────────────────────────┼────────────────────────────────────┘
                                                                    ▼
                                             stream-aware event kernel (source of truth)
-                                            session facts + execution-module projections
+                                            Thread/Turn facts + execution-module projections
 ```
 
-One wake, step by step:
+One Goal Wake, step by step:
 
 1. A due `schedule` entry becomes a queued `wake` (deduplicated by `(agent, trigger_ref)`).
-2. The supervisor leases it — one active wake per agent, lease expiry is crash detection.
-3. It assigns immutable Turn source and optional Goal binding. Ordinary interactions receive a bounded conversation view; Goal Turns receive the Goal tree, observation and verification methods, the shared Work Record index, current/parent records, unread mail, actions, and recovery facts.
-4. The supervisor starts a runner subprocess only after the wake's lease token and PID are recorded. The child gets Active Context and a local root, never a database connection or connector credentials. Its normalized messages, tool calls, results, and exact requests stream back into the wake ledger.
-5. While the process is alive, the supervisor renews its fenced lease. If renewal stops, recovery kills the recorded process before another wake can own the agent. Runner-specific plugins may add token, timeout, cost, or handoff policy.
-6. An ordinary response acknowledges only its Human interaction Mail. A Goal Turn must first update its Work Record under the current Goal revision; its compact Handoff then atomically acknowledges consumed Mail, delivers outgoing Mail, and schedules the next Wake. Local project files and Git remain the Runner's responsibility.
-7. Any invalid or missing result is `abnormal`: after process death is confirmed, open tool calls receive synthetic `unknown` outcomes and the Session closes as interrupted. A recovery Wake receives the source event slice; unread Mail and committed Work Record history remain available.
+2. Claiming it creates one Goal-bound Turn in the owner Agent's Thread. Human input starts or steers a Turn directly and never creates Wake or Mail.
+3. Turn owns Runner lease, fencing, PID, transcript, retry, interruption, and terminal state. `sourceWake` is provenance only.
+4. The Goal Turn receives Goal/Work Record context and runs the same Runner agent loop as a Human Turn.
+5. A Goal Turn must update its Work Record and emit a compact Handoff Item before completion.
+6. Future scheduling creates another Wake and therefore another Turn. Mail remains asynchronous communication only.
+7. Invalid execution fails the Turn; interrupted open tool calls receive explicit `unknown` outcomes. Committed Work Record history survives.
 
 External actions follow their own state machine, independent of wake success:
 
@@ -183,14 +183,14 @@ requested ─▶ approved ─▶ dispatching ─▶ confirmed
 
 ## Distribution and source modules
 
-Goah publishes one npm package: `@goah/cli`. The internal workspaces remain separate in source, but are bundled into that tarball, so one logical release produces one package version and one npm notification. Framework consumers use subpath exports such as `@goah/cli/kernel`, `@goah/cli/session`, `@goah/cli/sqlite`, and `@goah/cli/supervisor`.
+Goah publishes one npm package: `@goah/cli`. The internal workspaces remain separate in source, but are bundled into that tarball, so one logical release produces one package version and one npm notification. Framework consumers use subpath exports such as `@goah/cli/kernel`, `@goah/cli/transcript`, `@goah/cli/sqlite`, and `@goah/cli/supervisor`.
 
 | Source workspace | Public import | What it is |
 |---|---|---|
-| `ledger-contract` | `@goah/cli/kernel`, `/session`, `/execution`, `/metrics` | Generic event kernel, normalized Session vocabulary/replay, execution contracts, and optional metric policy. |
+| `ledger-contract` | `@goah/cli/kernel`, `/transcript`, `/execution`, `/metrics` | Generic event kernel, normalized Turn transcript vocabulary/replay, execution contracts, and optional metric policy. |
 | `ledger-sqlite` | `@goah/cli/sqlite` | Single-writer SQLite ledger and rebuildable standard projections. |
 | `supervisor` | `@goah/cli/supervisor` | Scheduler, wake lifecycle, Active Context, action gate, and connector dispatch. |
-| `runner-pi` | `@goah/cli/runner-pi` | Pi adapter, process runner, normalized Session events, exact request snapshots, local tools, and compaction. |
+| `runner-pi` | `@goah/cli/runner-pi` | Pi adapter, process runner, normalized transcript events, exact request snapshots, local tools, and compaction. |
 | `testkit` | `@goah/cli/testkit` | Simulated clock, faux worker, connector, conformance suite, and fault injection. |
 | `cli` | `@goah/cli` | Configuration, singleton daemon, status/doctor, goals, approvals, and dashboard. |
 
@@ -213,14 +213,14 @@ Not guaranteed, by design honesty:
 
 - goah does not make the model's judgment correct. It records reasons and evidence; it cannot verify they are good reasons.
 - goah does not defend against prompt injection inside the agent's own context.
-- The Pi runner is trusted local code: every Agent has Bash and the operating-system permissions of the user that launched it. GOAH does not sandbox arbitrary shell commands.
+- The Pi Runner is trusted local code, but Bash is constrained to workspace writes, read-only toolchain roots, and explicit Goah-state denial. Unsupported sandbox backends fail closed.
 
 ## Architecture status
 
 | Milestone | Scope |
 |---|---|
-| v2 ledger kernel | ✅ stream-aware event schema, required/ignorable events, SQLite v1–v8 migration, transaction fault injection |
-| replayable Session | ✅ format v1, legacy upgrader, normalized Pi messages/tools/requests, compaction facts, replay and interrupted-tool repair |
+| v2 ledger kernel | ✅ stream-aware event schema, required/ignorable events, SQLite schema v11, transaction fault injection |
+| resumable Thread + Turn transcript | ✅ durable Thread/Turn/Item projections, normalized Pi messages/tools/requests, compaction facts, replay and interrupted-tool repair |
 | Active Context | ✅ deterministic Markdown composition with evidence source sequences |
 | execution modules | ✅ Goal/Wake/Schedule/Mailbox/Action/Handoff contracts are layered above the generic kernel; further physical package splitting is intentionally deferred |
 | 2 — narrow closed loop | ✅ repo-guardian implementation complete; real unattended 14-day run still operational evidence |

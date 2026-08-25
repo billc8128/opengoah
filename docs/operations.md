@@ -21,9 +21,11 @@ Authentication is Runner-owned state, independent from Runner Profile persistenc
 
 Goal operators can inspect and revise lifecycle state with `goal-show`, `goal-update`, `goal-pause`, `goal-resume`, and `goal-complete`. Objective revisions replace or invalidate observation and verification methods. `goal-complete` requires a reason and evidence from the current revision; it is terminal. A Child Handoff proposes completion but never completes its own Goal. In the interactive shell, `/goal ...` creates or revises the Root and `/observe ...` confirms its initial observation and verification policy through Human authority. `/records`, `/records GOAL`, and `/history GOAL` inspect the shared Work Record timeline.
 
-Runner RPC is bidirectional but fenced by the active wake lease. Default child capabilities cover ledger search, mail, scheduling, actions, and advice acknowledgement. Only CEO profiles can write child goals; verifier/audit profiles can write audit advice.
+Runner RPC is bidirectional but fenced by the active Turn lease. `sourceWake` is optional scheduling provenance. Default child capabilities cover ledger search, mail, scheduling, actions, and advice acknowledgement. Only CEO profiles can write child goals; verifier/audit profiles can write audit advice.
 
-Session inspection is read-only and does not resolve provider or connector secrets. `goah session` restores a durable Session containing multiple Turns and Items; `--continue` subscribes to its in-progress Turn. Inspectors address `sessionId`, `turnId`, and `itemId` rather than treating a Wake stream as the conversation. Raw model requests and tool results remain sensitive and exports are redacted by default.
+Thread inspection is read-only and does not resolve provider or connector secrets. `goah thread` restores a durable Thread containing multiple Turns and Items; `--continue` subscribes to its in-progress Turn. Inspectors address `threadId`, `turnId`, and `itemId` rather than treating a Wake stream as the conversation. Raw model requests and tool results remain sensitive and exports are redacted by default.
+
+Schema 10 development ledgers predate the Thread model and are intentionally not migrated. Recreate the local Goah state before starting a build that uses schema 11.
 
 Set `GOAH_GUARD_REPO`, `GOAH_GUARD_STATE`, and optionally `GOAH_GUARD_TEST_COMMAND`. To use a real Pi worker, explicitly pass `GOAH_PI_MODEL`, `GOAH_PI_PROVIDER`, and the matching provider key. Without them the example uses the faux process worker and has no network dependency.
 
@@ -44,4 +46,4 @@ npm run example:guardian
 
 Pi compaction defaults to 70% of the selected model's context window and retains a 20% recent tail. `GOAH_PI_COMPACT_AT_TOKENS` and `GOAH_PI_RETAIN_CONTEXT_TOKENS` are runner-specific overrides. The core defines no token, cost, timeout, or handoff-reserve policy; custom runners may implement their own. `ProcessRunner.timeoutMs` is an optional adapter-level timeout.
 
-The automated test suite includes an accelerated 30-day simulation. This proves bounded Active Context, Session replay, and projection invariants under simulated time; it is not a substitute for a real wall-clock soak. `npm run soak:real` defaults to seven elapsed days and can be changed with `GOAH_SOAK_MS`. Preserve the resulting SQLite ledger and status dashboard as the auditable operating record.
+The automated test suite includes an accelerated 30-day simulation. This proves bounded Active Context, Turn transcript replay, and projection invariants under simulated time; it is not a substitute for a real wall-clock soak. `npm run soak:real` defaults to seven elapsed days and can be changed with `GOAH_SOAK_MS`. Preserve the resulting SQLite ledger and status dashboard as the auditable operating record.

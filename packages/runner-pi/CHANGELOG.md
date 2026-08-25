@@ -12,7 +12,7 @@
 
 ## 0.4.0
 
-- New Session streams declare format version 1 in `session.started`.
+- New Transcript streams declare format version 1 in `transcript.started`.
 
 ## 0.3.1
 
@@ -20,7 +20,7 @@
 
 ## 0.3.0
 
-- Normalizes Pi lifecycle, message, delta, and tool events into the Goah Session vocabulary.
+- Normalizes Pi lifecycle, message, delta, and tool events into the Goah Transcript vocabulary.
 - Captures the exact prepared request and replayable compaction replacement metadata.
 
 ## 0.2.0

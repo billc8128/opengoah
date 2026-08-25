@@ -8,8 +8,8 @@ export type TurnStatus = "in_progress" | "completed" | "failed" | "interrupted";
 export type TurnSourceKind = "human" | "goal" | "system";
 export type TurnItemType = "user_message" | "assistant_message" | "reasoning" | "tool_call" | "tool_result" | "plan" | "handoff";
 export type TurnItemStatus = "in_progress" | "completed" | "failed";
-export interface SessionSnapshot { id: string; agent: string; parentSessionId: string | null; createdAt: string; updatedAt: string }
-export interface TurnSnapshot { id: string; sessionId: string; source: TurnSourceKind; goalId: string | null; goalRevision: number | null; status: TurnStatus; error: JsonValue | null; startedAt: string; endedAt: string | null; leaseUntil: string | null; leaseToken: string | null; runnerPid: number | null }
+export interface ThreadSnapshot { id: string; agent: string; parentThreadId: string | null; createdAt: string; updatedAt: string }
+export interface TurnSnapshot { id: string; threadId: string; source: TurnSourceKind; goalId: string | null; goalRevision: number | null; status: TurnStatus; error: JsonValue | null; startedAt: string; endedAt: string | null; leaseUntil: string | null; leaseToken: string | null; runnerPid: number | null }
 export interface TurnItemSnapshot { id: string; turnId: string; ordinal: number; type: TurnItemType; status: TurnItemStatus; data: JsonValue; createdAt: string; completedAt: string | null }
 export interface GoalSnapshot { id: string; parentId: string | null; objective: string; observationMethod: string | null; verificationMethod: string | null; owner: string; phase: GoalPhase; revision: number }
 export interface WorkRecordSnapshot {
@@ -122,15 +122,15 @@ export interface HandoffCommit { agent: string; wakeId: string; mailIds: string[
 
 /** Standard execution modules composed on top of the generic event store. */
 export interface Ledger extends EventStore {
-  putSession(session: SessionSnapshot, actor: string): EventRecord;
+  putThread(thread: ThreadSnapshot, actor: string): EventRecord;
   putTurn(turn: TurnSnapshot, actor: string): EventRecord;
   putTurnItem(item: TurnItemSnapshot, actor: string): EventRecord;
-  session(id: string): SessionSnapshot | null;
-  sessions(): SessionSnapshot[];
+  thread(id: string): ThreadSnapshot | null;
+  threads(): ThreadSnapshot[];
   turn(id: string): TurnSnapshot | null;
-  turns(sessionId?: string): TurnSnapshot[];
+  turns(threadId?: string): TurnSnapshot[];
   turnItems(turnId: string): TurnItemSnapshot[];
-  activeTurn(sessionId: string): TurnSnapshot | null;
+  activeTurn(threadId: string): TurnSnapshot | null;
   putGoal(goal: GoalSnapshot, actor: string, wakeId?: string): EventRecord;
   updateWorkRecord(request: WorkRecordUpdateRequest, actor: string): WorkRecordSnapshot;
   commitDelegation(request: DelegationRequest, actor: string, wakeId?: string): DelegationResult;

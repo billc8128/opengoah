@@ -27,10 +27,10 @@
 ## Product behavior evidence
 
 - Overview renders from a real redacted Supervisor snapshot.
-- Trajectory navigation opens one selected wake/session at turn-level granularity: prepared context, user/model messages, tool call/result pairs, compaction, and handoff.
-- Trajectory exposes session selection, duration, turn count, call count, search, and Input / Model / Tools activity lanes matching the supplied reference hierarchy.
+- Trajectory navigation opens the Thread associated with a selected Wake at Turn/Item granularity: user/model messages, reasoning, tool call/result pairs, plans, and handoffs.
+- Trajectory exposes Thread selection, duration, Turn count, tool-call count, and Item search.
 - Work Ledger defaults to Agent-authored `handoff.recorded` work records with Observed / Completed / Next / Blocked sections; Raw Events is an explicit advanced mode with event-type filtering and search.
-- Agents navigation and per-agent selection update owned goals, sessions, and Agent-authored work records; selecting a session opens its Trajectory.
+- Agents navigation and per-agent selection update owned goals, Threads, and Agent-authored work records; selecting a Thread opens its trace.
 - Talk to CEO opens a functional composer and POSTs through the Supervisor; an empty organization starts a root goal, while an existing organization receives decision mail.
 - Real empty-ledger state and populated demo state both render without console warnings or errors.
 
@@ -47,7 +47,7 @@
 2. The selected A direction established a goal-first cockpit with an organization tree and attention rail.
 3. The revised direction added the explicit Overview / Trajectory / Ledger / Agents information architecture and Ledger seq provenance.
 4. The implementation keeps the selected topology while allowing real data, empty states, live refresh, filters, and interaction.
-5. The initial Trajectory duplicated the semantic organization summary. It was replaced by the supplied per-session trace granularity, while semantic work summaries moved into Work Ledger.
+5. The initial Trajectory duplicated the semantic organization summary. It was replaced by per-Thread Turn/Item trace granularity, while semantic work summaries moved into Work Ledger.
 6. Cross-page polish removed repeated metadata, empty turn spacer rows, expanded-by-default work records, healthy recovery noise, and nested record cards.
 7. The wide horizontal tree and right attention rail were removed after real viewport testing exposed brittle scaling. Overview now uses a compact vertical CEO-to-agent tree; approvals sit inline with the goal, next wakes sit on their owning agents, and Talk to CEO sits in the goal header.
 

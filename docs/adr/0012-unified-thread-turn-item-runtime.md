@@ -1,22 +1,22 @@
-# ADR 0012: Unified Session, Turn, and Item runtime
+# ADR 0012: Unified Thread, Turn, and Item runtime
 
 Status: accepted
 Date: 2026-08-25
 
 ## Context
 
-Goah already distinguishes ordinary and Goal-bound Turns, but the implemented Human path still uses Mail as the request identity, Wake as the execution identity, and one Wake stream as the Session boundary. Retry, cancellation, steering, and reconnection consequently infer the Human request by correlating Mail and Wake records.
+Goah already distinguishes ordinary and Goal-bound Turns, but the implemented Human path still uses Mail as the request identity, Wake as the execution identity, and one Wake stream as the Thread boundary. Retry, cancellation, steering, and reconnection consequently infer the Human request by correlating Mail and Wake records.
 
 That conflicts with the product surface used by established coding agents and with Goah's own Turn vocabulary. It also creates two apparent execution systems even though ordinary work, Goal continuation, and Child Agent work all run the same Runner-owned agent loop.
 
 ## Decision
 
-### Session, Turn, and Item
+### Thread, Turn, and Item
 
 Goah owns a durable conversation model:
 
 ```text
-Session
+Thread
 └── Turn
     ├── user_message
     ├── reasoning
@@ -27,14 +27,14 @@ Session
     └── handoff
 ```
 
-A Session is a Goah-owned transcript container, not a provider thread. A Turn is the sole execution identity. Items are immutable or lifecycle-updated facts inside a Turn.
+A Thread is a Goah-owned conversation container, not a provider thread. A Turn is the sole execution identity. Items are immutable or lifecycle-updated facts inside a Turn.
 
 Turn source and Goal binding remain independent:
 
 ```ts
 interface Turn {
   id: string;
-  sessionId: string;
+  threadId: string;
   source: "human" | "goal" | "system";
   goalId: string | null;
   goalRevision: number | null;
@@ -60,7 +60,7 @@ Mail is only asynchronous Agent-to-Agent or Agent/Human decision communication. 
 
 Turn owns Runner lease, fencing token, process identity, terminal status, cancellation, and recovery. Wake no longer owns Runner execution state.
 
-`turn.interrupt(turnId)` is the sole cancellation operation. It aborts the Runner and retry backoff and writes `interrupted`. `session.resume(sessionId)` rebuilds full Turns and Items and subscribes to any `in_progress` Turn.
+`turn.interrupt(turnId)` is the sole cancellation operation. It aborts the Runner and retry backoff and writes `interrupted`. `thread.resume(threadId)` rebuilds full Turns and Items and subscribes to any `in_progress` Turn.
 
 ### Goal policy
 
@@ -80,9 +80,9 @@ Goal remains durable intent spanning multiple Turns. Work Record remains the sol
 
 ## Superseded decisions
 
-- ADR 0005 and ADR 0006 scopes that place execution lease and Session identity on Wake;
-- ADR 0006 consequence that one Wake is one Session stream;
-- ADR 0008 Session format v1 shape, replaced by Session/Turn/Item format v2;
+- ADR 0005 and ADR 0006 scopes that place execution lease and the legacy replay identity on Wake;
+- ADR 0006 consequence that one Wake is one legacy Transcript stream;
+- ADR 0008 legacy Wake-scoped replay identity, replaced by Thread model v1 plus per-Turn transcript format v1;
 - ADR 0011's Human interaction Mail, interaction Wake, and Mail-redelivery design;
 - the response/Handoff/abnormal RunnerResult union as the Turn completion authority;
 - any UI or control protocol that infers a Human request from Wake or Mail order.
@@ -93,6 +93,5 @@ Goal remains durable intent spanning multiple Turns. Work Record remains the sol
 - Human conversation behaves like a normal resumable coding-agent thread.
 - Goal-specific invariants become a completion policy on a bound Turn.
 - Wake and Mail have smaller, non-overlapping responsibilities.
-- exact execution history lives in Session/Turn/Item events; Goal semantic continuity remains in Work Record.
+- exact execution history lives in Thread/Turn/Item events; Goal semantic continuity remains in Work Record.
 - existing pre-v2 local data is not migrated. Development workspaces may be recreated before use.
-

@@ -1,4 +1,4 @@
-import { controlStream, wakeStream, type ActionSnapshot, type EventRecord, type JsonValue, type Ledger } from "goah-ledger-contract";
+import { controlStream, type ActionSnapshot, type EventRecord, type JsonValue, type Ledger } from "goah-ledger-contract";
 import { spawn } from "node:child_process";
 import type { Supervisor } from "./index.js";
 
@@ -11,7 +11,7 @@ export interface VerificationFinding {
 
 export interface VerificationResult { findings: VerificationFinding[]; tokensUsed: number }
 export interface VerifierModel {
-  verifySession(input: { wakeId: string; handoff: JsonValue | null; trace: EventRecord[]; actions: ActionSnapshot[] }): Promise<VerificationResult>;
+  verifyTurn(input: { turnId: string; handoff: JsonValue | null; trace: EventRecord[]; actions: ActionSnapshot[] }): Promise<VerificationResult>;
   blindAudit(facts: EventRecord[]): Promise<VerificationResult>;
   reasonAudit(input: { facts: EventRecord[]; reasons: Array<{ actionId: string; reason: string; evidence: number[] }> }): Promise<VerificationResult>;
 }
@@ -20,7 +20,7 @@ export interface VerifierProcessSpec { command: string; args: string[]; env?: Re
 
 export class ProcessVerifierModel implements VerifierModel {
   constructor(readonly spec: VerifierProcessSpec) {}
-  verifySession(input: { wakeId: string; handoff: JsonValue | null; trace: EventRecord[]; actions: ActionSnapshot[] }): Promise<VerificationResult> { return this.#call("verify_session", input); }
+  verifyTurn(input: { turnId: string; handoff: JsonValue | null; trace: EventRecord[]; actions: ActionSnapshot[] }): Promise<VerificationResult> { return this.#call("verify_turn", input); }
   blindAudit(facts: EventRecord[]): Promise<VerificationResult> { return this.#call("blind_audit", { facts }); }
   reasonAudit(input: { facts: EventRecord[]; reasons: Array<{ actionId: string; reason: string; evidence: number[] }> }): Promise<VerificationResult> { return this.#call("reason_audit", input); }
 
@@ -43,14 +43,14 @@ export class ProcessVerifierModel implements VerifierModel {
 export class VerificationPlane {
   constructor(readonly ledger: Ledger, readonly supervisor: Supervisor, readonly model: VerifierModel) {}
 
-  async verifySession(wakeId: string): Promise<VerificationResult> {
-    const trace = this.ledger.eventsForWake(wakeId);
-    const handoff = trace.findLast((event) => event.type === "handoff.recorded")?.data ?? null;
+  async verifyTurn(turnId: string): Promise<VerificationResult> {
+    const trace = this.ledger.readStream(`turn:${turnId}`);
+    const handoff = this.ledger.turnItems(turnId).findLast((item) => item.type === "handoff")?.data ?? null;
     const seqs = new Set(trace.map((event) => event.seq));
     const actions = this.ledger.actions().filter((action) => action.evidence.some((seq) => seqs.has(seq)));
-    const result = await this.model.verifySession({ wakeId, handoff, trace, actions });
-    this.#apply(result, "verifier", wakeId);
-    this.ledger.appendEvent({ streamId: wakeStream(wakeId), ts: this.supervisor.clock.now().toISOString(), actor: "verifier", type: "verification.completed", data: { wakeId, findings: result.findings.length, tokensUsed: result.tokensUsed } });
+    const result = await this.model.verifyTurn({ turnId, handoff, trace, actions });
+    this.#apply(result, "verifier", turnId);
+    this.ledger.appendEvent({ streamId: `turn:${turnId}`, ts: this.supervisor.clock.now().toISOString(), actor: "verifier", type: "verification.completed", data: { turnId, findings: result.findings.length, tokensUsed: result.tokensUsed } });
     return result;
   }
 
@@ -65,10 +65,10 @@ export class VerificationPlane {
     return { blind, reasoned };
   }
 
-  #apply(result: VerificationResult, by: "verifier" | "audit", wakeId?: string): void {
+  #apply(result: VerificationResult, by: "verifier" | "audit", turnId?: string): void {
     for (const finding of result.findings) {
       if (!this.ledger.action(finding.actionId)) continue;
-      this.supervisor.putAuditAdvice(finding.actionId, { by, body: finding.body, evidence: finding.evidence }, wakeId);
+      this.supervisor.putAuditAdvice(finding.actionId, { by, body: finding.body, evidence: finding.evidence }, turnId);
     }
   }
 }

@@ -7,7 +7,7 @@ Superseded in part by ADR 0011: ordinary CEO interaction is unbound, and Goal no
 
 ## Context
 
-An objective alone does not preserve how separately reconstructed Agent Sessions should inspect reality. Quantitative goals can drift in data source or calculation; qualitative goals can drift in acceptance criteria. The lower-level CLI also could not mutate state while the resident Supervisor held the singleton lock, and the Pi worker exposed an inconsistent local tool surface across roles.
+An objective alone does not preserve how separately executed Agent Turns should inspect reality. Quantitative goals can drift in data source or calculation; qualitative goals can drift in acceptance criteria. The lower-level CLI also could not mutate state while the resident Supervisor held the singleton lock, and the Pi worker exposed an inconsistent local tool surface across roles.
 
 ## Decision
 

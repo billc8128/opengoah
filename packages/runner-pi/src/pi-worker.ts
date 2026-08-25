@@ -6,7 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { Agent, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxText, fauxToolCall, Type, type Message } from "@earendil-works/pi-ai";
-import { SESSION_FORMAT_VERSION, type AgentCapability, type JsonValue, type RunnerResult, type SessionMessage, type WakeOutput } from "goah-ledger-contract";
+import { TRANSCRIPT_FORMAT_VERSION, type AgentCapability, type JsonValue, type RunnerResult, type TranscriptMessage, type WakeOutput } from "goah-ledger-contract";
 import { runProcessWorker, type WorkerRpc } from "./index.js";
 import { createPiModel } from "./model-provider.js";
 
@@ -81,7 +81,7 @@ export async function runPiWorker(): Promise<void> {
     if (contextRecord.workRecord && typeof contextRecord.workRecord === "object" && !Array.isArray(contextRecord.workRecord) && typeof contextRecord.workRecord.recordRevision === "number") goalState.recordRevision = contextRecord.workRecord.recordRevision;
     const tools = createTools(root, (value) => { output = value; }, rpc, request.execution.startedAt, capabilities, goalState, protectedPaths);
     const contextPolicy = resolveContextPolicy(model.contextWindow, process.env);
-    emit({ type: "session.started", data: { formatVersion: SESSION_FORMAT_VERSION, provider, model: modelId, runner: "pi", contextWindowTokens: model.contextWindow, maxOutputTokensPerTurn: model.maxTokens } });
+    emit({ type: "transcript.started", data: { formatVersion: TRANSCRIPT_FORMAT_VERSION, provider, model: modelId, runner: "pi", contextWindowTokens: model.contextWindow, maxOutputTokensPerTurn: model.maxTokens } });
     const suppliedPrompt = typeof contextRecord.systemPrompt === "string" ? contextRecord.systemPrompt : undefined;
     const activeContext = typeof contextRecord.text === "string" ? contextRecord.text : JSON.stringify(request.context);
     const sourceSeqs = Array.isArray(contextRecord.sourceSeqs) ? contextRecord.sourceSeqs.filter((value): value is number => Number.isInteger(value)) : [];
@@ -139,17 +139,17 @@ export async function runPiWorker(): Promise<void> {
       if (event.type === "turn_start") emit({ type: "turn.started", data: {} });
       else if (event.type === "message_start" && event.message.role === "user") {
         const id = idFor(event.message);
-        if (!emittedUsers.has(id)) { emittedUsers.add(id); emit({ type: "message.user", data: { message: sessionMessage(event.message, id) as unknown as JsonValue } }); }
+        if (!emittedUsers.has(id)) { emittedUsers.add(id); emit({ type: "message.user", data: { message: transcriptMessage(event.message, id) as unknown as JsonValue } }); }
       } else if (event.type === "message_update") {
         emit({ type: "message.assistant.delta", data: { messageId: idFor(event.message), delta: JSON.parse(JSON.stringify(event.assistantMessageEvent)) as JsonValue } });
       } else if (event.type === "message_end" && event.message.role === "assistant") {
         response = assistantResponseText(event.message);
         if ((event.message.stopReason === "error" || event.message.stopReason === "aborted") && event.message.errorMessage) responseFailure = event.message.errorMessage;
-        emit({ type: "message.assistant.completed", data: { message: sessionMessage(event.message, idFor(event.message)) as unknown as JsonValue } });
+        emit({ type: "message.assistant.completed", data: { message: transcriptMessage(event.message, idFor(event.message)) as unknown as JsonValue } });
       } else if (event.type === "tool_execution_start") emit({ type: "tool.called", data: { callId: event.toolCallId, name: event.toolName, arguments: JSON.parse(JSON.stringify(event.args)) as JsonValue } });
       else if (event.type === "tool_execution_end") emit({ type: "tool.completed", data: { callId: event.toolCallId, messageId: `tool:${event.toolCallId}`, name: event.toolName, result: JSON.parse(JSON.stringify(event.result)) as JsonValue, isError: event.isError } });
       else if (event.type === "turn_end") emit({ type: "turn.completed", data: {} });
-      else if (event.type === "agent_end") emit({ type: "session.completed", data: {} });
+      else if (event.type === "agent_end") emit({ type: "transcript.completed", data: {} });
     });
     const abortAgent = () => agent.abort();
     process.once("SIGTERM", abortAgent);
@@ -182,7 +182,7 @@ function isJson(value: unknown): boolean {
   return Boolean(value && typeof value === "object" && Object.values(value as Record<string, unknown>).every(isJson));
 }
 
-function sessionMessage(message: AgentMessage, id: string): SessionMessage {
+function transcriptMessage(message: AgentMessage, id: string): TranscriptMessage {
   const value = JSON.parse(JSON.stringify(message)) as Record<string, unknown>;
   const role = message.role === "assistant" ? "assistant" : message.role === "user" ? "user" : "tool";
   return { id, role, content: (value.content ?? value) as JsonValue, ...(value.usage !== undefined ? { usage: value.usage as JsonValue } : {}), ...(typeof value.stopReason === "string" ? { stopReason: value.stopReason } : {}), ...(typeof value.errorMessage === "string" ? { errorMessage: value.errorMessage } : {}) };

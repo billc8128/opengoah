@@ -32,7 +32,7 @@ test("local Console serves assets, redacted snapshots, and CEO control through S
     body: JSON.stringify({ message: "Launch a profitable store" }),
   })
   assert.equal(ceoResponse.status, 202)
-  const accepted = await ceoResponse.json() as { sessionId: string; turnId: string }
+  const accepted = await ceoResponse.json() as { threadId: string; turnId: string }
   assert.equal(runtime.ledger.goals().length, 0)
 
   const snapshotResponse = await fetch(`${metadata.url}api/snapshot?token=${metadata.token}`)
@@ -48,11 +48,11 @@ test("local Console serves assets, redacted snapshots, and CEO control through S
   assert.ok(trajectory.items.length > 0)
   assert.ok(trajectory.items.every((item, index, items) => index === 0 || items[index - 1]!.event.seq > item.event.seq))
 
-  const sessionResponse = await fetch(`${metadata.url}api/sessions/${encodeURIComponent(accepted.sessionId)}?token=${metadata.token}`)
-  assert.equal(sessionResponse.status, 200)
-  const session = await sessionResponse.json() as { session: { id: string }; turns: Array<{ id: string; items: unknown[] }> }
-  assert.equal(session.session.id, accepted.sessionId)
-  assert.equal(session.turns[0]?.id, accepted.turnId)
+  const threadResponse = await fetch(`${metadata.url}api/threads/${encodeURIComponent(accepted.threadId)}?token=${metadata.token}`)
+  assert.equal(threadResponse.status, 200)
+  const thread = await threadResponse.json() as { thread: { id: string }; turns: Array<{ id: string; items: unknown[] }> }
+  assert.equal(thread.thread.id, accepted.threadId)
+  assert.equal(thread.turns[0]?.id, accepted.turnId)
 
   while (runtime.ledger.turn(accepted.turnId)?.status === "in_progress") await new Promise((resolve) => setTimeout(resolve, 5))
 

@@ -48,13 +48,46 @@ export interface MailView { id: string; to: string; from: string; level: string;
 export interface EventView { seq: number; streamId: string; streamSeq: number; ts: string; actor: string; type: string; data: JsonValue }
 export interface TrajectoryItemView { event: EventView; agent: string; wakeId: string | null }
 export interface TrajectoryPageView { items: TrajectoryItemView[]; nextBeforeSeq: number | null }
-export interface SessionView { wake: WakeView; events: EventView[] }
+export interface ThreadView {
+  id: string
+  agent: string
+  parentThreadId: string | null
+  createdAt: string
+  updatedAt: string
+}
+export interface TurnView {
+  id: string
+  threadId: string
+  source: "human" | "goal" | "system"
+  goalId: string | null
+  goalRevision: number | null
+  status: "in_progress" | "completed" | "failed" | "interrupted"
+  error: JsonValue | null
+  startedAt: string
+  endedAt: string | null
+  leaseUntil: string | null
+  leaseToken: string | null
+  runnerPid: number | null
+}
+export interface TurnItemView {
+  id: string
+  turnId: string
+  ordinal: number
+  type: "user_message" | "assistant_message" | "reasoning" | "tool_call" | "tool_result" | "plan" | "handoff"
+  status: "in_progress" | "completed" | "failed"
+  data: JsonValue
+  createdAt: string
+  completedAt: string | null
+}
+export interface ThreadDetailView { thread: ThreadView; turns: Array<TurnView & { items: TurnItemView[] }> }
 
 export interface ConsoleSnapshot {
   seq: number
   now: string
   goals: GoalView[]
   team: TeamView[]
+  threads: ThreadView[]
+  turns: TurnView[]
   wakes: WakeView[]
   actions: ActionView[]
   schedules: ScheduleView[]

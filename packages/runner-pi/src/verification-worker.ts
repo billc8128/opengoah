@@ -9,7 +9,7 @@ interface VerificationResult { findings: Array<{ actionId: string; body: unknown
 export async function runVerificationWorker(): Promise<void> {
   const lines = createInterface({ input: process.stdin });
   for await (const line of lines) {
-    const request = JSON.parse(line) as { operation: "verify_session" | "blind_audit" | "reason_audit"; input: unknown };
+    const request = JSON.parse(line) as { operation: "verify_turn" | "blind_audit" | "reason_audit"; input: unknown };
     const provider = process.env.GOAH_PI_PROVIDER ?? "anthropic";
     const modelId = process.env.GOAH_PI_MODEL;
     if (!modelId) throw new Error("GOAH_PI_MODEL is required");

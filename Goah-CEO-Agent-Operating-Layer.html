@@ -95,7 +95,7 @@ pre{tab-size:2}.terminal pre,.context-window pre{margin:0;padding:18px 20px;over
   <div class="hero-copy">
     <div class="overline">Technical design document</div>
     <h1>Goah CEO Agent Operating Layer<span>用户入口、组织运行协议与机械保证</span></h1>
-    <p class="hero-lead">本文定义 CEO Agent 如何作为 Goah 的唯一正常用户入口，将人类意图转换为持久 Goal 树，组织短命 Agent，检查证据，并在跨 Session、跨时间运行中维持组织连续性。</p>
+    <p class="hero-lead">本文定义 CEO Agent 如何作为 Goah 的唯一正常用户入口，将人类意图转换为持久 Goal 树，组织短命 Agent，检查证据，并在跨 Thread、跨时间运行中维持组织连续性。</p>
     <div class="hero-meta"><span class="chip hot">IMPLEMENTED / A–C, E</span><span class="chip">PRODUCT ARCHITECTURE 0.4</span><span class="chip">2026-08-20</span></div>
     <div class="thesis"><b>ARCHITECTURAL DECISION</b><br>CEO 不是常驻进程，而是每次 wake 时由 Ledger 重建的持久身份。模型负责开放式组织判断；Supervisor 和 SQLite 负责状态转换、原子性与恢复语义。</div>
   </div>
@@ -240,7 +240,7 @@ observation_method TEXT</pre></div>
 # Wake trigger</pre></div>
     <div class="context-notes">
       <div class="context-note"><b>Summary by default</b>每个 child 只带最新 material handoff 与 liveness。</div>
-      <div class="context-note"><b>Evidence on demand</b>原始 Session 通过 Inspector / ledger_search 读取。</div>
+      <div class="context-note"><b>Evidence on demand</b>原始 Turn transcript 通过 Inspector / ledger_search 读取。</div>
       <div class="context-note"><b>Recovery stays bounded</b>只注入 abnormal、unknown tool 与 interrupted 事实。</div>
       <div class="context-note"><b>No self-reported roster</b>team status 从 Ledger projection 推导。</div>
     </div>
