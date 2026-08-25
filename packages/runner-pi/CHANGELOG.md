@@ -4,6 +4,7 @@
 
 - Pi now returns normal responses for unbound Turns and exposes Goal/Work Record tools; Goal Turns update their record before compact Handoff.
 - Pi workers accept legacy daemon requests without Turn metadata during an in-place update.
+- Empty assistant failures preserve the provider error instead of collapsing to a missing-response error.
 
 ## 0.5.0
 

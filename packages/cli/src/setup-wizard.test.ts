@@ -17,3 +17,8 @@ test("fresh-workspace welcome is compact and has no placeholder rows", () => {
   assert.match(rendered, /Chat normally, or use \/goal/);
   assert.doesNotMatch(rendered, /Agents:|Recent work:|Conversation:|  ·/);
 });
+
+test("active Goal state lives only in the fixed Goal bar, not the welcome transcript", () => {
+  const snapshot: WelcomeSnapshot = { root: { id: "g", objective: "Do not duplicate me", phase: "active" }, team: [], handoffs: [], conversation: [], runner: "pi", target: "zai/glm" };
+  assert.doesNotMatch(stripAnsi(renderWelcome(snapshot, true).join("\n")), /Do not duplicate me|ACTIVE GOAL/);
+});

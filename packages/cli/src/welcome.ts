@@ -57,8 +57,7 @@ export function welcomeSnapshot(stateDir: string, runner: RunnerDisplay): Welcom
 /** Render only meaningful state; empty workspaces stay compact. */
 export function renderWelcome(snapshot: WelcomeSnapshot, hasHistory: boolean): string[] {
   const lines = ["", `  ${tuiTheme.strong(hasHistory ? "Welcome back." : "Ready when you are.")}`];
-  if (snapshot.root) lines.push(`  ${tuiTheme.active(" ACTIVE GOAL ")}  ${snapshot.root.objective}  ${tuiTheme.muted(snapshot.root.phase)}`);
-  else lines.push(`  ${tuiTheme.muted("Chat normally, or use /goal for durable work.")}`);
+  if (!snapshot.root) lines.push(`  ${tuiTheme.muted("Chat normally, or use /goal for durable work.")}`);
   if (snapshot.team.length) lines.push(`  ${tuiTheme.muted(`${snapshot.team.length} Goal Agent${snapshot.team.length === 1 ? "" : "s"} in the organization`)}`);
   lines.push("");
   return lines;

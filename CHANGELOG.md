@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Preserve provider `stopReason`/`errorMessage` for empty assistant responses, render quota errors honestly, and remove duplicate Goal state from the welcome transcript.
+
 ## 0.11.3
 
 - Made TUI snapshot assertions deterministic in ANSI-enabled CI environments; includes the 0.11.2 terminal redesign.

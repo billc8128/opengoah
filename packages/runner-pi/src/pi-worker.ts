@@ -37,7 +37,9 @@ export async function runPiWorker(): Promise<void> {
     const model = typeof privateAuth.baseUrl === "string" ? { ...configured.model, baseUrl: privateAuth.baseUrl } : configured.model;
     if (provider === "faux") {
       const faux = configured.faux!;
-      if (goalState.bound && !legacyRequest) {
+      if (process.env.GOAH_PI_FAUX_ERROR) {
+        faux.setResponses([fauxAssistantMessage([], { stopReason: "error", errorMessage: process.env.GOAH_PI_FAUX_ERROR })]);
+      } else if (goalState.bound && !legacyRequest) {
         const handoff = JSON.parse(process.env.GOAH_PI_FAUX_HANDOFF ?? "{}") as Record<string, unknown>;
         const current = contextRecord.workRecord && typeof contextRecord.workRecord === "object" && !Array.isArray(contextRecord.workRecord) ? contextRecord.workRecord as Record<string, unknown> : {};
         const evidence = Array.isArray(contextRecord.sourceSeqs) ? contextRecord.sourceSeqs.filter((value): value is number => typeof value === "number") : [];
@@ -56,6 +58,7 @@ export async function runPiWorker(): Promise<void> {
 
     let output: WakeOutput | null = null;
     let response = "";
+    let responseFailure = "";
     let compactions = 0;
     let messageCounter = 0;
     const messageIds = new WeakMap<object, string>();
@@ -132,6 +135,7 @@ export async function runPiWorker(): Promise<void> {
         emit({ type: "message.assistant.delta", data: { messageId: idFor(event.message), delta: JSON.parse(JSON.stringify(event.assistantMessageEvent)) as JsonValue } });
       } else if (event.type === "message_end" && event.message.role === "assistant") {
         response = messageText(event.message);
+        if ((event.message.stopReason === "error" || event.message.stopReason === "aborted") && event.message.errorMessage) responseFailure = event.message.errorMessage;
         emit({ type: "message.assistant.completed", data: { message: sessionMessage(event.message, idFor(event.message)) as unknown as JsonValue } });
       } else if (event.type === "tool_execution_start") emit({ type: "tool.called", data: { callId: event.toolCallId, name: event.toolName, arguments: JSON.parse(JSON.stringify(event.args)) as JsonValue } });
       else if (event.type === "tool_execution_end") emit({ type: "tool.completed", data: { callId: event.toolCallId, messageId: `tool:${event.toolCallId}`, name: event.toolName, result: JSON.parse(JSON.stringify(event.result)) as JsonValue, isError: event.isError } });
@@ -139,7 +143,8 @@ export async function runPiWorker(): Promise<void> {
       else if (event.type === "agent_end") emit({ type: "session.completed", data: {} });
     });
     await agent.prompt(`Wake started at: ${request.wake.startedAt ?? "unknown"}\n\n${activeContext}\n\nRunner root: ${root}. Manage local files directly when the goal requires them.`);
-    if (!goalState.bound) return response ? { outcome: "response", response: { content: response } } : { outcome: "abnormal", reason: "Pi worker exited without a response" };
+    if (!goalState.bound) return response ? { outcome: "response", response: { content: response } } : { outcome: "abnormal", reason: responseFailure || "Pi worker exited without a response" };
+    if (responseFailure) return { outcome: "abnormal", reason: responseFailure };
     if (!output) return { outcome: "abnormal", reason: "Pi worker exited without a valid handoff" };
     return { outcome: "handoff", output };
   });
@@ -162,7 +167,7 @@ function isJson(value: unknown): boolean {
 function sessionMessage(message: AgentMessage, id: string): SessionMessage {
   const value = JSON.parse(JSON.stringify(message)) as Record<string, unknown>;
   const role = message.role === "assistant" ? "assistant" : message.role === "user" ? "user" : "tool";
-  return { id, role, content: (value.content ?? value) as JsonValue, ...(value.usage !== undefined ? { usage: value.usage as JsonValue } : {}) };
+  return { id, role, content: (value.content ?? value) as JsonValue, ...(value.usage !== undefined ? { usage: value.usage as JsonValue } : {}), ...(typeof value.stopReason === "string" ? { stopReason: value.stopReason } : {}), ...(typeof value.errorMessage === "string" ? { errorMessage: value.errorMessage } : {}) };
 }
 
 function createTools(root: string, handoff: (output: WakeOutput) => void, rpc: WorkerRpc, wakeStartedAt: string | null, capabilities: ReadonlySet<AgentCapability> | undefined, goalState: { bound: boolean; binding?: { goalId: string; goalRevision: number }; recordRevision?: number }): AgentTool<any>[] {

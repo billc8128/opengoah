@@ -362,6 +362,10 @@ function safeError(value: string): string {
   const sanitized = value
     .replace(/environment variable is missing:\s*[^\s(]+/gi, "environment variable is missing: [REDACTED]")
     .replace(/(?:sk|key|token)[-_][A-Za-z0-9._-]{12,}/gi, "[REDACTED]");
+  const provider = sanitized.match(/^(\d{3}):\s*(\{.*\})$/s);
+  if (provider) {
+    try { const body = JSON.parse(provider[2]!) as { message?: unknown }; if (typeof body.message === "string") return `Provider ${provider[1]}: ${body.message}`; } catch {}
+  }
   const named = sanitized.match(/^(?:TypeError|RangeError|ReferenceError|SyntaxError|Error):\s*[^\n]+/m)?.[0];
   if (named) return named;
   return sanitized.split("\n").map((line) => line.trim()).find((line) => line && !line.startsWith("file://") && !line.startsWith("at ") && line !== "^") ?? "Wake failed";

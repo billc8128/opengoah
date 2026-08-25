@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Display provider failures instead of the misleading “worker exited without a response” fallback and keep Goal state solely in the live fixed bar.
+
 ## 0.11.3
 
 - Normalized ANSI output in setup rendering tests so the redesigned TUI passes identically with and without terminal color.

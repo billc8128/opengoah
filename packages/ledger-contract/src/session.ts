@@ -4,7 +4,7 @@ export const SESSION_FORMAT_VERSION = 1;
 export const SESSION_MIN_READABLE_VERSION = 0;
 export type SessionEventType = "session.started" | "request.prepared" | "turn.started" | "message.user" | "message.assistant.delta" | "message.assistant.completed" | "tool.called" | "tool.completed" | "context.compacted" | "turn.completed" | "session.completed" | "session.interrupted";
 export interface SessionStarted { formatVersion: typeof SESSION_FORMAT_VERSION; provider: string; model: string; runner: string; contextWindowTokens: number; maxOutputTokensPerTurn: number }
-export interface SessionMessage { id: string; role: "user" | "assistant" | "tool"; content: JsonValue; toolCallId?: string; usage?: JsonValue }
+export interface SessionMessage { id: string; role: "user" | "assistant" | "tool"; content: JsonValue; toolCallId?: string; usage?: JsonValue; stopReason?: string; errorMessage?: string }
 export interface RequestSnapshot { provider: string; model: string; systemPrompt: string; activeContext: string; messages: JsonValue[]; tools: JsonValue[]; modelConfig: JsonValue; sourceSeqs: number[] }
 export interface ReplayedSession { messages: SessionMessage[]; status: "running" | "completed" | "interrupted"; openToolCalls: Array<{ callId: string; name: string; arguments: JsonValue }>; lastRequest: RequestSnapshot | null }
 

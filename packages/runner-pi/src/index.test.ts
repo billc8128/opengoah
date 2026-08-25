@@ -92,6 +92,13 @@ test("the Pi worker accepts a pre-0.11 daemon request without Turn metadata", as
   assert.equal(result.outcome, "handoff");
 });
 
+test("the Pi worker preserves provider error messages from empty assistant responses", async () => {
+  const runner = new ProcessRunner({ command: process.execPath, args: [piWorkerPath()], env: { GOAH_PI_PROVIDER: "faux", GOAH_PI_MODEL: "faux-goah", GOAH_PI_FAUX_ERROR: "provider rejected the request" } });
+  const handle = runner.prepare({ wake, turn: { source: { kind: "human" } }, context: {}, now: () => "2026-08-18T00:00:00.000Z", emit: () => undefined });
+  handle.begin();
+  assert.deepEqual(await handle.result, { outcome: "abnormal", reason: "provider rejected the request" });
+});
+
 test("mid-turn compaction changes only the model view and preserves boundary messages", () => {
   const messages = Array.from({ length: 20 }, (_, index) => ({ role: "user" as const, content: `constraint-${index}`, timestamp: index }));
   const original = JSON.stringify(messages);

@@ -34,6 +34,9 @@ test("TUI hides internal wake ids and credential-shaped environment errors", () 
   const stack: string[] = [];
   renderFrame({ type: "event", event: { type: "wake.abnormal_reason", data: { reason: "file:///Users/test/pi-worker.js:24\n  const x = missing.value\n            ^\n\nTypeError: Cannot read properties of undefined (reading 'value')\n    at file:///Users/test/pi-worker.js:24:9" } } }, (line) => stack.push(line));
   assert.deepEqual(stack.map((line) => stripAnsi(line).trim()), ["error  TypeError: Cannot read properties of undefined (reading 'value')"]);
+  const provider: string[] = [];
+  renderFrame({ type: "event", event: { type: "wake.abnormal_reason", data: { reason: '429: {"code":"1310","message":"Weekly/Monthly Limit Exhausted. Resets Thursday"}' } } }, (line) => provider.push(line));
+  assert.deepEqual(provider.map((line) => stripAnsi(line).trim()), ["error  Provider 429: Weekly/Monthly Limit Exhausted. Resets Thursday"]);
 });
 
 test("TUI header is a stable full-width brand rail", () => {

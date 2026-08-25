@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Added Turn source/Goal binding, ordinary Runner responses, Goal verification methods, Work Record contracts, compact Goal Handoffs, and shared-record capabilities.
+- Session assistant messages retain provider stop reasons and error messages.
 
 ## 0.6.0
 
