@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Rebuilt the terminal UI around a fixed brand rail, compact Goal-aware welcome, Markdown conversation rendering, bottom composer, scrollable alternate-screen viewport, quiet tool states, and maintained Pi TUI package.
+
 ## 0.11.1
 
 - Added compatibility for a pre-0.11 resident daemon spawning the updated Pi worker, automatic daemon version detection/restart on the next CLI launch, and concise runtime error rendering instead of raw stacks.

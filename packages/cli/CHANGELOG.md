@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Replaced the log-like TUI with a full-screen branded conversation surface, Markdown output, bordered editor, compact Goal state, restrained progress feedback, and the maintained `@earendil-works/pi-tui` runtime.
+
 ## 0.11.1
 
 - Automatically replaces a stale resident daemon after self-update and reduces worker stack traces to actionable error summaries.

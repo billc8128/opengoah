@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { SelectListTheme } from "@mariozechner/pi-tui";
+import type { SelectListTheme } from "@earendil-works/pi-tui";
 import { SearchableSelect } from "./searchable-select.js";
 
 const plain: SelectListTheme = { selectedPrefix: String, selectedText: String, description: String, scrollInfo: String, noMatch: String };

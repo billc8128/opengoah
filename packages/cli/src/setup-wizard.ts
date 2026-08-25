@@ -1,26 +1,27 @@
 /** Generic Runner setup. Provider/model semantics remain inside each Runner plugin. */
 import { spawn } from "node:child_process";
-import { Input, ProcessTerminal, SelectList, Text, TUI, type Component, type SelectItem, type SelectListTheme } from "@mariozechner/pi-tui";
+import { Input, ProcessTerminal, SelectList, Text, TuiAltScreen, type Component, type SelectItem, type SelectListTheme } from "@earendil-works/pi-tui";
 import type { JsonValue, RunnerProfile, RunnerSetupInteraction } from "goah-ledger-contract";
 import { readDefaultRunnerProfile, updateWorkspaceRunnerProfile, writeDefaultRunnerProfile } from "./index.js";
 import { stdioQueue } from "./prompt-queue.js";
 import { runnerManifests, runnerPlugin } from "./runner-registry.js";
 import { SearchableSelect } from "./searchable-select.js";
 import { SecretInput, setInitialValue } from "./secret-input.js";
+import { tuiTheme } from "./tui-theme.js";
 
 export interface WizardResult { profile: RunnerProfile | null }
 
 export function renderSetupHeader(title: string, description = "", progress?: { current: number; total: number }): string {
   const meter = progress ? `${"━".repeat(progress.current)}${"─".repeat(Math.max(0, progress.total - progress.current))}  ${progress.current}/${progress.total}` : "";
-  return ["", `\x1b[1m GOAH SETUP\x1b[22m${meter ? `  \x1b[36m${meter}\x1b[0m` : ""}`, `\x1b[1m ${title}\x1b[22m`, description ? `\x1b[2m ${description}\x1b[22m` : "", ""].join("\n");
+  return [`${tuiTheme.brand(" GOAH ")}${tuiTheme.rail(` SETUP${meter ? `  ${meter}` : ""} `)}`, "", `  ${tuiTheme.strong(title)}`, description ? `  ${tuiTheme.muted(description)}` : "", ""].join("\n");
 }
 
 const theme: SelectListTheme = {
-  selectedPrefix: (text) => `\x1b[36m❯\x1b[0m ${text}`,
-  selectedText: (text) => `\x1b[1m${text}\x1b[22m`,
-  description: (text) => `\x1b[2m${text}\x1b[22m`,
-  scrollInfo: (text) => `\x1b[2m${text}\x1b[22m`,
-  noMatch: (text) => `\x1b[2m${text}\x1b[22m`,
+  selectedPrefix: (text) => `${tuiTheme.accent(">")} ${text}`,
+  selectedText: tuiTheme.strong,
+  description: tuiTheme.muted,
+  scrollInfo: tuiTheme.muted,
+  noMatch: tuiTheme.muted,
 };
 
 export async function runSetupWizard(current: RunnerProfile | null = readDefaultRunnerProfile()): Promise<WizardResult> {
@@ -28,7 +29,7 @@ export async function runSetupWizard(current: RunnerProfile | null = readDefault
 }
 
 async function runTui(current: RunnerProfile | null): Promise<WizardResult> {
-  const tui = new TUI(new ProcessTerminal());
+  const tui = new TuiAltScreen(new ProcessTerminal(), true);
   const header = new Text("");
   let slot: Component | null = null;
   const replace = (component: Component): void => { if (slot) tui.removeChild(slot); slot = component; tui.addChild(component); tui.setFocus(component); tui.requestRender(); };

@@ -1,4 +1,4 @@
-import { CURSOR_MARKER, Input } from "@mariozechner/pi-tui";
+import { CURSOR_MARKER, Input } from "@earendil-works/pi-tui";
 
 /** Input that keeps the real value in memory while rendering only a fixed mask. */
 export class SecretInput extends Input {

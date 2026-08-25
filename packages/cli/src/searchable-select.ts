@@ -1,4 +1,4 @@
-import { fuzzyFilter, getKeybindings, Input, SelectList, type Component, type Focusable, type SelectItem, type SelectListTheme } from "@mariozechner/pi-tui";
+import { fuzzyFilter, getKeybindings, Input, SelectList, type Component, type Focusable, type SelectItem, type SelectListTheme } from "@earendil-works/pi-tui";
 
 export interface SearchableSelectOptions {
   searchLabel?: string;

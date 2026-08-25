@@ -10,6 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { RunnerDisplay } from "./live-config.js";
+import { tuiTheme } from "./tui-theme.js";
 
 export interface WelcomeSnapshot {
   root: { id: string; objective: string; phase: string } | null;
@@ -55,14 +56,11 @@ export function welcomeSnapshot(stateDir: string, runner: RunnerDisplay): Welcom
 
 /** Render only meaningful state; empty workspaces stay compact. */
 export function renderWelcome(snapshot: WelcomeSnapshot, hasHistory: boolean): string[] {
-  const lines: string[] = [];
-  lines.push(`Goah — ${hasHistory ? "Welcome back!" : "Welcome!"}  ${snapshot.runner ? `${snapshot.runner} · ${snapshot.target}` : "(unconfigured)"}`);
+  const lines = ["", `  ${tuiTheme.strong(hasHistory ? "Welcome back." : "Ready when you are.")}`];
+  if (snapshot.root) lines.push(`  ${tuiTheme.active(" ACTIVE GOAL ")}  ${snapshot.root.objective}  ${tuiTheme.muted(snapshot.root.phase)}`);
+  else lines.push(`  ${tuiTheme.muted("Chat normally, or use /goal for durable work.")}`);
+  if (snapshot.team.length) lines.push(`  ${tuiTheme.muted(`${snapshot.team.length} Goal Agent${snapshot.team.length === 1 ? "" : "s"} in the organization`)}`);
   lines.push("");
-  lines.push(snapshot.root ? `Goal  ${snapshot.root.objective}  [${snapshot.root.phase}]` : "Ready for your first goal. Type it below and press Enter.");
-  if (snapshot.team.length) { lines.push("", "Agents", ...snapshot.team.map((member) => `  ${member.agent}  ${member.status}`)); }
-  if (snapshot.handoffs.length) { lines.push("", "Recent work", ...snapshot.handoffs.map((handoff) => `  ${handoff.agent}: ${handoff.result || "handed off"}`)); }
-  if (snapshot.conversation.length) { lines.push("", "Conversation", ...snapshot.conversation.map((item) => `  ${item.speaker}: ${item.text}`)); }
-  lines.push("", "Commands  /model picker · /setup · /status · /stop · /quit");
   return lines;
 }
 

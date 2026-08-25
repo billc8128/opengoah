@@ -165,7 +165,7 @@ export async function* interactFrames(message: string, supervisor: Supervisor, l
     for (const event of ledger.eventsForWake(accepted.wake.id)) {
       if (event.seq <= lastSeq) continue;
       lastSeq = event.seq;
-      if (event.type.startsWith("tool.") || event.type === "handoff.recorded" || event.type.startsWith("wake.")) yield { type: "event", event: event as unknown as JsonValue };
+      if (event.type === "message.assistant.delta" || event.type.startsWith("tool.") || event.type === "handoff.recorded" || event.type.startsWith("wake.")) yield { type: "event", event: event as unknown as JsonValue };
     }
     const wake = ledger.wake(accepted.wake.id);
     if (wake && ["done", "abnormal", "merge_blocked"].includes(wake.status)) {
