@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- Made scheduling Goal-aware, persisted Runner recovery identity, serialized Human admission, fenced organization mutations, and unified terminal Turn presentation across TUI and Console; schema v13 intentionally rejects earlier development state.
+- Unified every Goal lifecycle mutation under the authoritative `goal.changed` event envelope and made the Goal projection directly rebuildable from it.
+- Made scheduling Goal-aware, persisted Runner recovery identity, serialized Human admission, fenced organization mutations, and unified terminal Turn presentation across TUI and Console; schema v14 also makes `goal.changed` authoritative and intentionally rejects earlier development state.
 - Completed the Thread/Turn/Item architecture: Wake is scheduling-only, Turn owns execution and recovery, Human input blocks automatic claims, Goal policies share one completion path, and schema v12 rejects earlier development state.
 - Hardened concurrency, idempotency, streaming, verification, and long-running resource boundaries found by adversarial review.
 

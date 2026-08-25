@@ -55,6 +55,8 @@ Current projections are rebuilt from events:
 
 Handoff remains an event-level control result rather than a current-state projection.
 
+Every Goal lifecycle mutation has exactly one authoritative `goal.changed` event. The event carries operation, previous revision, complete next snapshot, reason, evidence, authority, and optional source Turn/Wake/idempotency key; the Goal table is rebuilt directly from those same events. Operation-specific events such as `delegation.created` remain workflow facts, not competing Goal state authorities.
+
 ### Supervisor
 
 The only Ledger writer in the resident process. It validates Turn ownership and terminal state, Goal and Work Record revisions, leases, capabilities, atomic delegation, Action gates, scheduling, recovery, and Human priority. Human input starts or steers a Turn directly. Mail is reserved for asynchronous Agent communication and Human decisions. Wake is reserved for future Goal/system motion.

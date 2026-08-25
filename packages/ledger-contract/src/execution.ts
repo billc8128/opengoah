@@ -12,6 +12,10 @@ export interface ThreadSnapshot { id: string; agent: string; parentThreadId: str
 export interface TurnSnapshot { id: string; threadId: string; source: TurnSourceKind; goalId: string | null; goalRevision: number | null; status: TurnStatus; attempt: number; error: JsonValue | null; startedAt: string; endedAt: string | null; leaseUntil: string | null; leaseToken: string | null; runnerPid: number | null; runnerProfileId?: string }
 export interface TurnItemSnapshot { id: string; turnId: string; ordinal: number; type: TurnItemType; status: TurnItemStatus; data: JsonValue; createdAt: string; completedAt: string | null }
 export interface GoalSnapshot { id: string; parentId: string | null; objective: string; observationMethod: string | null; verificationMethod: string | null; owner: string; phase: GoalPhase; revision: number }
+export type GoalChangeOperation="create"|"revise"|"pause"|"resume"|"block"|"complete"|"reassign";
+export type GoalChangeAuthority={kind:"human"}|{kind:"parent_goal";goalId:string;goalRevision:number}|{kind:"system";reason:string};
+export interface GoalChangeMetadata {operation:GoalChangeOperation;reason:string;evidence:number[];authority?:GoalChangeAuthority;sourceTurnId?:string;sourceWakeId?:string;idempotencyKey?:string}
+export interface GoalChangedData extends GoalChangeMetadata {version:1;previousRevision:number|null;snapshot:GoalSnapshot;authority:GoalChangeAuthority;projection:"goals"}
 export interface WorkRecordSnapshot {
   goalId: string;
   recordRevision: number;
@@ -48,6 +52,7 @@ export interface DelegationRequest {
   brief: JsonValue;
   reason: string;
   evidence: number[];
+  sourceTurnId?:string;
 }
 export interface DelegationResult { delegationId: string; goal: GoalSnapshot; mail: MailSnapshot; wake: WakeSnapshot }
 export interface ReassignmentRequest {
@@ -58,9 +63,10 @@ export interface ReassignmentRequest {
   brief: JsonValue;
   reason: string;
   evidence: number[];
+  sourceTurnId?:string;
 }
 export interface ReassignmentResult { reassignmentId: string; goal: GoalSnapshot; mail: MailSnapshot[]; wake: WakeSnapshot }
-export interface GoalCompletionRequest { goalId: string; revision: number; reason: string; evidence: number[] }
+export interface GoalCompletionRequest { goalId: string; revision: number; reason: string; evidence: number[];sourceTurnId?:string }
 export type TeamMemberStatus = "running" | "queued" | "scheduled" | "waiting" | "blocked" | "idle_unplanned" | "retired";
 export interface TeamMemberView {
   agent: string;
@@ -133,7 +139,7 @@ export interface Ledger extends EventStore {
   turns(threadId?: string): TurnSnapshot[];
   turnItems(turnId: string): TurnItemSnapshot[];
   activeTurn(threadId: string): TurnSnapshot | null;
-  putGoal(goal: GoalSnapshot, actor: string, wakeId?: string): EventRecord;
+  putGoal(goal: GoalSnapshot, actor: string, wakeId?: string,change?:GoalChangeMetadata): EventRecord;
   updateWorkRecord(request: WorkRecordUpdateRequest, actor: string): WorkRecordSnapshot;
   commitDelegation(request: DelegationRequest, actor: string, wakeId?: string): DelegationResult;
   commitReassignment(request: ReassignmentRequest, actor: string, wakeId?: string): ReassignmentResult;

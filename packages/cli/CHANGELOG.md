@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Console organization views now consume the authoritative `goal.changed` operation envelope.
 - Drained terminal Turn events exactly once, exposed Handoffs consistently, separated Console thinking from assistant prose, restored assistant history, and removed Referer-based local API authorization.
 - Updated control, TUI, Thread inspection, Console, doctor, and exports for Turn-owned execution; fixed duplicate answers, cross-Agent welcome history, and fencing-token redaction.
 - Preserved final responses after internal assistant messages, filtered failed pending input from history, and reported model capabilities per Agent.

@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Schema v13 adds Goal-targeted Wake/Schedule state and persisted Turn Runner Profile identity, plus full organization/Action idempotency checks.
+- Schema v14 replaces `goal.put` lifecycle facts with one authoritative, projection-driving `goal.changed` event for every Goal operation, while retaining Goal-targeted Wake/Schedule state, persisted Turn Runner Profile identity, and full organization/Action idempotency checks.
 - Schema v12 makes Turn the sole execution owner, reduces Wake to scheduling state, requires Turn provenance for Actions, and rejects all earlier development schemas.
 - Wake-to-Turn creation rechecks Human priority transactionally; direct terminal writes are forbidden; Goal completion retries are idempotent; ordinary source-Wake responses acknowledge Mail atomically.
 - Added schema v9 with event-sourced Work Records, history/diff/search, verification methods, Human interaction commits, legacy Handoff/memory seeding, and Human Wake priority.

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { getEventListeners } from "node:events";
 import test from "node:test";
-import { CONTRACT_VERSION, controlStream, wakeStream, type Clock, type EventInput, type GoalSnapshot, type JsonValue,type RunRequest, type Runner, type TurnSnapshot, type WakeSnapshot } from "goah-ledger-contract";
+import { CONTRACT_VERSION, controlStream,goalStream, wakeStream, type Clock, type EventInput, type GoalSnapshot, type JsonValue,type RunRequest, type Runner, type TurnSnapshot, type WakeSnapshot } from "goah-ledger-contract";
 import { piWorkerPath, ProcessRunner, verificationWorkerPath } from "goah-runner-pi";
 import { calibrateVerificationThreshold, evaluateVerification, ProcessVerifierModel, renderDashboard, runSupervisorDaemon, Supervisor, VerificationPlane, type SupervisorOptions, type VerifierModel } from "goah-supervisor";
 import { assertLedgerConformance, createMemoryLedger, fauxRunnerWorkerPath, MockConnector, SimulatedClock } from "./index.js";
@@ -65,6 +65,7 @@ test("a Human Turn can create a Root Goal and become Goal-bound through tools", 
   assert.equal(ledger.workRecord("human-goal")?.recordRevision, 1);
   assert.equal(ledger.workRecord("human-goal")?.updatedInTurn, accepted.turnId);
   assert.equal(ledger.turn(accepted.turnId)?.goalId, "human-goal");
+  assert.equal((ledger.readStream(goalStream("human-goal")).find((event)=>event.type==="goal.changed")?.data as {sourceTurnId?:string}).sourceTurnId,accepted.turnId);
   assert.equal(ledger.turnItems(accepted.turnId).some((item) => item.type === "handoff"), true);
   ledger.close();
 });

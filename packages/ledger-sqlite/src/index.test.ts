@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { controlStream, replayTranscript, wakeStream, type ActionSnapshot, type Clock, type EventInput, type GoalSnapshot, type JsonValue, type WakeSnapshot } from "goah-ledger-contract";
+import { controlStream,goalStream, replayTranscript, wakeStream, type ActionSnapshot, type Clock, type EventInput, type GoalSnapshot, type JsonValue, type WakeSnapshot } from "goah-ledger-contract";
 import { SQLITE_SCHEMA_VERSION, SqliteLedger } from "./index.js";
 
 const metric = { source: "test", window: "1h", direction: "at_least" as const, target: 1, freshnessMs: 60_000, onMissing: "abnormal" as const, onStale: "wake_owner" as const };
@@ -30,7 +30,7 @@ test("Turn failure atomically repairs open Items and commits its Transcript term
 
 test("Goal completion requires non-empty evidence",()=>{const ledger=new SqliteLedger(":memory:",{clock:new FixedClock()});ledger.putGoal({id:"g",parentId:null,objective:"ship",observationMethod:"inspect",verificationMethod:"verify",owner:"ceo",phase:"active",revision:0},"human");assert.throws(()=>ledger.completeGoal({goalId:"g",revision:0,reason:"done",evidence:[]},"human"),/evidence is required/);ledger.close();});
 
-test("pre-v13 development schemas are rejected explicitly", () => {
+test("pre-v14 development schemas are rejected explicitly", () => {
   for(const version of [1,6,9,10,11]){const path=join(mkdtempSync(join(tmpdir(),`goah-retired-${version}-`)),"ledger.sqlite");const raw=new DatabaseSync(path);raw.exec(`PRAGMA user_version=${version}`);raw.close();assert.throws(()=>new SqliteLedger(path,{clock:new FixedClock()}),/predates Turn-owned execution/);}
 });
 
@@ -185,6 +185,10 @@ test("goal phases are constrained by both contract and SQLite", () => {
   ledger.close();
 });
 
+test("every Goal lifecycle mutation writes one authoritative goal.changed shape",()=>{const ledger=new SqliteLedger(":memory:",{clock:new FixedClock()});const method="inspect";activeTurn(ledger,"ceo","turn:create");ledger.putGoal({id:"root",parentId:null,objective:"ship",observationMethod:method,verificationMethod:method,owner:"ceo",phase:"active",revision:0},"human",undefined,{operation:"create",reason:"Human requested shipping",evidence:[],authority:{kind:"human"},sourceTurnId:"turn:create"});ledger.putGoal({...ledger.goal("root")!,phase:"paused",revision:1},"human",undefined,{operation:"pause",reason:"wait",evidence:[],authority:{kind:"human"}});ledger.putGoal({...ledger.goal("root")!,phase:"active",revision:2},"human",undefined,{operation:"resume",reason:"continue",evidence:[],authority:{kind:"human"}});const evidence=ledger.appendEvent(event("human","observed",{}));ledger.completeGoal({goalId:"root",revision:2,reason:"verified",evidence:[evidence.seq],sourceTurnId:"turn:create"},"human");const changes=ledger.readStream(goalStream("root")).filter((event)=>event.type==="goal.changed").map((event)=>event.data as unknown as import("goah-ledger-contract").GoalChangedData);assert.deepEqual(changes.map((change)=>change.operation),["create","pause","resume","complete"]);assert.deepEqual(changes.map((change)=>change.previousRevision),[null,0,1,2]);assert.equal(changes[0]?.sourceTurnId,"turn:create");assert.equal(changes.at(-1)?.sourceTurnId,"turn:create");assert.deepEqual(changes.at(-1)?.evidence,[evidence.seq]);assert.equal(ledger.events().some((event)=>event.type==="goal.put"),false);const before=ledger.goal("root");ledger.rebuildProjections();assert.deepEqual(ledger.goal("root"),before);ledger.close();});
+
+test("goal.changed rejects forged operation, authority, and provenance",()=>{const ledger=new SqliteLedger(":memory:",{clock:new FixedClock()});const root={id:"root",parentId:null,objective:"ship",observationMethod:null,verificationMethod:null,owner:"ceo",phase:"active" as const,revision:0};assert.throws(()=>ledger.putGoal(root,"human",undefined,{operation:"pause",reason:"forged",evidence:[],authority:{kind:"human"}}),/operation/);assert.throws(()=>ledger.putGoal(root,"human",undefined,{operation:"create",reason:"forged",evidence:[],authority:{kind:"system",reason:"fake"}}),/authority/);assert.throws(()=>ledger.putGoal(root,"human",undefined,{operation:"create",reason:"forged",evidence:[],authority:{kind:"human"},sourceTurnId:"missing"}),/source Turn/);assert.equal(ledger.goal("root"),null);ledger.close();});
+
 test("human root completion waits for every descendant to complete", () => {
   const ledger = new SqliteLedger(":memory:", { clock: new FixedClock() });
   ledger.putGoal({ id: "root", parentId: null, objective: "company", observationMethod: "Inspect all child completion evidence.", verificationMethod: "Inspect all child completion evidence.", owner: "ceo", phase: "active", revision: 0 }, "human");
@@ -292,6 +296,7 @@ test("delegation atomically commits its fact, child goal, decision mail, and wak
   assert.equal(result.mail.level, "decision");
   assert.equal(result.wake.status, "queued");
   assert.equal(ledger.events().filter((item) => item.type === "delegation.created").length, 1);
+  const delegatedChange=ledger.readStream(goalStream("research")).find((event)=>event.type==="goal.changed")!.data as unknown as import("goah-ledger-contract").GoalChangedData;assert.equal(delegatedChange.operation,"create");assert.equal(delegatedChange.idempotencyKey,"d1");assert.deepEqual(delegatedChange.authority,{kind:"parent_goal",goalId:"root",goalRevision:0});
   assert.deepEqual(ledger.commitDelegation(request, "ceo"), result);
   assert.throws(() => ledger.commitDelegation({ ...request, childGoal: { ...request.childGoal, owner: "other" } }, "ceo"), /reused/);
   assert.throws(()=>ledger.commitDelegation({...request,brief:{deliverable:"changed"}},"ceo"),/different request/);
@@ -312,6 +317,7 @@ test("reassignment changes ownership, notifies both sides, and wakes only the ne
   const result = ledger.commitReassignment(request, "ceo");
   assert.equal(result.goal.owner, "new");
   assert.equal(result.goal.revision, 1);
+  const reassignedChange=ledger.readStream(goalStream("launch")).findLast((event)=>event.type==="goal.changed")!.data as unknown as import("goah-ledger-contract").GoalChangedData;assert.equal(reassignedChange.operation,"reassign");assert.equal(reassignedChange.reason,request.reason);
   assert.deepEqual(result.mail.map((item) => item.to), ["old", "new"]);
   assert.equal(result.wake.agent, "new");
   assert.equal(ledger.wakes().some((item) => item.agent === "old" && item.status === "queued"), false);

@@ -39,7 +39,7 @@ Implemented and tested today:
 - Real runner subprocess boundary with sliding lease renewal, process-group termination, optional runner-specific timeout, and stale-event rejection
 - Ordinary Human Turns return normal responses; Goal-bound Turns require a current Work Record revision and compact Goal Handoff
 - Goal Mail is acknowledged atomically with its successful Handoff; ordinary Human conversation never uses Mail or Wake
-- Injected clocks, schema v13 Goal-targeted scheduling and Turn-owned execution, indexed bounded queries, and a public ledger conformance suite; earlier development schemas are intentionally rejected
+- Injected clocks, schema v14 authoritative Goal changes, Goal-targeted scheduling, and Turn-owned execution, with indexed bounded queries and a public ledger conformance suite; earlier development schemas are intentionally rejected
 - Optional mechanical metric evaluation (missing/stale/sustain/guardrails), a total-silence tripwire, trigger coalescing, FTS5 fact search, and generic evidence-backed actions; Goal itself has no required metric or target
 - Official Pi 0.84.2 worker binding with `read`, `write`, `edit`, and `bash` for every Agent plus model-view-only mid-turn compaction
 - Durable textual Goal observation methods with root human confirmation, atomic child assignment, revision invalidation, replay, and evidence-backed completion
@@ -219,7 +219,7 @@ Not guaranteed, by design honesty:
 
 | Milestone | Scope |
 |---|---|
-| v2 ledger kernel | ✅ stream-aware event schema, required/ignorable events, SQLite schema v13, transaction fault injection |
+| v2 ledger kernel | ✅ stream-aware event schema, required/ignorable events, SQLite schema v14, transaction fault injection |
 | resumable Thread + Turn transcript | ✅ durable Thread/Turn/Item projections, normalized Pi messages/tools/requests, compaction facts, replay and interrupted-tool repair |
 | Active Context | ✅ deterministic Markdown composition with evidence source sequences |
 | execution modules | ✅ Goal/Wake/Schedule/Mailbox/Action/Handoff contracts are layered above the generic kernel; further physical package splitting is intentionally deferred |

@@ -375,7 +375,7 @@ function createRpcTools(rpc: WorkerRpc, allowed?: ReadonlySet<AgentCapability>, 
     ["work_record.diff", tool("work_record_diff", "Compare two revisions of a Goal Work Record.", "work_record.diff", Type.Object({ goalId: Type.Optional(Type.String()), fromRevision: Type.Number(), toRevision: Type.Number() }))],
     ["work_record.search", tool("work_record_search", "Search every Goal Work Record.", "work_record.search", Type.Object({ query: Type.String(), limit: Type.Optional(Type.Number()) }))],
     ["work_record.update", tool("work_record_update", "Create the next version of the Work Record bound to this Turn with Ledger evidence.", "work_record.update", Type.Object({ expectedRevision: Type.Number(), content: Type.String(), reason: Type.String(), evidence: Type.Array(Type.Number()) }))],
-    ["goal.put", tool("put_goal", "Create or update a goal using parent-layer authority.", "goal.put", Type.Object({ goal: Type.Any() }))],
+    ["goal.put", tool("put_goal", "Create or update a Goal through the authoritative goal.changed protocol using parent-layer authority.", "goal.put", Type.Object({ goal: Type.Any(),reason:Type.String(),evidence:Type.Array(Type.Number()) }))],
   ];
   return definitions.filter(([capability]) => !allowed || allowed.has(capability)).map(([, value]) => value);
 }

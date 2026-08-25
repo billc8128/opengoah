@@ -534,7 +534,7 @@ function eventNarrative(event: EventView, resolvedAgent = event.actor): string {
   if (event.type === "handoff.recorded") return `Handoff: ${firstString(data.results) || firstString(data.observations) || "work recorded"}`
   if (event.type === "goal.delegated") return `CEO delegated: ${String(data.reason ?? data.goalId ?? "child goal")}`
   if (event.type === "delegation.created") return `Delegated a child goal: ${String(data.reason ?? data.goalId ?? "new responsibility")}`
-  if (event.type === "goal.put") { const snapshot = record(data.snapshot); return `Goal ${String(snapshot.phase ?? "updated")}: ${String(snapshot.objective ?? "goal state changed")}` }
+  if (event.type === "goal.changed") { const snapshot = record(data.snapshot); return `Goal ${String(data.operation??snapshot.phase??"updated")}: ${String(snapshot.objective ?? "goal state changed")}` }
   if (event.type === "goal.reassigned") return `Reassigned goal from ${displayAgent(String(data.oldOwner ?? "unknown"))} to ${displayAgent(String(data.newOwner ?? "unknown"))}`
   if (event.type === "metric.evaluated" || event.type === "observation.confirmed") return `Observation confirmed: ${String(data.summary ?? data.status ?? "evidence recorded")}`
   if (event.type === "action.requested") return `Action awaiting approval: ${String(data.kind ?? "external action")}`

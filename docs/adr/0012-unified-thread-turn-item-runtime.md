@@ -68,6 +68,8 @@ Turn owns Runner lease, fencing token, process identity, opaque Runner Profile i
 
 Goal remains durable intent spanning multiple Turns. Work Record remains the sole current semantic view for a Goal. Goal-bound Turn completion still requires a current-revision Work Record update and compact Goal Handoff. Ordinary Turns skip that gate.
 
+`goal.changed` is the single authoritative Goal lifecycle fact for create, revise, pause, resume, block, complete, and reassign. It atomically carries the before/after revision, reason, evidence, authority, and source provenance while driving the rebuildable Goal projection. Delegation and reassignment may retain workflow events, but those events do not independently define Goal state.
+
 ## Inherited decisions
 
 - append-only Ledger authority and rebuildable projections;

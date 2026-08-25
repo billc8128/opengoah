@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Supplies reason, evidence, authority, source Turn/Wake, and idempotency provenance to the unified Goal change protocol.
 - Serialized Human admission, made multi-Goal scheduling target-safe, made Runner cleanup failure non-blocking, and restored kill-before-recovery through persisted Runner Profile routing.
 - Unified Human and Goal work on one Turn executor and RPC path with Human-priority scheduling, same-Turn provider retry, canonical Transcript terminals, Turn recovery, and identical Goal completion policy.
 - Rejected steering now rolls into a fresh Turn without duplicating completed input; daemon polling releases abort listeners; connector and metric output is bounded.

@@ -321,6 +321,7 @@ The caller does not assign the next revision. Goal Service validates authority a
 ```ts
 interface GoalChangedData {
   version: 1;
+  projection: "goals";
   operation:
     | "create"
     | "revise"
@@ -334,13 +335,16 @@ interface GoalChangedData {
   reason: string;
   evidence: number[];
   authority:
-    | { kind: "human"; turnId: string }
+    | { kind: "human" }
     | { kind: "parent_goal"; goalId: string; revision: number }
     | { kind: "system"; reason: string };
+  sourceTurnId?: string;
+  sourceWakeId?: string;
+  idempotencyKey?: string;
 }
 ```
 
-The Event envelope records the authenticated actor. `authority` records why that actor may perform the mutation.
+The Event envelope records the authenticated actor. `authority` records why that actor may perform the mutation; optional `sourceTurnId`, `sourceWakeId`, and `idempotencyKey` fields record provenance without changing semantic idempotency. `goal.changed` also carries `projection: "goals"`, so the same authoritative fact rebuilds the current Goal table.
 
 ### 7.4 Authority
 
@@ -740,7 +744,7 @@ Hide by default:
 
 ## 18. Migration
 
-This development release has no external users, so schema v13 does not migrate schemas 1–12. Development workspaces are recreated. Goal and Work Record semantics remain the target schema; execution ownership, Goal-targeted scheduling, and conversation storage are replaced together.
+This development release has no external users, so schema v14 does not migrate schemas 1–13. Development workspaces are recreated. Goal and Work Record semantics remain the target schema; authoritative Goal changes, execution ownership, Goal-targeted scheduling, and conversation storage are replaced together.
 
 ## 19. Implementation sequence
 

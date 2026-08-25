@@ -15,6 +15,9 @@ import {
   type EventInput,
   type EventRecord,
   goalStream,
+  type GoalChangeAuthority,
+  type GoalChangedData,
+  type GoalChangeMetadata,
   type GoalSnapshot,
   type GoalCompletionRequest,
   type HandoffCommit,
@@ -41,7 +44,7 @@ type FaultInjector = (point: FaultPoint) => void;
 type Row = Record<string, unknown>;
 type ProjectionName = "threads" | "turns" | "turn_items" | "goals" | "schedule" | "wakes" | "mailbox" | "actions" | "work_records";
 
-export const SQLITE_SCHEMA_VERSION = 13;
+export const SQLITE_SCHEMA_VERSION = 14;
 
 const createThreads = `CREATE TABLE IF NOT EXISTS threads (
   id TEXT PRIMARY KEY,
@@ -312,7 +315,7 @@ export class SqliteLedger implements Ledger {
   turnItems(turnId: string): TurnItemSnapshot[] { return (this.db.prepare("SELECT * FROM turn_items WHERE turn_id=? ORDER BY ordinal").all(turnId) as Row[]).map(mapTurnItem); }
   activeTurn(threadId: string): TurnSnapshot | null { const row = this.db.prepare("SELECT * FROM turns WHERE thread_id=? AND status='in_progress'").get(threadId) as Row | undefined; return row ? mapTurn(row) : null; }
 
-  putGoal(goal: GoalSnapshot, actor: string, wakeId?: string): EventRecord {
+  putGoal(goal: GoalSnapshot, actor: string, wakeId?: string,change?:GoalChangeMetadata): EventRecord {
     const normalized = normalizeGoal(goal);
     assertGoalSnapshot(normalized);
     const current = this.#getGoal(normalized.id);
@@ -321,6 +324,7 @@ export class SqliteLedger implements Ledger {
       if (current.phase === "complete") throw new Error("completed goal cannot be modified");
       if (normalized.parentId !== current.parentId) throw new Error("goal reparenting is not supported");
       if (normalized.phase === "complete") throw new Error("goal completion requires reason and evidence");
+      const definitionChanged=normalized.objective!==current.objective||normalized.observationMethod!==current.observationMethod||normalized.verificationMethod!==current.verificationMethod;if(current.phase!==normalized.phase&&(current.owner!==normalized.owner||definitionChanged)||current.owner!==normalized.owner&&definitionChanged)throw new Error("Goal mutation must express exactly one lifecycle operation");
       if (normalized.objective !== current.objective && ((current.observationMethod !== null && normalized.observationMethod === current.observationMethod) || (current.verificationMethod !== null && normalized.verificationMethod === current.verificationMethod))) throw new Error("objective revision must replace or invalidate observation and verification methods");
       assertGoalTransition(current.phase, normalized.phase);
       this.#assertGoalAuthority(current.parentId, actor);
@@ -329,7 +333,7 @@ export class SqliteLedger implements Ledger {
       this.#assertGoalAuthority(normalized.parentId, actor);
     }
     return this.#transaction(() => {
-      const event = this.#recordProjection("goals", normalized, actor, "goal.put", wakeId, undefined, undefined, goalStream(normalized.id));
+      const event = this.#recordGoalChange(normalized,current,actor,wakeId,change);
       if (!current) this.#createWorkRecord(normalized, actor, wakeId ?? `goal:create:${normalized.id}`, wakeId);
       return event;
     });
@@ -365,7 +369,7 @@ export class SqliteLedger implements Ledger {
     const existing = this.#delegationResult(request.id);
     if (existing) {
       const event=this.events().find((candidate)=>candidate.type==="delegation.created"&&(candidate.data as {delegationId?:unknown}).delegationId===request.id);const prior=(event?.data as {request?:unknown}|undefined)?.request;
-      if(event?.actor!==actor||!isDeepStrictEqual(prior,request))throw new Error("delegation id was reused with a different request");
+      if(event?.actor!==actor||!isDeepStrictEqual(prior,withoutSourceTurn(request)))throw new Error("delegation id was reused with a different request");
       return existing;
     }
     if (!request.id.trim() || !request.reason.trim()) throw new Error("delegation id and reason are required");
@@ -407,10 +411,10 @@ export class SqliteLedger implements Ledger {
         ts: this.#now(),
         actor,
         type: "delegation.created",
-        data: { delegationId: request.id, parentGoalId: request.parentGoalId, goalId: goal.id, mailId: mail.id, wakeId: wakeBase.id, reason: request.reason, evidence: request.evidence,request:request as unknown as JsonValue },
+        data: { delegationId: request.id, parentGoalId: request.parentGoalId, goalId: goal.id, mailId: mail.id, wakeId: wakeBase.id, reason: request.reason, evidence: request.evidence,request:withoutSourceTurn(request) as unknown as JsonValue },
       });
       this.#faultInjector?.("after_delegation_event");
-      this.#recordProjection("goals", goal, actor, "goal.put", wakeId, undefined, undefined, goalStream(goal.id));
+      this.#recordGoalChange(goal,null,actor,wakeId,{operation:"create",reason:request.reason,evidence:request.evidence,authority:{kind:"parent_goal",goalId:parent.id,goalRevision:parent.revision},...(request.sourceTurnId?{sourceTurnId:request.sourceTurnId}:{}),...(wakeId?{sourceWakeId:wakeId}:{}),idempotencyKey:request.id});
       this.#createWorkRecord(goal, actor, wakeId ?? `delegation:${request.id}`, wakeId);
       this.#recordProjection("mailbox", mail, actor, "mail.put", wakeId);
       const wake = { ...wakeBase, enqueuedSeq: this.#nextEventSeq() };
@@ -423,7 +427,7 @@ export class SqliteLedger implements Ledger {
     const existing = this.#reassignmentResult(request.id);
     if (existing) {
       const event=this.events().find((candidate)=>candidate.type==="goal.reassigned"&&(candidate.data as {reassignmentId?:unknown}).reassignmentId===request.id);const prior=(event?.data as {request?:unknown}|undefined)?.request;
-      if(event?.actor!==actor||!isDeepStrictEqual(prior,request))throw new Error("reassignment id was reused with a different request");
+      if(event?.actor!==actor||!isDeepStrictEqual(prior,withoutSourceTurn(request)))throw new Error("reassignment id was reused with a different request");
       return existing;
     }
     if (!request.id.trim() || !request.newOwner.trim() || !request.reason.trim()) throw new Error("reassignment id, owner and reason are required");
@@ -443,9 +447,9 @@ export class SqliteLedger implements Ledger {
         { id: `reassignment-new-mail:${request.id}`, to: goal.owner, from: actor, level: "decision", body: { type: "reassignment", reassignmentId: request.id, goalId: goal.id, role: "new_owner", brief: request.brief, reason: request.reason, evidence: request.evidence }, readAt: null },
       ];
       const wakeBase: WakeSnapshot = { id: `reassignment-wake:${request.id}`, agent: goal.owner, triggerRef: `reassignment:${request.id}`, status: "queued", attempt: 0, enqueuedSeq: 0, claimedAt: null, consumedAt: null, turnId: null,goalId:goal.id,goalRevision:goal.revision };
-      this.#insertEvent({ streamId: wakeId ? wakeStream(wakeId) : controlStream("reassignments"), ts: this.#now(), actor, type: "goal.reassigned", data: { reassignmentId: request.id, goalId: goal.id, oldOwner: current.owner, newOwner: goal.owner, mailIds: mail.map((item) => item.id), wakeId: wakeBase.id, reason: request.reason, evidence: request.evidence,request:request as unknown as JsonValue } });
+      this.#insertEvent({ streamId: wakeId ? wakeStream(wakeId) : controlStream("reassignments"), ts: this.#now(), actor, type: "goal.reassigned", data: { reassignmentId: request.id, goalId: goal.id, oldOwner: current.owner, newOwner: goal.owner, mailIds: mail.map((item) => item.id), wakeId: wakeBase.id, reason: request.reason, evidence: request.evidence,request:withoutSourceTurn(request) as unknown as JsonValue } });
       this.#faultInjector?.("after_reassignment_event");
-      this.#recordProjection("goals", goal, actor, "goal.put", wakeId, undefined, undefined, goalStream(goal.id));
+      this.#recordGoalChange(goal,current,actor,wakeId,{operation:"reassign",reason:request.reason,evidence:request.evidence,authority:{kind:"parent_goal",goalId:current.parentId!,goalRevision:this.#getGoal(current.parentId!)!.revision},...(request.sourceTurnId?{sourceTurnId:request.sourceTurnId}:{}),...(wakeId?{sourceWakeId:wakeId}:{}),idempotencyKey:request.id});
       for(const oldWake of this.wakes().filter((candidate)=>candidate.agent===current.owner&&candidate.goalId===current.id&&(candidate.status==="queued"||candidate.status==="claimed")))this.#recordProjection("wakes", { ...oldWake, status: "cancelled", consumedAt: this.#now() }, "supervisor", "wake.cancelled", oldWake.id);
       for (const item of mail) this.#recordProjection("mailbox", item, actor, "mail.put", wakeId);
       const wake = { ...wakeBase, enqueuedSeq: this.#nextEventSeq() };
@@ -465,13 +469,13 @@ export class SqliteLedger implements Ledger {
     if (current.verificationMethod === null || current.verificationMethod === undefined) throw new Error("goal completion requires a verification method");
     this.#assertGoalAuthority(current.parentId, actor);
     if (current.parentId === null && this.#hasNonCompleteDescendant(current.id)) throw new Error("root goal cannot complete while descendants remain non-complete");
-    const source = this.db.prepare("SELECT seq FROM events WHERE stream_id=? AND type='goal.put' AND json_extract(data,'$.snapshot.revision')=? ORDER BY seq DESC LIMIT 1").get(goalStream(current.id), current.revision) as { seq: number } | undefined;
+    const source = this.db.prepare("SELECT seq FROM events WHERE stream_id=? AND type='goal.changed' AND json_extract(data,'$.snapshot.revision')=? ORDER BY seq DESC LIMIT 1").get(goalStream(current.id), current.revision) as { seq: number } | undefined;
     if (!source) throw new Error("goal revision has no source event");
     if (request.evidence.some((seq) => seq <= source.seq)) throw new Error("goal completion evidence predates the current revision");
     return this.#transaction(() => {
       this.#insertEvent({ streamId: goalStream(current.id), ts: this.#now(), actor, type: "goal.completion_decided", data: { goalId: current.id, revision: current.revision, observationMethod: current.observationMethod, verificationMethod: current.verificationMethod ?? null, reason: request.reason, evidence: request.evidence } });
       const next: GoalSnapshot = { ...current, phase: "complete", revision: current.revision + 1 };
-      this.#recordProjection("goals", next, actor, "goal.put", wakeId, undefined, undefined, goalStream(current.id));
+      this.#recordGoalChange(next,current,actor,wakeId,{operation:"complete",reason:request.reason,evidence:request.evidence,authority:this.#goalAuthority(current.parentId,actor),...(request.sourceTurnId?{sourceTurnId:request.sourceTurnId}:{}),...(wakeId?{sourceWakeId:wakeId}:{})});
       return next;
     });
   }
@@ -763,6 +767,10 @@ export class SqliteLedger implements Ledger {
     });
   }
 
+  #recordGoalChange(snapshot:GoalSnapshot,previous:GoalSnapshot|null,actor:string,wakeId?:string,change?:GoalChangeMetadata):EventRecord{const derivedOperation=goalOperation(previous,snapshot);if(change&&change.operation!==derivedOperation)throw new Error("Goal change operation does not match its state transition");const operation=change?.operation??derivedOperation;if(change&&!change.reason.trim())throw new Error("Goal change reason is required");const evidence=change?.evidence??[];if(evidence.length)this.#assertEvidenceExists(evidence);const expectedAuthority=this.#goalAuthority(snapshot.parentId,actor);if(change?.authority&&!isDeepStrictEqual(change.authority,expectedAuthority))throw new Error("Goal change authority does not match the authenticated actor");const authority=change?.authority??expectedAuthority;if(change?.sourceTurnId&&!this.turn(change.sourceTurnId))throw new Error("Goal change source Turn does not exist");const sourceWakeId=change?.sourceWakeId??wakeId;if(sourceWakeId&&!this.wake(sourceWakeId))throw new Error("Goal change source Wake does not exist");const data:GoalChangedData={version:1,projection:"goals",operation,previousRevision:previous?.revision??null,snapshot,reason:change?.reason?.trim()||defaultGoalReason(operation),evidence,authority,...(change?.sourceTurnId?{sourceTurnId:change.sourceTurnId}:{}),...(sourceWakeId?{sourceWakeId}:{}),...(change?.idempotencyKey?{idempotencyKey:change.idempotencyKey}:{})};const event=this.#insertEvent({streamId:goalStream(snapshot.id),ts:this.#now(),actor,type:"goal.changed",data:data as unknown as JsonValue});this.#faultInjector?.("after_event_before_projection");this.#applyProjection("goals",snapshot,event.seq);return event;}
+
+  #goalAuthority(parentId:string|null,actor:string):GoalChangeAuthority{if(parentId===null)return actor==="human"?{kind:"human"}:{kind:"system",reason:`root mutation by ${actor}`};const parent=this.#getGoal(parentId);if(!parent)throw new Error("parent goal does not exist");return{kind:"parent_goal",goalId:parent.id,goalRevision:parent.revision};}
+
   #createWorkRecord(goal: GoalSnapshot, actor: string, turnId: string, wakeId?: string, seed?: { content: string; evidence: number[] }): WorkRecordSnapshot {
     return this.#recordWorkRecord({
       goalId: goal.id,
@@ -894,6 +902,9 @@ function mapGoal(r: Row): GoalSnapshot { return { id: String(r.id), parentId: r.
 function mapWorkRecord(r: Row): WorkRecordSnapshot { return { goalId:String(r.goal_id),recordRevision:Number(r.record_revision),goalRevision:Number(r.goal_revision),content:String(r.content),updatedBy:String(r.updated_by),updatedInTurn:String(r.updated_in_turn),sourceWakeId:r.source_wake_id===null?null:String(r.source_wake_id),updatedAt:String(r.updated_at),reason:String(r.reason),evidence:JSON.parse(String(r.evidence)) as number[],lastEventSeq:Number(r.last_event_seq) }; }
 function mapWorkRecordEvent(event: EventRecord): WorkRecordSnapshot { const data = event.data as { snapshot?: WorkRecordSnapshot }; if (!data.snapshot) throw new Error(`work record event ${event.seq} has no snapshot`); return { ...data.snapshot, lastEventSeq: event.seq }; }
 function initialWorkRecord(): string { return "# Current State\n\nGoal created. Work has not started.\n\n# Observations\n\n# Work Completed\n\n# Decisions\n\n# Blockers\n\n# Next Steps\n"; }
+function goalOperation(previous:GoalSnapshot|null,next:GoalSnapshot):GoalChangeMetadata["operation"]{if(!previous)return"create";if(previous.phase!==next.phase){if(next.phase==="paused")return"pause";if(next.phase==="active")return"resume";if(next.phase==="blocked")return"block";if(next.phase==="complete")return"complete";}return previous.owner!==next.owner?"reassign":"revise";}
+function defaultGoalReason(operation:GoalChangeMetadata["operation"]):string{return `Goal ${operation}`;}
+function withoutSourceTurn<T extends {sourceTurnId?:string}>(value:T):Omit<T,"sourceTurnId">{const{sourceTurnId:_,...semantic}=value;return semantic;}
 function lineDiff(from: string, to: string): string {
   const before = from.split("\n"); const after = to.split("\n"); const lines: string[] = [];
   for (let index = 0; index < Math.max(before.length, after.length); index += 1) {

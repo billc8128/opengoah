@@ -269,7 +269,7 @@ confirmation; visual presence cannot be inferred from source code alone.
 The current low-level sequence is unsafe as a product protocol:
 
 ```text
-goal.put
+goal.changed
 mail.send
 wake enqueue
 ```
@@ -347,7 +347,7 @@ The default CEO receives high-level tools:
 | `request_human` | Durable human decision/completion request |
 | `submit_action` | Existing external-action protocol |
 
-Low-level `goal.put` remains an internal/advanced capability, not the default CEO product tool.
+Low-level `goal.put` remains an internal/advanced mutation tool, but every accepted mutation commits the same authoritative `goal.changed` event.
 
 Child Agents keep the smaller Goah control surface: owned Goal plus observation method, ledger search, mail, own schedule, actions, audit acknowledgement, and handoff. They still retain the four Pi coding tools. They cannot delegate unless a deployment explicitly grants that role.
 
