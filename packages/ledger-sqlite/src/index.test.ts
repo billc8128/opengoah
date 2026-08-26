@@ -30,8 +30,8 @@ test("Turn failure atomically repairs open Items and commits its Transcript term
 
 test("Goal completion requires non-empty evidence",()=>{const ledger=new SqliteLedger(":memory:",{clock:new FixedClock()});ledger.putGoal({id:"g",parentId:null,objective:"ship",observationMethod:"inspect",verificationMethod:"verify",owner:"ceo",phase:"active",revision:0},"human");assert.throws(()=>ledger.completeGoal({goalId:"g",revision:0,reason:"done",evidence:[]},"human"),/evidence is required/);ledger.close();});
 
-test("pre-v16 development schemas are rejected explicitly", () => {
-  for(const version of [1,6,9,10,11,15]){const path=join(mkdtempSync(join(tmpdir(),`goah-retired-${version}-`)),"ledger.sqlite");const raw=new DatabaseSync(path);raw.exec(`PRAGMA user_version=${version}`);raw.close();assert.throws(()=>new SqliteLedger(path,{clock:new FixedClock()}),/predates runtime schema 16/);}
+test("pre-v17 development schemas are rejected explicitly", () => {
+  for(const version of [1,6,9,10,11,15,16]){const path=join(mkdtempSync(join(tmpdir(),`goah-retired-${version}-`)),"ledger.sqlite");const raw=new DatabaseSync(path);raw.exec(`PRAGMA user_version=${version}`);raw.close();assert.throws(()=>new SqliteLedger(path,{clock:new FixedClock()}),/predates runtime schema 17/);}
 });
 
 test("event and projection roll back together at the injected transaction boundary", () => {
@@ -54,16 +54,16 @@ test("global event order and per-stream order are both monotonic", () => {
 
 test("schema has events plus the active projections and replay reproduces all of them", () => {
   const ledger = new SqliteLedger(":memory:", { clock: new FixedClock() });
-  const tables = (ledger.db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name IN ('actions','events','goals','mailbox','schedule','wakes','work_records') ORDER BY name").all() as Array<{ name: string }>).map(({ name }) => name);
-  assert.deepEqual(tables, ["events", "goals", "mailbox", "schedule", "wakes", "work_records"]);
+  const tables = (ledger.db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name IN ('actions','events','goals','mailbox','schedule','wakes','wake_triggers','work_records') ORDER BY name").all() as Array<{ name: string }>).map(({ name }) => name);
+  assert.deepEqual(tables, ["events", "goals", "mailbox", "schedule", "wake_triggers", "wakes", "work_records"]);
   const root: GoalSnapshot = { id: "root", parentId: null, objective: "keep tests green", observationMethod: null, verificationMethod: null, owner: "agent-1", phase: "active", revision: 0 };
   ledger.putGoal(root, "human");
   ledger.putSchedule(schedule("s1","agent-1"), "agent-1");
   ledger.enqueueWake(wake("w1"), "supervisor");
   ledger.putMail({ id: "m1", to: "agent-1", from: "human", level: "decision", body: {}, readAt: null }, "human");
-  const before = JSON.stringify({ goals: ledger.goals(), schedules: ledger.schedules(), wakes: ledger.wakes(), mailbox: ledger.mailbox() });
+  const before = JSON.stringify({ goals: ledger.goals(), schedules: ledger.schedules(), wakes: ledger.wakes(),triggers:ledger.wakeTriggers("w1"), mailbox: ledger.mailbox() });
   ledger.rebuildProjections();
-  assert.equal(JSON.stringify({ goals: ledger.goals(), schedules: ledger.schedules(), wakes: ledger.wakes(), mailbox: ledger.mailbox() }), before);
+  assert.equal(JSON.stringify({ goals: ledger.goals(), schedules: ledger.schedules(), wakes: ledger.wakes(),triggers:ledger.wakeTriggers("w1"), mailbox: ledger.mailbox() }), before);
   assert.throws(() => ledger.db.prepare("DELETE FROM events").run(), /append-only/);
   ledger.close();
 });
@@ -71,16 +71,18 @@ test("schema has events plus the active projections and replay reproduces all of
 test("Wake queue is FIFO, deduplicated, claimable, and linked to a Turn", () => {
   const ledger = new SqliteLedger(":memory:", { clock: new FixedClock() });
   ledger.enqueueWake(wake("zzz", "a"), "supervisor");
+  assert.deepEqual(ledger.wakeTriggers("zzz").map((trigger)=>[trigger.triggerRef,trigger.status]),[["trigger:zzz","pending"]]);
   assert.throws(()=>ledger.enqueueWake({...wake("zzz","b"),triggerRef:"different"},"supervisor"),/wake id/);
   ledger.enqueueWake(wake("aaa", "b"), "supervisor");
   assert.equal(ledger.enqueueWake({ ...wake("duplicate", "a"), triggerRef: "trigger:zzz" }, "supervisor").created, false);
-  ledger.appendEvent(event("supervisor", "wake.trigger_coalesced", { wakeId: "zzz", triggerRef: "trigger:alias" }, "zzz"));
+  ledger.addWakeTrigger("zzz","trigger:alias","supervisor");
   assert.equal(ledger.wakeByTrigger("a", "trigger:alias")?.id, "zzz");
   assert.equal(ledger.enqueueWake({ ...wake("alias", "a"), triggerRef: "trigger:alias" }, "supervisor").created, false);
   const first = ledger.claimNextWake("2030-01-01T00:00:00.000Z");
   assert.equal(first?.id, "zzz");
   const turn=activeTurn(ledger,"a","turn-zzz");ledger.consumeWake("zzz",turn.id,"2030-01-01T00:00:01.000Z");
   assert.equal(ledger.wake("zzz")?.turnId,turn.id);
+  assert.equal(ledger.wakeTriggers("zzz").every((trigger)=>trigger.status==="resolved"),true);
   assert.equal(ledger.claimNextWake("2030-01-01T00:00:02.000Z")?.id, "aaa");
   ledger.close();
 });
@@ -124,6 +126,8 @@ test("Handoff Schedule uses the same provenance and UTC normalization as putSche
 test("Goal-bound Turn cannot bypass Work Record and Handoff completion",()=>{const ledger=new SqliteLedger(":memory:",{clock:new FixedClock()});const turn=goalTurn(ledger,"agent-1","goal-terminal");assert.throws(()=>ledger.finishTurn(turn.id,"completed",null,new FixedClock().value,"supervisor"),/commitHandoff/);assert.equal(ledger.turn(turn.id)?.status,"in_progress");ledger.close();});
 
 test("Handoff rejects contradictory Item, Mail, and Schedule representations",()=>{const ledger=new SqliteLedger(":memory:",{clock:new FixedClock()});const turn=goalTurn(ledger,"agent-1","goal-consistency","g");const commit=handoffCommit(ledger,turn.id,null);assert.throws(()=>ledger.commitHandoff({...commit,item:{...commit.item,data:{goalId:"other"}}}),/TurnOutput/);assert.throws(()=>ledger.commitHandoff({...commit,output:{...commit.output,mail:[{to:"human",level:"fyi",body:{expected:true}}]},outgoingMail:[{id:"m",to:"other",from:"agent-1",level:"fyi",body:{expected:false},readAt:null}]}),/outgoing Mail/);assert.throws(()=>ledger.commitHandoff({...commit,schedule:{id:"hidden",agent:"agent-1",nextWakeAt:"2030-01-02T00:00:00.000Z",reason:"hidden",setBy:"agent-1",status:"pending",resolvedAt:null,goalId:"g",goalRevision:0}}),/Schedule presence/);assert.equal(ledger.turn(turn.id)?.status,"in_progress");ledger.close();});
+
+test("Handoff cannot reuse Turn Item or Schedule identities",()=>{const ledger=new SqliteLedger(":memory:",{clock:new FixedClock()});const old=activeTurn(ledger,"agent-1","old","human");ledger.putTurnItem({id:"shared-item",turnId:old.id,ordinal:1,type:"assistant_message",status:"completed",data:{text:"old"},createdAt:new FixedClock().value,completedAt:new FixedClock().value},"agent-1");ledger.finishTurn(old.id,"completed",null,new FixedClock().value,"supervisor");const turn=goalTurn(ledger,"agent-1","goal-identities","g");let commit=handoffCommit(ledger,turn.id,null);assert.throws(()=>ledger.commitHandoff({...commit,item:{...commit.item,id:"shared-item"}}),/identity/);ledger.putSchedule({id:"shared-schedule",agent:"agent-1",nextWakeAt:"2030-01-03T00:00:00.000Z",reason:"existing",setBy:"agent-1",status:"pending",resolvedAt:null,goalId:"g",goalRevision:0},"agent-1");const nextWakeAt="2030-01-02T00:00:00.000Z";commit=handoffCommit(ledger,turn.id,null);assert.throws(()=>ledger.commitHandoff({...commit,output:{...commit.output,nextWakeAt},schedule:{id:"shared-schedule",agent:"agent-1",nextWakeAt,reason:"replacement",setBy:"agent-1",status:"pending",resolvedAt:null,goalId:"g",goalRevision:0}}),/schedule id/);assert.equal(ledger.turn(turn.id)?.status,"in_progress");ledger.close();});
 
 test("reading Mail preserves a coalesced Schedule trigger on the same Wake",()=>{const ledger=new SqliteLedger(":memory:",{clock:new FixedClock()});ledger.putGoal({id:"g",parentId:null,objective:"work",observationMethod:null,verificationMethod:null,owner:"ceo",phase:"active",revision:0},"human");ledger.putMail({id:"m",to:"ceo",from:"verifier",level:"decision",body:{},readAt:null},"verifier");ledger.enqueueWake({...wake("multi","ceo"),triggerRef:"mail:m",goalId:"g",goalRevision:0},"supervisor");ledger.putSchedule(schedule("s","ceo",{goalId:"g",goalRevision:0}),"ceo");ledger.consumeSchedule("s",{...wake("scheduled","ceo"),triggerRef:`s@${new FixedClock().value}`,goalId:"g",goalRevision:0},new FixedClock().value);const human=activeTurn(ledger,"ceo","human","human");ledger.finishTurn(human.id,"completed",null,new FixedClock().value,"supervisor",["m"]);assert.equal(ledger.mailbox()[0]?.readAt!==null,true);assert.equal(ledger.schedules()[0]?.status,"consumed");assert.equal(ledger.wake("multi")?.status,"queued");ledger.close();});
 
@@ -333,6 +337,8 @@ test("reassignment changes ownership, notifies both sides, and wakes only the ne
 test("reassignment cancels only Wakes targeting the reassigned Goal",()=>{const ledger=new SqliteLedger(":memory:",{clock:new FixedClock()});ledger.putGoal({id:"root",parentId:null,objective:"operate",observationMethod:null,verificationMethod:null,owner:"ceo",phase:"active",revision:0},"human");for(const id of ["target","other"])ledger.putGoal({id,parentId:"root",objective:id,observationMethod:"observe",verificationMethod:"verify",owner:"old",phase:"active",revision:0},"ceo");ledger.enqueueWake({...wake("other-wake","old"),goalId:"other",goalRevision:0},"supervisor");const evidence=ledger.appendEvent(event("ceo","observed",{}));ledger.commitReassignment({id:"move",goalId:"target",expectedGoalRevision:0,newOwner:"new",brief:{},reason:"move target",evidence:[evidence.seq]},"ceo");assert.equal(ledger.wake("other-wake")?.status,"queued");ledger.close();});
 
 test("delegation idempotency returns the original committed snapshots after later mutations",()=>{const ledger=new SqliteLedger(":memory:",{clock:new FixedClock()});ledger.putGoal({id:"root",parentId:null,objective:"operate",observationMethod:null,verificationMethod:null,owner:"ceo",phase:"active",revision:0},"human");const evidence=ledger.appendEvent(event("ceo","observed",{}));const request={id:"stable",parentGoalId:"root",expectedParentRevision:0,childGoal:{id:"child",objective:"work",observationMethod:"observe",verificationMethod:"verify",owner:"old"},brief:{},reason:"delegate",evidence:[evidence.seq]};const first=ledger.commitDelegation(request,"ceo");const later=ledger.appendEvent(event("ceo","observed",{}));ledger.commitReassignment({id:"move-child",goalId:"child",expectedGoalRevision:0,newOwner:"new",brief:{},reason:"move",evidence:[later.seq]},"ceo");const retry=ledger.commitDelegation(request,"ceo");assert.deepEqual(retry,first);assert.equal(retry.goal.owner,"old");assert.equal(retry.wake.status,"queued");ledger.close();});
+
+test("Delegation cannot overwrite a pre-existing deterministic Wake id",()=>{const ledger=new SqliteLedger(":memory:",{clock:new FixedClock()});ledger.putGoal({id:"root",parentId:null,objective:"operate",observationMethod:null,verificationMethod:null,owner:"ceo",phase:"active",revision:0},"human");ledger.enqueueWake({...wake("delegation-wake:d","victim"),triggerRef:"original"},"supervisor");const evidence=ledger.appendEvent(event("ceo","observed",{}));assert.throws(()=>ledger.commitDelegation({id:"d",parentGoalId:"root",expectedParentRevision:0,childGoal:{id:"child",objective:"work",observationMethod:"observe",verificationMethod:"verify",owner:"worker"},brief:{},reason:"delegate",evidence:[evidence.seq]},"ceo"),/wake id/);assert.equal(ledger.wake("delegation-wake:d")?.agent,"victim");assert.equal(ledger.goal("child"),null);ledger.close();});
 
 test("FTS searches event facts and raw business payloads may use projection as a field", () => {
   const ledger = new SqliteLedger(":memory:", { clock: new FixedClock() });

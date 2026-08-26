@@ -743,7 +743,7 @@ Hide by default:
 
 ## 18. Migration
 
-This development release has no external users, so schema v16 does not migrate earlier development schemas. Development workspaces are recreated. Goal and Work Record semantics remain the target schema; authoritative Goal changes, private projection metadata, closed Schedule lifecycles, execution ownership, Goal-targeted scheduling, and conversation storage are replaced together.
+This development release has no external users, so schema v17 does not migrate earlier development schemas. Development workspaces are recreated. Goal and Work Record semantics remain the target schema; authoritative Goal changes, private projection metadata, closed Schedule and Wake-trigger lifecycles, execution ownership, Goal-targeted scheduling, and conversation storage are replaced together.
 
 ## 19. Implementation sequence
 

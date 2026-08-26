@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Schema v17 adds replayable WakeTrigger state, derives Wake identity through canonical admission, and resolves triggers atomically on consume/cancel.
 - Schema v16 removes Action projection storage, adds terminal Schedule state, atomically consumes Schedules with their Wakes, and stores projection metadata outside event business payloads.
 - Canonicalized Schedule timestamps, coalesced due schedules with queued Goal Wakes, rejected conflicting Wake ids, and kept one snapshot authority per projection event.
 - Mail creation is now immutable and idempotent, supports atomic batches, and Handoff Schedules use the same provenance and UTC normalization as direct scheduling.

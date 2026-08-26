@@ -2,6 +2,7 @@ import { type EventInput, type EventRecord, type EventStore, type JsonValue } fr
 import type { MetricSample } from "./metrics.js";
 
 export type WakeStatus = "queued" | "claimed" | "consumed" | "cancelled";
+export type WakeTriggerStatus = "pending" | "resolved";
 export type ScheduleStatus = "pending" | "consumed" | "cancelled" | "superseded";
 export type GoalPhase = "active" | "paused" | "blocked" | "complete";
 export type TurnStatus = "in_progress" | "completed" | "failed" | "interrupted";
@@ -42,6 +43,7 @@ export interface WorkRecordUpdateRequest {
 export interface WorkRecordDiff { goalId: string; fromRevision: number; toRevision: number; text: string }
 export interface ScheduleSnapshot { id: string; agent: string; nextWakeAt: string; reason: string; setBy: string; status: ScheduleStatus; resolvedAt: string | null; goalId?: string; goalRevision?: number }
 export interface WakeSnapshot { id: string; agent: string; triggerRef: string; status: WakeStatus; attempt: number; enqueuedSeq: number; claimedAt: string | null; consumedAt: string | null; turnId: string | null; goalId?: string; goalRevision?: number }
+export interface WakeTriggerSnapshot { wakeId: string; agent: string; triggerRef: string; source: TurnSourceKind; status: WakeTriggerStatus; addedAt: string; resolvedAt: string | null }
 export type MailLevel = "fyi" | "decision" | "emergency";
 export interface MailSnapshot { id: string; to: string; from: string; level: MailLevel; body: JsonValue; readAt: string | null }
 export interface DelegationRequest {
@@ -142,6 +144,7 @@ export interface Ledger extends EventStore {
   cancelSchedule(id: string, now: string): ScheduleSnapshot;
   supersedeSchedule(id: string, now: string): ScheduleSnapshot;
   enqueueWake(wake: WakeSnapshot, actor: string): { event: EventRecord; created: boolean };
+  addWakeTrigger(wakeId: string, triggerRef: string, actor: string): WakeTriggerSnapshot;
   claimNextWake(now: string): WakeSnapshot | null;
   startTurnFromWake(id: string, turn: TurnSnapshot, now: string): WakeSnapshot;
   consumeWake(id: string, turnId: string, now: string): WakeSnapshot;
@@ -162,6 +165,7 @@ export interface Ledger extends EventStore {
   eventsForWake(wakeId: string): EventRecord[];
   wake(id: string): WakeSnapshot | null;
   wakeByTrigger(agent: string, triggerRef: string): WakeSnapshot | null;
+  wakeTriggers(wakeId: string): WakeTriggerSnapshot[];
   queuedWakeForAgent(agent: string): WakeSnapshot | null;
   goalsForOwner(owner: string): GoalSnapshot[];
   goal(id: string): GoalSnapshot | null;

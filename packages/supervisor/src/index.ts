@@ -37,6 +37,7 @@ import {
   type TurnItemSnapshot,
   type TurnOutput,
   type WakeSnapshot,
+  type WakeTriggerSnapshot,
   wakeStream,
 } from "goah-ledger-contract";
 import { composeActiveContext, selectRecoveryEvents, selectWorkingMemory } from "./context-view.js";
@@ -200,7 +201,7 @@ export class Supervisor {
     const turn=this.ledger.turn(turnId)!;const profile=this.#profiles.get(agent)??{agent,role:"ceo" as const};const runnerProfile=this.#runnerProfiles.get(profile.runnerProfile??"default");const recent=this.ledger.turns(turn.threadId).filter((candidate)=>candidate.id!==turn.id&&candidate.status==="completed").slice(-8).flatMap((candidate)=>this.ledger.turnItems(candidate.id).filter((item)=>item.type==="user_message"||item.type==="assistant_message").map((item)=>`${item.type==="user_message"?"Human":"Assistant"}: ${String((item.data as {text?:unknown}).text??"")}`));const current=this.#turnHistory(turn.id);const sourceSeqs=[...this.ledger.readStream(`turn:${turn.id}`).filter((event)=>event.type==="item.user_message.started").map((event)=>event.seq),...this.#mailSourceSeqs(mail)];const incoming=mail.map((item)=>`- [${item.level}] ${item.id} from ${item.from}: ${boundedJson(item.body)}`);return {text:[...(recent.length?[`# Recent conversation\n\n${recent.join("\n")}`]:[]),...(incoming.length?[`# Incoming\n\n${incoming.join("\n")}`]:[]),`# Current Turn\n\n${current}`].join("\n\n"),sourceSeqs,capabilities:profile.capabilities??defaultCapabilities(profile.role),systemPrompt:profile.systemPrompt??"You are Goah's primary Agent. Respond naturally and use tools when useful.",...(runnerProfile?{runnerProfile}:{})} as unknown as JsonValue;
   }
 
-  #goalContext(wake:WakeSnapshot,turn:TurnContext,turnId:string,mail:MailSnapshot[]):JsonValue{const base=this.#loadContext(wake,turn,mail);if(!base||typeof base!=="object"||Array.isArray(base))return base;const value=base as Record<string,JsonValue>;const history=this.#turnHistory(turnId);return {...value,...(history?{text:`${String(value.text??"")}\n\n# Current Turn retry history\n\n${history}`}:{})};}
+  #goalContext(wake:WakeSnapshot,turn:TurnContext,turnId:string,mail:MailSnapshot[],wakeTriggers:WakeTriggerSnapshot[]):JsonValue{const base=this.#loadContext(wake,turn,mail,wakeTriggers);if(!base||typeof base!=="object"||Array.isArray(base))return base;const value=base as Record<string,JsonValue>;const history=this.#turnHistory(turnId);return {...value,...(history?{text:`${String(value.text??"")}\n\n# Current Turn retry history\n\n${history}`}:{})};}
 
   #threadAgent(threadId:string):string{const thread=this.ledger.thread(threadId);if(!thread)throw new Error("Turn Thread not found");return thread.agent;}
 
@@ -309,9 +310,9 @@ export class Supervisor {
     if(wake.goalId){const goal=this.ledger.goal(wake.goalId);if(!goal||goal.owner!==wake.agent||goal.phase!=="active"||goal.revision!==wake.goalRevision){this.ledger.cancelWake(wake.id,this.#now());return this.#wake(wake.id);}}
     let createdTurnId:string|null=null;
     try {
-      await this.#awaitAgentExecution(wake.agent);const turnContext = this.#turnContext(wake);const thread=this.threadFor(wake.agent);const now=this.#now();const leaseToken=randomUUID();const execution:TurnSnapshot={id:randomUUID(),threadId:thread.id,source:turnContext.source.kind,goalId:turnContext.goalBinding?.goalId??null,goalRevision:turnContext.goalBinding?.goalRevision??null,status:"in_progress",attempt:1,error:null,startedAt:now,endedAt:null,leaseUntil:new Date(this.clock.now().getTime()+this.#leaseMs).toISOString(),leaseToken,runnerPid:null,runnerProfileId:this.#runnerProfileId(wake.agent)};
+      await this.#awaitAgentExecution(wake.agent);const wakeTriggers=this.ledger.wakeTriggers(wake.id).filter((trigger)=>trigger.status==="pending");const turnContext = this.#turnContext(wake,wakeTriggers);const thread=this.threadFor(wake.agent);const now=this.#now();const leaseToken=randomUUID();const execution:TurnSnapshot={id:randomUUID(),threadId:thread.id,source:turnContext.source.kind,goalId:turnContext.goalBinding?.goalId??null,goalRevision:turnContext.goalBinding?.goalRevision??null,status:"in_progress",attempt:1,error:null,startedAt:now,endedAt:null,leaseUntil:new Date(this.clock.now().getTime()+this.#leaseMs).toISOString(),leaseToken,runnerPid:null,runnerProfileId:this.#runnerProfileId(wake.agent)};
       this.ledger.putThread({ ...thread,updatedAt:this.#now() },"supervisor");
-      this.ledger.startTurnFromWake(wake.id,execution,now);createdTurnId=execution.id;const deliveredMail=this.#contextMail(wake.agent);const deliveredMailIds=deliveredMail.map((mail)=>mail.id);this.ledger.appendEvent({streamId:`turn:${execution.id}`,ts:now,actor:"supervisor",type:"run.admitted",data:turnContext as unknown as JsonValue,ignorable:true});const revision=turnContext.goalBinding?this.ledger.workRecord(turnContext.goalBinding.goalId)?.recordRevision??-1:-1;await this.#trackExecution(execution,wake.agent,turnContext,()=>this.#goalContext(wake,turnContext,execution.id,deliveredMail),wake,deliveredMailIds,revision);
+      this.ledger.startTurnFromWake(wake.id,execution,now);createdTurnId=execution.id;const deliveredMail=this.#contextMail(wake.agent);const deliveredMailIds=deliveredMail.map((mail)=>mail.id);this.ledger.appendEvent({streamId:`turn:${execution.id}`,ts:now,actor:"supervisor",type:"run.admitted",data:{...turnContext,wakeTriggers} as unknown as JsonValue,ignorable:true});const revision=turnContext.goalBinding?this.ledger.workRecord(turnContext.goalBinding.goalId)?.recordRevision??-1:-1;await this.#trackExecution(execution,wake.agent,turnContext,()=>this.#goalContext(wake,turnContext,execution.id,deliveredMail,wakeTriggers),wake,deliveredMailIds,revision);
       if (this.#verifyMetricsAfterWake) {
         for (const goal of this.ledger.goalsForOwner(wake.agent)) if (this.#metricCollectors.has(goal.id)) await this.collectMetricNow(goal.id);
       }
@@ -390,7 +391,7 @@ export class Supervisor {
     let queued = this.ledger.wakes().find((wake)=>wake.agent===agent&&wake.status==="queued"&&(wake.goalId??null)===(target?.goalId??null));
     if(queued&&queued.goalRevision!==target?.goalRevision){this.ledger.cancelWake(queued.id,this.#now());queued=undefined;}
     if (queued) {
-      this.ledger.appendEvent({ streamId: wakeStream(queued.id), ts: this.#now(), actor: "supervisor", type: "wake.trigger_coalesced", data: { wakeId: queued.id, triggerRef } });
+      this.ledger.addWakeTrigger(queued.id,triggerRef,"supervisor");
       return queued;
     }
     const wake: WakeSnapshot = { id: randomUUID(), agent, triggerRef, status: "queued", attempt: 0, enqueuedSeq: 0, claimedAt:null,consumedAt:null,turnId:null,...(target??{}) };
@@ -446,13 +447,13 @@ export class Supervisor {
     return { ...output, handoff };
   }
 
-  #turnContext(wake: WakeSnapshot): TurnContext {
-    const mailId=wake.triggerRef.startsWith("mail:")?wake.triggerRef.slice(5).split("@redelivery:")[0]:null;const humanMail = mailId!==null&&this.ledger.mailbox().some((mail) => mail.id === mailId && mail.from === "human");
+  #turnContext(wake: WakeSnapshot,triggers=this.ledger.wakeTriggers(wake.id).filter((trigger)=>trigger.status==="pending")): TurnContext {
+    const human=triggers.some((trigger)=>trigger.source==="human");
     const goal=wake.goalId?this.#goal(wake.goalId):null;
-    return { source: humanMail ? { kind: "human" } : goal?{kind:"goal",round:(this.ledger.workRecord(goal.id)?.recordRevision??0)+1}:{kind:"system",reason:wake.triggerRef}, ...(goal?{goalBinding:{goalId:goal.id,goalRevision:goal.revision}}:{}) };
+    return { source: human ? { kind: "human" } : goal?{kind:"goal",round:(this.ledger.workRecord(goal.id)?.recordRevision??0)+1}:{kind:"system",reason:triggers.map((trigger)=>trigger.triggerRef).join(", ")||wake.triggerRef}, ...(goal?{goalBinding:{goalId:goal.id,goalRevision:goal.revision}}:{}) };
   }
 
-  #loadContext(wake: WakeSnapshot, turn: TurnContext,mail:MailSnapshot[]): JsonValue {
+  #loadContext(wake: WakeSnapshot, turn: TurnContext,mail:MailSnapshot[],wakeTriggers:WakeTriggerSnapshot[]): JsonValue {
     const profile = this.#profiles.get(wake.agent) ?? { agent: wake.agent, role: "child" as const };
     const role = profile.role;
     const capabilities = profile.capabilities ?? defaultCapabilities(role);
@@ -468,7 +469,7 @@ export class Supervisor {
       : [];
     const revisionWarnings = goals.flatMap((goal) => this.#goalRevisionWarning(goal));
     const workingMemory = selectWorkingMemory(this.ledger.readStream(memoryStream(wake.agent)), this.#memoryTailChars);
-    const active = composeActiveContext({ role, capabilities, systemPrompt: profile.systemPrompt ?? defaultRolePrompt(role), wake, goals, mail, lastHandoff: handoff, teamHandoffs, team: role === "ceo" ? this.teamList() : [], revisionWarnings, recoveryEvents, workingMemory });
+    const active = composeActiveContext({ role, capabilities, systemPrompt: profile.systemPrompt ?? defaultRolePrompt(role), wake,wakeTriggers, goals, mail, lastHandoff: handoff, teamHandoffs, team: role === "ceo" ? this.teamList() : [], revisionWarnings, recoveryEvents, workingMemory });
     const records = this.ledger.workRecords();
     const currentRecord = turn.goalBinding ? this.ledger.workRecord(turn.goalBinding.goalId) : null;
     const currentGoal = turn.goalBinding ? this.ledger.goal(turn.goalBinding.goalId) : null;

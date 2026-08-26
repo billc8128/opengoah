@@ -1,4 +1,4 @@
-import type { AgentCapability, AgentRole, EventRecord, GoalSnapshot, JsonValue, MailSnapshot, TeamMemberView, WakeSnapshot } from "goah-ledger-contract";
+import type { AgentCapability, AgentRole, EventRecord, GoalSnapshot, JsonValue, MailSnapshot, TeamMemberView, WakeSnapshot, WakeTriggerSnapshot } from "goah-ledger-contract";
 
 export interface ActiveContextView {
   role: AgentRole;
@@ -13,6 +13,7 @@ export interface ActiveContextInput {
   capabilities: AgentCapability[];
   systemPrompt: string;
   wake: WakeSnapshot;
+  wakeTriggers: WakeTriggerSnapshot[];
   goals: GoalSnapshot[];
   mail: MailSnapshot[];
   lastHandoff: EventRecord | null;
@@ -64,7 +65,7 @@ export function composeActiveContext(input: ActiveContextInput): ActiveContextVi
     ["Observation methods", input.goals.map((goal) => `## ${goal.id}\n\n${goal.observationMethod ?? "MISSING — inspect the project and request authoritative confirmation before claiming progress or completion."}`)],
     ["Verification methods", input.goals.map((goal) => `## ${goal.id}\n\n${goal.verificationMethod ?? "MISSING — define authoritative completion evidence before claiming completion."}`)],
     ["Revision barriers", input.revisionWarnings.map((warning) => `- ${warning}`)],
-    ["Wake", [`- Trigger: ${input.wake.triggerRef}`, `- Attempt: ${input.wake.attempt}`]],
+    ["Wake", [...input.wakeTriggers.filter((trigger)=>trigger.status==="pending").map((trigger)=>`- [${trigger.source}] ${trigger.triggerRef}`), `- Attempt: ${input.wake.attempt}`]],
     ["Working memory", (input.workingMemory ?? []).map((event) => `- ${String(field(event.data, "note") ?? "")} [event:${event.seq}]`)],
     ["Current state", lines(handoff?.observations)],
     ["Verified", lines(handoff?.results).map((line) => `${line}${input.lastHandoff ? ` [event:${input.lastHandoff.seq}]` : ""}`)],

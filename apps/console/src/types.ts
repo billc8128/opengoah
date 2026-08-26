@@ -31,6 +31,7 @@ export interface WakeView {
   consumedAt: string | null
   turnId: string | null
 }
+export interface WakeTriggerView { wakeId:string;agent:string;triggerRef:string;source:"human"|"goal"|"system";status:"pending"|"resolved";addedAt:string;resolvedAt:string|null }
 
 export interface ScheduleView { id: string; agent: string; nextWakeAt: string; reason: string; setBy: string; status: "pending" | "consumed" | "cancelled" | "superseded"; resolvedAt: string | null }
 export interface MailView { id: string; to: string; from: string; level: string; body: JsonValue; readAt: string | null }
@@ -79,6 +80,7 @@ export interface ConsoleSnapshot {
   threads: ThreadView[]
   turns: TurnView[]
   wakes: WakeView[]
+  wakeTriggers:WakeTriggerView[]
   schedules: ScheduleView[]
   mailbox: MailView[]
   events: EventView[]

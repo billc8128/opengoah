@@ -283,7 +283,7 @@ export function statusSnapshot(ledger: SqliteLedger): object {
   const goals = ledger.goals().map((goal) => ({ ...goal, evaluation: [...events].reverse().find((event) => event.streamId === `metric:${goal.id}` && event.type === "metric.evaluated")?.data ?? null }));
   const handoffs = events.filter((event) => event.type === "handoff.recorded").slice(-20).map((event) => ({ seq: event.seq, ts: event.ts, agent: event.actor, streamId: event.streamId, handoff: event.data }));
   const modelCapabilitiesByAgent=Object.fromEntries(ledger.threads().flatMap((thread)=>{const turnIds=new Set(ledger.turns(thread.id).map((turn)=>turn.id));const capability=[...events].reverse().find((event)=>event.type==="transcript.started"&&event.streamId.startsWith("turn:")&&turnIds.has(event.streamId.slice("turn:".length)))?.data;return capability?[[thread.agent,capability]]:[];}));const modelCapabilities=modelCapabilitiesByAgent.ceo??[...events].reverse().find((event)=>event.type==="transcript.started")?.data??null;
-  return { seq: events.at(-1)?.seq ?? 0, threads: ledger.threads(), turns: ledger.turns().map((turn)=>({...turn,leaseToken:null})), goals, wakes, schedules:ledger.schedules(), modelCapabilities,modelCapabilitiesByAgent, recentHandoffs: handoffs };
+  return { seq: events.at(-1)?.seq ?? 0, threads: ledger.threads(), turns: ledger.turns().map((turn)=>({...turn,leaseToken:null})), goals, wakes,wakeTriggers:wakes.flatMap((wake)=>ledger.wakeTriggers(wake.id)), schedules:ledger.schedules(), modelCapabilities,modelCapabilitiesByAgent, recentHandoffs: handoffs };
 }
 
 function defaultModel(provider: string): string {

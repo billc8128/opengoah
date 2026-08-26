@@ -28,6 +28,7 @@ import {
   type TurnSnapshot,
   type TurnItemSnapshot,
   type WakeSnapshot,
+  type WakeTriggerSnapshot,
   wakeStream,
   type WorkRecordSnapshot,
   type WorkRecordDiff,
@@ -38,9 +39,9 @@ import {
 type FaultPoint = "after_event_before_projection" | "after_delegation_event" | "after_reassignment_event";
 type FaultInjector = (point: FaultPoint) => void;
 type Row = Record<string, unknown>;
-type ProjectionName = "threads" | "turns" | "turn_items" | "goals" | "schedule" | "wakes" | "mailbox" | "work_records";
+type ProjectionName = "threads" | "turns" | "turn_items" | "goals" | "schedule" | "wakes" | "wake_triggers" | "mailbox" | "work_records";
 
-export const SQLITE_SCHEMA_VERSION = 16;
+export const SQLITE_SCHEMA_VERSION = 17;
 
 const createThreads = `CREATE TABLE IF NOT EXISTS threads (
   id TEXT PRIMARY KEY,
@@ -126,16 +127,29 @@ const createWakes = `CREATE TABLE IF NOT EXISTS wakes (
   CHECK((goal_id IS NULL) = (goal_revision IS NULL))
 ) STRICT;`;
 
+const createWakeTriggers=`CREATE TABLE IF NOT EXISTS wake_triggers (
+  wake_id TEXT NOT NULL REFERENCES wakes(id) ON DELETE CASCADE,
+  agent TEXT NOT NULL,
+  trigger_ref TEXT NOT NULL,
+  source TEXT NOT NULL CHECK(source IN ('human','goal','system')),
+  status TEXT NOT NULL CHECK(status IN ('pending','resolved')),
+  added_at TEXT NOT NULL,
+  resolved_at TEXT,
+  PRIMARY KEY(wake_id,trigger_ref),
+  UNIQUE(agent,trigger_ref),
+  CHECK((status='pending' AND resolved_at IS NULL) OR (status='resolved' AND resolved_at IS NOT NULL))
+) STRICT;`;
+
 const indexesAndTriggers = `
 CREATE UNIQUE INDEX IF NOT EXISTS turns_one_active_thread ON turns(thread_id) WHERE status='in_progress';
 CREATE INDEX IF NOT EXISTS turns_thread_started ON turns(thread_id,started_at,id);
 CREATE INDEX IF NOT EXISTS turn_items_turn_ordinal ON turn_items(turn_id,ordinal);
 CREATE UNIQUE INDEX IF NOT EXISTS wakes_one_claimed_agent ON wakes(agent) WHERE status='claimed';
 CREATE INDEX IF NOT EXISTS wakes_queue_order ON wakes(status, enqueued_seq);
+CREATE INDEX IF NOT EXISTS wake_triggers_pending ON wake_triggers(wake_id,status);
 CREATE INDEX IF NOT EXISTS schedule_due ON schedule(status,next_wake_at);
 CREATE INDEX IF NOT EXISTS events_actor_type_seq ON events(actor, type, seq DESC);
 CREATE INDEX IF NOT EXISTS events_stream_seq ON events(stream_id, stream_seq);
-CREATE INDEX IF NOT EXISTS events_coalesced_trigger ON events(json_extract(data,'$.triggerRef'), stream_id) WHERE type='wake.trigger_coalesced';
 CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(actor, type, data, content='events', content_rowid='seq');
 
 CREATE TRIGGER IF NOT EXISTS events_no_update BEFORE UPDATE ON events
@@ -157,6 +171,10 @@ WHEN OLD.status <> NEW.status AND NOT (
   OLD.status = 'pending' AND NEW.status IN ('consumed','cancelled','superseded')
 )
 BEGIN SELECT RAISE(ABORT, 'invalid schedule transition'); END;
+
+CREATE TRIGGER IF NOT EXISTS wake_triggers_valid_transition BEFORE UPDATE OF status ON wake_triggers
+WHEN OLD.status <> NEW.status AND NOT (OLD.status='pending' AND NEW.status='resolved')
+BEGIN SELECT RAISE(ABORT, 'invalid Wake trigger transition'); END;
 
 CREATE TRIGGER IF NOT EXISTS goals_valid_transition BEFORE UPDATE OF phase ON goals
 WHEN OLD.phase <> NEW.phase AND NOT (
@@ -199,6 +217,7 @@ CREATE TABLE IF NOT EXISTS schedule (
   CHECK((goal_id IS NULL) = (goal_revision IS NULL))
 ) STRICT;
 ${createWakes}
+${createWakeTriggers}
 CREATE TABLE IF NOT EXISTS mailbox (
   id TEXT PRIMARY KEY,
   to_agent TEXT NOT NULL,
@@ -276,13 +295,7 @@ export class SqliteLedger implements Ledger {
   }
 
   putTurnItem(item: TurnItemSnapshot, actor: string): EventRecord {
-    if (!item.id.trim() || !item.turnId.trim()) throw new Error("turn item id and turn are required");
-    const turn = this.turn(item.turnId); if (!turn) throw new Error("turn item turn does not exist");
-    if (turn.status !== "in_progress") throw new Error("terminal turn cannot accept items");
-    if (item.status === "in_progress" && item.completedAt !== null || item.status !== "in_progress" && item.completedAt === null) throw new Error("turn item terminal time does not match status");
-    const current = this.db.prepare("SELECT * FROM turn_items WHERE id=?").get(item.id) as Row | undefined;
-    if (current && (String(current.turn_id) !== item.turnId || String(current.type) !== item.type || String(current.status) !== "in_progress")) throw new Error("turn item identity or terminal state cannot change");
-    return this.#project("turn_items", item, actor, current ? `item.${item.type}.${item.status}` : `item.${item.type}.started`, undefined, item.completedAt ?? item.createdAt, `turn:${item.turnId}`);
+    return this.#transaction(()=>this.#admitTurnItem(item,actor));
   }
 
   thread(id: string): ThreadSnapshot | null { const row = this.db.prepare("SELECT * FROM threads WHERE id=?").get(id) as Row | undefined; return row ? mapThread(row) : null; }
@@ -396,8 +409,7 @@ export class SqliteLedger implements Ledger {
       this.#createWorkRecord(goal, actor, wakeId ?? `delegation:${request.id}`, wakeId);
       this.#assertNewMail(mail,actor);
       this.#recordProjection("mailbox", mail, actor, "mail.put", wakeId);
-      const wake = { ...wakeBase, enqueuedSeq: this.#nextEventSeq() };
-      this.#recordProjection("wakes", wake, "supervisor", "wake.enqueued", wake.id, undefined, wake.enqueuedSeq);
+      const wake=this.#admitWake(wakeBase,"supervisor",false).wake;
       return { delegationId: request.id, goal, mail, wake };
     });
   }
@@ -429,10 +441,9 @@ export class SqliteLedger implements Ledger {
       this.#insertEvent({ streamId: wakeId ? wakeStream(wakeId) : controlStream("reassignments"), ts: this.#now(), actor, type: "goal.reassigned", data: { reassignmentId: request.id, goalId: goal.id, oldOwner: current.owner, newOwner: goal.owner, mailIds: mail.map((item) => item.id), wakeId: wakeBase.id, reason: request.reason, evidence: request.evidence,request:withoutSourceTurn(request) as unknown as JsonValue } });
       this.#faultInjector?.("after_reassignment_event");
       this.#recordGoalChange(goal,current,actor,wakeId,{operation:"reassign",reason:request.reason,evidence:request.evidence,authority:{kind:"parent_goal",goalId:current.parentId!,goalRevision:this.#getGoal(current.parentId!)!.revision},...(request.sourceTurnId?{sourceTurnId:request.sourceTurnId}:{}),...(wakeId?{sourceWakeId:wakeId}:{}),idempotencyKey:request.id});
-      for(const oldWake of this.wakes().filter((candidate)=>candidate.agent===current.owner&&candidate.goalId===current.id&&(candidate.status==="queued"||candidate.status==="claimed")))this.#recordProjection("wakes", { ...oldWake, status: "cancelled", consumedAt: this.#now() }, "supervisor", "wake.cancelled", oldWake.id);
+      for(const oldWake of this.wakes().filter((candidate)=>candidate.agent===current.owner&&candidate.goalId===current.id&&(candidate.status==="queued"||candidate.status==="claimed")))this.#cancelWakeProjection(oldWake,this.#now());
       for (const item of mail){this.#assertNewMail(item,actor);this.#recordProjection("mailbox", item, actor, "mail.put", wakeId);}
-      const wake = { ...wakeBase, enqueuedSeq: this.#nextEventSeq() };
-      this.#recordProjection("wakes", wake, "supervisor", "wake.enqueued", wake.id, undefined, wake.enqueuedSeq);
+      const wake=this.#admitWake(wakeBase,"supervisor",false).wake;
       return { reassignmentId: request.id, goal, mail, wake };
     });
   }
@@ -460,39 +471,20 @@ export class SqliteLedger implements Ledger {
   }
 
   putSchedule(value: ScheduleSnapshot, actor: string, wakeId?: string): EventRecord {
-    const normalized=this.#normalizeSchedule(value,actor);
-    const existing=this.db.prepare("SELECT * FROM schedule WHERE id=?").get(normalized.id) as Row|undefined;
-    if(existing){const current=mapSchedule(existing);if(!isDeepStrictEqual(current,normalized))throw new Error("schedule id was reused with different content");const row=this.db.prepare("SELECT * FROM events WHERE type='schedule.put' AND json_extract(data,'$.snapshot.id')=? ORDER BY seq LIMIT 1").get(normalized.id) as Row|undefined;if(!row)throw new Error("schedule projection has no source event");return mapEvent(row);}
-    return this.#transaction(()=>{this.#supersedeScheduleRoute(normalized.agent,normalized.goalId??null,normalized.id,this.#now());return this.#recordProjection("schedule",normalized,actor,"schedule.put",wakeId);});
+    return this.#transaction(()=>this.#admitSchedule(value,actor,wakeId));
   }
 
-  consumeSchedule(id:string,wake:WakeSnapshot,now:string):{schedule:ScheduleSnapshot;wake:WakeSnapshot}{const current=this.#requiredSchedule(id);if(current.status!=="pending")throw new Error("only a pending Schedule may be consumed");if(wake.agent!==current.agent||wake.triggerRef!==`${current.id}@${current.nextWakeAt}`||(wake.goalId??null)!==(current.goalId??null)||(wake.goalRevision??null)!==(current.goalRevision??null))throw new Error("scheduled Wake does not match Schedule");if(wake.status!=="queued"||wake.attempt!==0||wake.claimedAt||wake.consumedAt||wake.turnId)throw new Error("scheduled Wake must be pristine");return this.#transaction(()=>{const exact=this.wakeByTrigger(wake.agent,wake.triggerRef);let stored:WakeSnapshot;if(exact){if(exact.status!=="queued"||(exact.goalId??null)!==(wake.goalId??null)||(exact.goalRevision??null)!==(wake.goalRevision??null))throw new Error("scheduled Wake trigger is already terminal or bound differently");stored=exact;}else{const queued=this.wakes().find((candidate)=>candidate.agent===wake.agent&&candidate.status==="queued"&&(candidate.goalId??null)===(wake.goalId??null)&&(candidate.goalRevision??null)===(wake.goalRevision??null));if(queued){stored=queued;this.#insertEvent({streamId:wakeStream(queued.id),ts:now,actor:"supervisor",type:"wake.trigger_coalesced",data:{wakeId:queued.id,triggerRef:wake.triggerRef}});}else{const enqueuedSeq=this.#nextEventSeq();stored={...wake,enqueuedSeq};this.#recordProjection("wakes",stored,"supervisor","wake.enqueued",stored.id,now,enqueuedSeq);}}const schedule={...current,status:"consumed" as const,resolvedAt:now};this.#recordProjection("schedule",schedule,"supervisor","schedule.consumed",undefined,now);return{schedule,wake:stored};});}
+  consumeSchedule(id:string,wake:WakeSnapshot,now:string):{schedule:ScheduleSnapshot;wake:WakeSnapshot}{const current=this.#requiredSchedule(id);if(current.status!=="pending")throw new Error("only a pending Schedule may be consumed");if(wake.agent!==current.agent||wake.triggerRef!==`${current.id}@${current.nextWakeAt}`||(wake.goalId??null)!==(current.goalId??null)||(wake.goalRevision??null)!==(current.goalRevision??null))throw new Error("scheduled Wake does not match Schedule");if(wake.status!=="queued"||wake.attempt!==0||wake.claimedAt||wake.consumedAt||wake.turnId)throw new Error("scheduled Wake must be pristine");return this.#transaction(()=>{const exact=this.wakeByTrigger(wake.agent,wake.triggerRef);let stored:WakeSnapshot;if(exact){if(exact.status!=="queued"||(exact.goalId??null)!==(wake.goalId??null)||(exact.goalRevision??null)!==(wake.goalRevision??null))throw new Error("scheduled Wake trigger is already terminal or bound differently");stored=exact;}else{const queued=this.wakes().find((candidate)=>candidate.agent===wake.agent&&candidate.status==="queued"&&(candidate.goalId??null)===(wake.goalId??null)&&(candidate.goalRevision??null)===(wake.goalRevision??null));if(queued){stored=queued;this.#admitWakeTrigger(queued.id,wake.triggerRef,"supervisor",now);}else stored=this.#admitWake(wake,"supervisor",false).wake;}const schedule={...current,status:"consumed" as const,resolvedAt:now};this.#recordProjection("schedule",schedule,"supervisor","schedule.consumed",undefined,now);return{schedule,wake:stored};});}
 
   cancelSchedule(id:string,now:string):ScheduleSnapshot{const current=this.#requiredSchedule(id);if(current.status!=="pending")throw new Error("only a pending Schedule may be cancelled");const next={...current,status:"cancelled" as const,resolvedAt:now};this.#project("schedule",next,"supervisor","schedule.cancelled",undefined,now);return next;}
 
   supersedeSchedule(id:string,now:string):ScheduleSnapshot{const current=this.#requiredSchedule(id);if(current.status!=="pending")throw new Error("only a pending Schedule may be superseded");const next={...current,status:"superseded" as const,resolvedAt:now};this.#project("schedule",next,"supervisor","schedule.superseded",undefined,now);return next;}
 
   enqueueWake(input: WakeSnapshot, actor: string): { event: EventRecord; created: boolean } {
-    if (actor !== "supervisor") throw new Error("only supervisor may enqueue wakes");
-    if (input.status !== "queued" || input.attempt !== 0 || input.claimedAt || input.consumedAt || input.turnId) {
-      throw new Error("new wake must be pristine and queued");
-    }
-    if((input.goalId===undefined)!==(input.goalRevision===undefined))throw new Error("Wake Goal target is incomplete");
-    const sameId=this.wake(input.id);if(sameId){if(sameId.agent!==input.agent||sameId.triggerRef!==input.triggerRef||(sameId.goalId??null)!==(input.goalId??null)||(sameId.goalRevision??null)!==(input.goalRevision??null))throw new Error("wake id was reused with a different identity");const row=this.db.prepare("SELECT * FROM events WHERE type='wake.enqueued' AND json_extract(data,'$.snapshot.id')=? ORDER BY seq LIMIT 1").get(input.id) as Row|undefined;if(!row)throw new Error("wake projection has no source event");return{event:mapEvent(row),created:false};}
-    const duplicate = this.wakeByTrigger(input.agent, input.triggerRef);
-    if (duplicate) {
-      if((duplicate.goalId??null)!==(input.goalId??null)||(duplicate.goalRevision??null)!==(input.goalRevision??null))throw new Error("Wake trigger was reused with a different Goal target");
-      const row = this.db.prepare("SELECT * FROM events WHERE type='wake.enqueued' AND json_extract(data, '$.snapshot.id')=? ORDER BY seq DESC LIMIT 1").get(duplicate.id) as Row | undefined;
-      if (!row) throw new Error("wake projection has no source event");
-      return { event: mapEvent(row), created: false };
-    }
-    return this.#transaction(() => {
-      const enqueuedSeq = this.#nextEventSeq();
-      const wake = { ...input, enqueuedSeq };
-      const event = this.#recordProjection("wakes", wake, actor, "wake.enqueued", wake.id, undefined, enqueuedSeq);
-      return { event, created: true };
-    });
+    return this.#transaction(()=>{const result=this.#admitWake(input,actor,true);return{event:result.event,created:result.created};});
   }
+
+  addWakeTrigger(wakeId:string,triggerRef:string,actor:string):WakeTriggerSnapshot{return this.#transaction(()=>this.#admitWakeTrigger(wakeId,triggerRef,actor,this.#now()));}
 
   claimNextWake(now: string): WakeSnapshot | null {
     return this.#transaction(() => {
@@ -511,7 +503,7 @@ export class SqliteLedger implements Ledger {
     });
   }
 
-  startTurnFromWake(id:string,turn:TurnSnapshot,now:string):WakeSnapshot{const wake=this.#requiredWake(id);if(wake.status!=="claimed")throw new Error("only a claimed Wake may start a Turn");if(this.turn(turn.id))throw new Error("Wake Turn already exists");if(turn.status!=="in_progress"||turn.attempt!==1||!turn.leaseUntil||!turn.leaseToken)throw new Error("Wake must start an owned Turn at attempt one");const thread=this.thread(turn.threadId);if(!thread||thread.agent!==wake.agent)throw new Error("Wake Turn agent does not match");if((wake.goalId??null)!==turn.goalId||(wake.goalRevision??null)!==turn.goalRevision)throw new Error("Wake Turn Goal target does not match");return this.#transaction(()=>{if(this.db.prepare("SELECT 1 FROM turns WHERE source='human' AND status='in_progress' LIMIT 1").get())throw new Error("automatic Wake cannot start while a Human Turn is in progress");this.#recordProjection("turns",turn,"supervisor","turn.started",undefined,now,undefined,`turn:${turn.id}`);const next:WakeSnapshot={...wake,status:"consumed",consumedAt:now,turnId:turn.id};this.#recordProjection("wakes",next,"supervisor","wake.consumed",id,now);return next;});}
+  startTurnFromWake(id:string,turn:TurnSnapshot,now:string):WakeSnapshot{const wake=this.#requiredWake(id);if(wake.status!=="claimed")throw new Error("only a claimed Wake may start a Turn");if(this.turn(turn.id))throw new Error("Wake Turn already exists");if(turn.status!=="in_progress"||turn.attempt!==1||!turn.leaseUntil||!turn.leaseToken)throw new Error("Wake must start an owned Turn at attempt one");const thread=this.thread(turn.threadId);if(!thread||thread.agent!==wake.agent)throw new Error("Wake Turn agent does not match");if((wake.goalId??null)!==turn.goalId||(wake.goalRevision??null)!==turn.goalRevision)throw new Error("Wake Turn Goal target does not match");return this.#transaction(()=>{if(this.db.prepare("SELECT 1 FROM turns WHERE source='human' AND status='in_progress' LIMIT 1").get())throw new Error("automatic Wake cannot start while a Human Turn is in progress");this.#recordProjection("turns",turn,"supervisor","turn.started",undefined,now,undefined,`turn:${turn.id}`);this.#resolveWakeTriggers(id,now);const next:WakeSnapshot={...wake,status:"consumed",consumedAt:now,turnId:turn.id};this.#recordProjection("wakes",next,"supervisor","wake.consumed",id,now);return next;});}
 
   consumeWake(id: string, turnId: string, now: string): WakeSnapshot {
     const current = this.#requiredWake(id);
@@ -520,8 +512,7 @@ export class SqliteLedger implements Ledger {
     const thread = this.thread(turn.threadId); if (!thread || thread.agent !== current.agent) throw new Error("consumed Wake Turn agent does not match");
     if((current.goalId??null)!==turn.goalId||(current.goalRevision??null)!==turn.goalRevision)throw new Error("consumed Wake Turn Goal target does not match");
     const next: WakeSnapshot = { ...current, status: "consumed", consumedAt: now, turnId };
-    this.#project("wakes", next, "supervisor", "wake.consumed", id, now);
-    return next;
+    return this.#transaction(()=>{this.#resolveWakeTriggers(id,now);this.#recordProjection("wakes",next,"supervisor","wake.consumed",id,now);return next;});
   }
 
   releaseWake(id: string, now: string): WakeSnapshot {
@@ -534,10 +525,7 @@ export class SqliteLedger implements Ledger {
 
   cancelWake(id: string, now: string): WakeSnapshot {
     const current = this.#requiredWake(id);
-    if (current.status !== "queued" && current.status !== "claimed") throw new Error("only a pending Wake may be cancelled");
-    const next: WakeSnapshot = { ...current, status: "cancelled", consumedAt: now };
-    this.#project("wakes", next, "supervisor", "wake.cancelled", id, now);
-    return next;
+    return this.#transaction(()=>this.#cancelWakeProjection(current,now));
   }
 
   attachTurnProcess(id: string, leaseToken: string, pid: number): TurnSnapshot {
@@ -582,7 +570,7 @@ export class SqliteLedger implements Ledger {
       if(commit.output.mail.length!==commit.outgoingMail.length||commit.output.mail.some((draft,index)=>{const mail=commit.outgoingMail[index];return!mail||mail.to!==draft.to||mail.level!==draft.level||!isDeepStrictEqual(mail.body,draft.body);} ))throw new Error("outgoing Mail does not match TurnOutput");const parsedNext=commit.output.nextWakeAt===null?null:Date.parse(commit.output.nextWakeAt);if(parsedNext!==null&&(!Number.isFinite(parsedNext)||parsedNext<=Date.parse(turn.startedAt)))throw new Error("Handoff next wake must be later than the Turn start");const nextWakeAt=parsedNext===null?null:new Date(parsedNext).toISOString();if((nextWakeAt===null)!==(commit.schedule===null))throw new Error("Handoff Schedule presence does not match TurnOutput");const normalizedSchedule=commit.schedule?this.#normalizeSchedule(commit.schedule,commit.agent,{goalId:turn.goalId,goalRevision:turn.goalRevision}):null;if(normalizedSchedule&&normalizedSchedule.nextWakeAt!==nextWakeAt)throw new Error("Handoff Schedule time does not match TurnOutput");
       const streamId = `turn:${commit.turnId}`;
       const event = this.#insertEvent({ streamId, ts: commit.ts, actor: commit.agent, type: "handoff.recorded", data: commit.output.handoff as unknown as JsonValue });
-      this.#recordProjection("turn_items", commit.item, commit.agent, "item.handoff.completed", undefined, commit.ts, undefined, streamId);
+      this.#admitTurnItem(commit.item,commit.agent,streamId);
       const delivered = new Set(commit.mailIds);
       this.#recordMailReads(this.unreadMail(commit.agent).filter((candidate) => delivered.has(candidate.id)),commit.ts,streamId);
       for (const mail of commit.outgoingMail) {
@@ -590,8 +578,7 @@ export class SqliteLedger implements Ledger {
         this.#recordProjection("mailbox", mail, commit.agent, "mail.put", undefined, commit.ts, undefined, streamId);
       }
       if (normalizedSchedule) {
-        this.#supersedeScheduleRoute(normalizedSchedule.agent,normalizedSchedule.goalId??null,normalizedSchedule.id,commit.ts);
-        this.#recordProjection("schedule", normalizedSchedule, commit.agent, "schedule.put", undefined, commit.ts, undefined, streamId);
+        this.#admitSchedule(normalizedSchedule,commit.agent,undefined,commit.ts,streamId,{goalId:turn.goalId,goalRevision:turn.goalRevision},false);
       }
       if(this.turnItems(turn.id).some((item)=>item.status==="in_progress"))throw new Error("successful Turn cannot retain in-progress Items");
       this.#insertEvent({streamId,ts:commit.ts,actor:"supervisor",type:"transcript.completed",data:{}});this.#recordProjection("turns",{...turn,status:"completed",error:null,endedAt:commit.ts,leaseUntil:null,leaseToken:null,runnerPid:null},"supervisor","turn.completed",undefined,commit.ts,undefined,streamId);
@@ -607,12 +594,9 @@ export class SqliteLedger implements Ledger {
   eventsForWake(wakeId: string): EventRecord[] { return this.readStream(wakeStream(wakeId)); }
   wake(id: string): WakeSnapshot | null { const row = this.db.prepare("SELECT * FROM wakes WHERE id=?").get(id) as Row | undefined; return row ? mapWake(row) : null; }
   wakeByTrigger(agent: string, triggerRef: string): WakeSnapshot | null {
-    const direct = this.db.prepare("SELECT * FROM wakes WHERE agent=? AND trigger_ref=?").get(agent, triggerRef) as Row | undefined;
-    if (direct) return mapWake(direct);
-    const coalesced = this.db.prepare(`SELECT w.* FROM events e JOIN wakes w ON e.stream_id='wake:'||w.id
-      WHERE e.type='wake.trigger_coalesced' AND json_extract(e.data,'$.triggerRef')=? AND w.agent=? LIMIT 1`).get(triggerRef, agent) as Row | undefined;
-    return coalesced ? mapWake(coalesced) : null;
+    const row=this.db.prepare("SELECT w.* FROM wake_triggers t JOIN wakes w ON w.id=t.wake_id WHERE t.agent=? AND t.trigger_ref=?").get(agent,triggerRef) as Row|undefined;return row?mapWake(row):null;
   }
+  wakeTriggers(wakeId:string):WakeTriggerSnapshot[]{return(this.db.prepare("SELECT * FROM wake_triggers WHERE wake_id=? ORDER BY rowid").all(wakeId) as Row[]).map(mapWakeTrigger);}
   queuedWakeForAgent(agent: string): WakeSnapshot | null { const row = this.db.prepare("SELECT * FROM wakes WHERE agent=? AND status='queued' ORDER BY enqueued_seq LIMIT 1").get(agent) as Row | undefined; return row ? mapWake(row) : null; }
   goalsForOwner(owner: string): GoalSnapshot[] { return (this.db.prepare("SELECT * FROM goals WHERE owner=? ORDER BY id").all(owner) as Row[]).map(mapGoal); }
   goal(id: string): GoalSnapshot | null { return this.#getGoal(id); }
@@ -652,7 +636,7 @@ export class SqliteLedger implements Ledger {
   rebuildProjections(): void {
     const source = this.db.prepare("SELECT * FROM events ORDER BY seq").all() as Row[];
     this.#transaction(() => {
-      this.db.exec("DELETE FROM turn_items; DELETE FROM wakes; DELETE FROM turns; DELETE FROM threads; DELETE FROM work_records; DELETE FROM mailbox; DELETE FROM schedule; DELETE FROM goals;");
+      this.db.exec("DELETE FROM turn_items; DELETE FROM wake_triggers; DELETE FROM wakes; DELETE FROM turns; DELETE FROM threads; DELETE FROM work_records; DELETE FROM mailbox; DELETE FROM schedule; DELETE FROM goals;");
       const goalKeys=new Set<string>();
       for (const row of source) {
         if(row.projection_name===null)continue;const event=mapEvent(row);const projection=String(row.projection_name) as ProjectionName;const expected=projectionForEvent(event.type);if(expected!==projection)throw new Error(`event ${event.seq} cannot drive ${projection} projection`);const data=event.data&&typeof event.data==="object"&&!Array.isArray(event.data)?event.data as {snapshot?:unknown}:null;if(!data||!("snapshot" in data))throw new Error(`projection event ${event.seq} has no snapshot`);if(projection==="goals")this.#replayGoalChange(event,goalKeys);else this.#applyProjection(projection,data.snapshot,event.seq);
@@ -744,14 +728,20 @@ export class SqliteLedger implements Ledger {
   #getGoal(id: string): GoalSnapshot | null { const row = this.db.prepare("SELECT * FROM goals WHERE id=?").get(id) as Row | undefined; return row ? mapGoal(row) : null; }
   #requiredTurn(id: string): TurnSnapshot { const value = this.turn(id); if (!value) throw new Error(`turn not found: ${id}`); return value; }
   #requiredWake(id: string): WakeSnapshot { const value = this.wake(id); if (!value) throw new Error(`wake not found: ${id}`); return value; }
+  #admitWake(input:WakeSnapshot,actor:string,allowExisting:boolean):{event:EventRecord;created:boolean;wake:WakeSnapshot}{if(actor!=="supervisor")throw new Error("only supervisor may enqueue wakes");if(!input.id.trim()||!input.agent.trim()||!input.triggerRef.trim())throw new Error("Wake id, agent, and trigger are required");if(input.status!=="queued"||input.attempt!==0||input.claimedAt||input.consumedAt||input.turnId)throw new Error("new wake must be pristine and queued");if((input.goalId===undefined)!==(input.goalRevision===undefined))throw new Error("Wake Goal target is incomplete");const sameId=this.wake(input.id);if(sameId){if(!allowExisting||sameId.agent!==input.agent||sameId.triggerRef!==input.triggerRef||(sameId.goalId??null)!==(input.goalId??null)||(sameId.goalRevision??null)!==(input.goalRevision??null))throw new Error("wake id was reused with a different identity");const row=this.db.prepare("SELECT * FROM events WHERE type='wake.enqueued' AND json_extract(data,'$.snapshot.id')=? ORDER BY seq LIMIT 1").get(input.id) as Row|undefined;if(!row)throw new Error("wake projection has no source event");return{event:mapEvent(row),created:false,wake:sameId};}const duplicate=this.wakeByTrigger(input.agent,input.triggerRef);if(duplicate){if(!allowExisting||(duplicate.goalId??null)!==(input.goalId??null)||(duplicate.goalRevision??null)!==(input.goalRevision??null))throw new Error("Wake trigger was reused with a different Goal target");const row=this.db.prepare("SELECT * FROM events WHERE type='wake.enqueued' AND json_extract(data,'$.snapshot.id')=? ORDER BY seq LIMIT 1").get(duplicate.id) as Row|undefined;if(!row)throw new Error("wake projection has no source event");return{event:mapEvent(row),created:false,wake:duplicate};}const enqueuedSeq=this.#nextEventSeq();const wake={...input,enqueuedSeq};const event=this.#recordProjection("wakes",wake,actor,"wake.enqueued",wake.id,undefined,enqueuedSeq);this.#admitWakeTrigger(wake.id,wake.triggerRef,actor,event.ts);return{event,created:true,wake};}
+  #admitWakeTrigger(wakeId:string,triggerRef:string,actor:string,at:string):WakeTriggerSnapshot{if(actor!=="supervisor")throw new Error("only supervisor may add Wake triggers");if(!triggerRef.trim())throw new Error("Wake trigger is required");const wake=this.#requiredWake(wakeId);if(wake.status!=="queued")throw new Error("triggers may only be added to a queued Wake");const row=this.db.prepare("SELECT * FROM wake_triggers WHERE agent=? AND trigger_ref=?").get(wake.agent,triggerRef) as Row|undefined;if(row){const current=mapWakeTrigger(row);if(current.wakeId!==wake.id)throw new Error("Wake trigger is already owned by another Wake");return current;}const mailId=mailIdFromTrigger(triggerRef);const mail=mailId?this.mailbox().find((candidate)=>candidate.id===mailId):null;const source:WakeTriggerSnapshot["source"]=mail?.from==="human"&&mail.readAt===null?"human":wake.goalId?"goal":"system";const trigger:WakeTriggerSnapshot={wakeId:wake.id,agent:wake.agent,triggerRef,source,status:"pending",addedAt:at,resolvedAt:null};this.#recordProjection("wake_triggers",trigger,"supervisor","wake_trigger.added",wake.id,at);return trigger;}
+  #resolveWakeTriggers(wakeId:string,now:string):WakeTriggerSnapshot[]{return this.wakeTriggers(wakeId).filter((trigger)=>trigger.status==="pending").map((trigger)=>{const next={...trigger,status:"resolved" as const,resolvedAt:now};this.#recordProjection("wake_triggers",next,"supervisor","wake_trigger.resolved",wakeId,now);return next;});}
+  #cancelWakeProjection(wake:WakeSnapshot,now:string):WakeSnapshot{if(wake.status!=="queued"&&wake.status!=="claimed")throw new Error("only a pending Wake may be cancelled");this.#resolveWakeTriggers(wake.id,now);const next={...wake,status:"cancelled" as const,consumedAt:now};this.#recordProjection("wakes",next,"supervisor","wake.cancelled",wake.id,now);return next;}
   #requiredSchedule(id:string):ScheduleSnapshot{const row=this.db.prepare("SELECT * FROM schedule WHERE id=?").get(id) as Row|undefined;if(!row)throw new Error(`schedule not found: ${id}`);return mapSchedule(row);}
+  #admitTurnItem(item:TurnItemSnapshot,actor:string,streamId=`turn:${item.turnId}`):EventRecord{if(!item.id.trim()||!item.turnId.trim())throw new Error("turn item id and turn are required");const turn=this.turn(item.turnId);if(!turn)throw new Error("turn item turn does not exist");if(turn.status!=="in_progress")throw new Error("terminal turn cannot accept items");if(item.status==="in_progress"&&item.completedAt!==null||item.status!=="in_progress"&&item.completedAt===null)throw new Error("turn item terminal time does not match status");const current=this.db.prepare("SELECT * FROM turn_items WHERE id=?").get(item.id) as Row|undefined;if(current&&(String(current.turn_id)!==item.turnId||String(current.type)!==item.type||String(current.status)!=="in_progress"))throw new Error("turn item identity or terminal state cannot change");return this.#recordProjection("turn_items",item,actor,current?`item.${item.type}.${item.status}`:`item.${item.type}.started`,undefined,item.completedAt??item.createdAt,undefined,streamId);}
   #assertMailRequest(mail:MailSnapshot,actor:string):void{if(!mail.id.trim()||!mail.to.trim()||!mail.from.trim())throw new Error("mail id, sender, and recipient are required");if(mail.from!==actor&&actor!=="supervisor")throw new Error("mail sender does not match actor");if(mail.readAt!==null)throw new Error("new mail must be unread");}
   #assertNewMail(mail:MailSnapshot,actor:string):void{this.#assertMailRequest(mail,actor);if(this.db.prepare("SELECT 1 FROM mailbox WHERE id=?").get(mail.id))throw new Error("mail id is already in use");}
-  #recordMailReads(mails:MailSnapshot[],now:string,streamId:string):void{for(const mail of mails)this.#recordProjection("mailbox",{...mail,readAt:now},"supervisor","mail.read",undefined,now,undefined,streamId);const recipients=new Set(mails.map((mail)=>mail.to));const mailbox=new Map(this.mailbox().map((mail)=>[mail.id,mail]));for(const wake of this.wakes().filter((candidate)=>recipients.has(candidate.agent)&&(candidate.status==="queued"||candidate.status==="claimed"))){const aliases=this.readStream(wakeStream(wake.id)).filter((event)=>event.type==="wake.trigger_coalesced").map((event)=>String((event.data as {triggerRef?:unknown}).triggerRef??""));const triggers=[...new Set([wake.triggerRef,...aliases])];if(triggers.length>0&&triggers.every((trigger)=>{const mailId=mailIdFromTrigger(trigger);return mailId!==null&&mailbox.get(mailId)?.readAt!==null;}))this.#recordProjection("wakes",{...wake,status:"cancelled",consumedAt:now},"supervisor","wake.cancelled",wake.id,now);}}
+  #recordMailReads(mails:MailSnapshot[],now:string,streamId:string):void{for(const mail of mails)this.#recordProjection("mailbox",{...mail,readAt:now},"supervisor","mail.read",undefined,now,undefined,streamId);const recipients=new Set(mails.map((mail)=>mail.to));const ids=new Set(mails.map((mail)=>mail.id));for(const wake of this.wakes().filter((candidate)=>recipients.has(candidate.agent)&&(candidate.status==="queued"||candidate.status==="claimed"))){for(const trigger of this.wakeTriggers(wake.id).filter((candidate)=>candidate.status==="pending")){const mailId=mailIdFromTrigger(trigger.triggerRef);if(mailId&&ids.has(mailId)){const next={...trigger,status:"resolved" as const,resolvedAt:now};this.#recordProjection("wake_triggers",next,"supervisor","wake_trigger.resolved",wake.id,now);}}if(this.wakeTriggers(wake.id).every((trigger)=>trigger.status==="resolved"))this.#cancelWakeProjection(wake,now);}}
   #normalizeSchedule(value:ScheduleSnapshot,actor:string,binding?:{goalId:string|null;goalRevision:number|null}):ScheduleSnapshot{if(actor!=="supervisor"&&actor!==value.agent)throw new Error("schedule may only be set by its agent or supervisor");if(value.setBy!==actor)throw new Error("schedule setBy does not match actor");const parsed=Date.parse(value.nextWakeAt);if(!value.id.trim()||!value.agent.trim()||!value.reason.trim()||!Number.isFinite(parsed))throw new Error("schedule requires an id, agent, valid time, and reason");const normalized={...value,nextWakeAt:new Date(parsed).toISOString()};if((normalized.goalId===undefined)!==(normalized.goalRevision===undefined))throw new Error("schedule Goal target is incomplete");if(normalized.status!=="pending"||normalized.resolvedAt!==null)throw new Error("new schedule must be pending");if(binding&&((normalized.goalId??null)!==binding.goalId||(normalized.goalRevision??null)!==binding.goalRevision))throw new Error("handoff schedule does not match the Turn Goal binding");if(normalized.goalId){const goal=this.#getGoal(normalized.goalId);if(!goal||goal.owner!==normalized.agent||goal.phase!=="active"||goal.revision!==normalized.goalRevision)throw new Error("schedule Goal target is stale or owned by another Agent");}return normalized;}
+  #admitSchedule(value:ScheduleSnapshot,actor:string,wakeId?:string,ts=this.#now(),streamId?:string,binding?:{goalId:string|null;goalRevision:number|null},allowExisting=true):EventRecord{const normalized=this.#normalizeSchedule(value,actor,binding);const existing=this.db.prepare("SELECT * FROM schedule WHERE id=?").get(normalized.id) as Row|undefined;if(existing){const current=mapSchedule(existing);if(!allowExisting||!isDeepStrictEqual(current,normalized))throw new Error("schedule id was reused with different content");const row=this.db.prepare("SELECT * FROM events WHERE type='schedule.put' AND json_extract(data,'$.snapshot.id')=? ORDER BY seq LIMIT 1").get(normalized.id) as Row|undefined;if(!row)throw new Error("schedule projection has no source event");return mapEvent(row);}this.#supersedeScheduleRoute(normalized.agent,normalized.goalId??null,normalized.id,ts);return this.#recordProjection("schedule",normalized,actor,"schedule.put",wakeId,ts,undefined,streamId);}
   #supersedeScheduleRoute(agent:string,goalId:string|null,exceptId:string,now:string):ScheduleSnapshot[]{const rows=(goalId===null?this.db.prepare("SELECT * FROM schedule WHERE agent=? AND goal_id IS NULL AND id<>? AND status='pending' ORDER BY id").all(agent,exceptId):this.db.prepare("SELECT * FROM schedule WHERE agent=? AND goal_id=? AND id<>? AND status='pending' ORDER BY id").all(agent,goalId,exceptId)) as Row[];return rows.map((row)=>{const current=mapSchedule(row);const next={...current,status:"superseded" as const,resolvedAt:now};this.#recordProjection("schedule",next,"supervisor","schedule.superseded",undefined,now);return next;});}
   #supersedeSchedulesForGoal(goalId:string,revision:number,now:string):ScheduleSnapshot[]{const current=(this.db.prepare("SELECT * FROM schedule WHERE goal_id=? AND goal_revision<>? AND status='pending' ORDER BY id").all(goalId,revision) as Row[]).map(mapSchedule);return current.map((schedule)=>{const next={...schedule,status:"superseded" as const,resolvedAt:now};this.#recordProjection("schedule",next,"supervisor","schedule.superseded",undefined,now);return next;});}
-  #repairOpenTurnItems(turnId:string,reason:string,now:string,actor:string):TurnItemSnapshot[]{const streamId=`turn:${turnId}`;const open=this.turnItems(turnId).filter((item)=>item.status==="in_progress");const repaired:TurnItemSnapshot[]=[];let ordinal=this.turnItems(turnId).length+1;for(const item of open){const failed={...item,status:"failed" as const,completedAt:now};this.#recordProjection("turn_items",failed,actor,`item.${item.type}.failed`,undefined,now,undefined,streamId);repaired.push(failed);if(item.type==="tool_call"){const callId=String((item.data as {callId?:unknown}).callId??item.id);const result:TurnItemSnapshot={id:`repair:${turnId}:${item.ordinal}`,turnId,ordinal:ordinal++,type:"tool_result",status:"completed",data:{callId,result:{outcome:"unknown",synthetic:true,reason}},createdAt:now,completedAt:now};this.#recordProjection("turn_items",result,actor,"item.tool_result.started",undefined,now,undefined,streamId);this.#insertEvent({streamId,ts:now,actor,type:"tool.completed",data:{callId,messageId:`repair:${callId}`,result:{outcome:"unknown",synthetic:true,reason},isError:true}});repaired.push(result);}}return repaired;}
+  #repairOpenTurnItems(turnId:string,reason:string,now:string,actor:string):TurnItemSnapshot[]{const streamId=`turn:${turnId}`;const open=this.turnItems(turnId).filter((item)=>item.status==="in_progress");const repaired:TurnItemSnapshot[]=[];let ordinal=this.turnItems(turnId).length+1;for(const item of open){const failed={...item,status:"failed" as const,completedAt:now};this.#recordProjection("turn_items",failed,actor,`item.${item.type}.failed`,undefined,now,undefined,streamId);repaired.push(failed);if(item.type==="tool_call"){const callId=String((item.data as {callId?:unknown}).callId??item.id);const result:TurnItemSnapshot={id:`repair:${turnId}:${item.ordinal}`,turnId,ordinal:ordinal++,type:"tool_result",status:"completed",data:{callId,result:{outcome:"unknown",synthetic:true,reason}},createdAt:now,completedAt:now};this.#admitTurnItem(result,actor,streamId);this.#insertEvent({streamId,ts:now,actor,type:"tool.completed",data:{callId,messageId:`repair:${callId}`,result:{outcome:"unknown",synthetic:true,reason},isError:true}});repaired.push(result);}}return repaired;}
   #project(projection: ProjectionName, snapshot: unknown, actor: string, type: string, wakeId?: string, ts?: string, streamId?: string): EventRecord {
     return this.#transaction(() => this.#recordProjection(projection, snapshot, actor, type, wakeId, ts, undefined, streamId));
   }
@@ -801,6 +791,8 @@ export class SqliteLedger implements Ledger {
     } else if (projection === "wakes") {
       const v = raw as WakeSnapshot;
       this.db.prepare(`INSERT INTO wakes VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET agent=excluded.agent,trigger_ref=excluded.trigger_ref,status=excluded.status,attempt=excluded.attempt,enqueued_seq=excluded.enqueued_seq,claimed_at=excluded.claimed_at,consumed_at=excluded.consumed_at,turn_id=excluded.turn_id,goal_id=excluded.goal_id,goal_revision=excluded.goal_revision`).run(v.id,v.agent,v.triggerRef,v.status,v.attempt,v.enqueuedSeq || sourceSeq,v.claimedAt,v.consumedAt,v.turnId,v.goalId??null,v.goalRevision??null);
+    } else if(projection==="wake_triggers"){
+      const v=raw as WakeTriggerSnapshot;this.db.prepare(`INSERT INTO wake_triggers VALUES (?,?,?,?,?,?,?) ON CONFLICT(wake_id,trigger_ref) DO UPDATE SET status=excluded.status,resolved_at=excluded.resolved_at`).run(v.wakeId,v.agent,v.triggerRef,v.source,v.status,v.addedAt,v.resolvedAt);
     } else if (projection === "mailbox") {
       const v = raw as MailSnapshot;
       this.db.prepare(`INSERT INTO mailbox VALUES (?,?,?,?,json(?),?) ON CONFLICT(id) DO UPDATE SET to_agent=excluded.to_agent,from_agent=excluded.from_agent,level=excluded.level,body=excluded.body,read_at=excluded.read_at`).run(v.id,v.to,v.from,v.level,JSON.stringify(v.body),v.readAt);
@@ -827,7 +819,7 @@ function initialWorkRecord(): string { return "# Current State\n\nGoal created. 
 function goalOperation(previous:GoalSnapshot|null,next:GoalSnapshot):GoalChangeMetadata["operation"]{if(!previous)return"create";if(previous.phase!==next.phase){if(next.phase==="paused")return"pause";if(next.phase==="active")return"resume";if(next.phase==="blocked")return"block";if(next.phase==="complete")return"complete";}return previous.owner!==next.owner?"reassign":"revise";}
 function defaultGoalReason(operation:GoalChangeMetadata["operation"]):string{return `Goal ${operation}`;}
 function withoutSourceTurn<T extends {sourceTurnId?:string}>(value:T):Omit<T,"sourceTurnId">{const{sourceTurnId:_,...semantic}=value;return semantic;}
-function projectionForEvent(type:string):ProjectionName|null{if(type==="thread.put")return"threads";if(type.startsWith("turn."))return"turns";if(type.startsWith("item."))return"turn_items";if(type==="goal.changed")return"goals";if(type.startsWith("schedule."))return"schedule";if(type.startsWith("wake."))return"wakes";if(type.startsWith("mail."))return"mailbox";if(type==="work_record.created"||type==="work_record.updated")return"work_records";return null;}
+function projectionForEvent(type:string):ProjectionName|null{if(type==="thread.put")return"threads";if(type.startsWith("turn."))return"turns";if(type.startsWith("item."))return"turn_items";if(type==="goal.changed")return"goals";if(type.startsWith("schedule."))return"schedule";if(type.startsWith("wake_trigger."))return"wake_triggers";if(type.startsWith("wake."))return"wakes";if(type.startsWith("mail."))return"mailbox";if(type==="work_record.created"||type==="work_record.updated")return"work_records";return null;}
 function lineDiff(from: string, to: string): string {
   const before = from.split("\n"); const after = to.split("\n"); const lines: string[] = [];
   for (let index = 0; index < Math.max(before.length, after.length); index += 1) {
@@ -839,5 +831,6 @@ function lineDiff(from: string, to: string): string {
 }
 function mapSchedule(r: Row): ScheduleSnapshot { return {id:String(r.id),agent:String(r.agent),nextWakeAt:String(r.next_wake_at),reason:String(r.reason),setBy:String(r.set_by),status:String(r.status) as ScheduleSnapshot["status"],resolvedAt:r.resolved_at===null?null:String(r.resolved_at),...(r.goal_id===null||r.goal_id===undefined?{}:{goalId:String(r.goal_id),goalRevision:Number(r.goal_revision)})}; }
 function mapWake(r: Row): WakeSnapshot { return {id:String(r.id),agent:String(r.agent),triggerRef:String(r.trigger_ref),status:String(r.status) as WakeSnapshot["status"],attempt:Number(r.attempt),enqueuedSeq:Number(r.enqueued_seq),claimedAt:r.claimed_at===null?null:String(r.claimed_at),consumedAt:r.consumed_at===null?null:String(r.consumed_at),turnId:r.turn_id===null?null:String(r.turn_id),...(r.goal_id===null||r.goal_id===undefined?{}:{goalId:String(r.goal_id),goalRevision:Number(r.goal_revision)})}; }
+function mapWakeTrigger(r:Row):WakeTriggerSnapshot{return{wakeId:String(r.wake_id),agent:String(r.agent),triggerRef:String(r.trigger_ref),source:String(r.source) as WakeTriggerSnapshot["source"],status:String(r.status) as WakeTriggerSnapshot["status"],addedAt:String(r.added_at),resolvedAt:r.resolved_at===null?null:String(r.resolved_at)};}
 function mapMail(r: Row): MailSnapshot { return {id:String(r.id),to:String(r.to_agent),from:String(r.from_agent),level:String(r.level) as MailSnapshot["level"],body:JSON.parse(String(r.body)),readAt:r.read_at===null?null:String(r.read_at)}; }
 function mailIdFromTrigger(trigger:string):string|null{if(!trigger.startsWith("mail:"))return null;return trigger.slice("mail:".length).split("@redelivery:")[0]||null;}

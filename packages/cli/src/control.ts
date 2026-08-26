@@ -180,7 +180,7 @@ async function* turnFrames(turnId: string, ledger: Ledger, isActive: () => boole
 }
 
 function snapshot(ledger: Ledger, supervisor: Supervisor): JsonValue {
-  return { seq: ledger.events().at(-1)?.seq ?? 0, threads: ledger.threads(), turns: ledger.turns().map((turn)=>({...turn,leaseToken:null})), goals: ledger.goals(), team: supervisor.teamList(), wakes: ledger.wakes(), schedules: ledger.schedules() } as unknown as JsonValue;
+  return { seq: ledger.events().at(-1)?.seq ?? 0, threads: ledger.threads(), turns: ledger.turns().map((turn)=>({...turn,leaseToken:null})), goals: ledger.goals(), team: supervisor.teamList(), wakes: ledger.wakes(), wakeTriggers:ledger.wakes().flatMap((wake)=>ledger.wakeTriggers(wake.id)), schedules: ledger.schedules() } as unknown as JsonValue;
 }
 function ceoStatus(ledger: Ledger, supervisor: Supervisor): JsonValue {
   return { roots: ledger.goals().filter((goal) => goal.parentId === null && goal.owner === "ceo"), team: supervisor.teamList(), pendingHuman: ledger.unreadMail("human"), recentCeoHandoffs: ledger.eventsSince(0, ["handoff.recorded"]).filter((event) => event.actor === "ceo").slice(-10) } as unknown as JsonValue;

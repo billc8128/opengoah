@@ -60,7 +60,7 @@ Every Goal lifecycle mutation has exactly one authoritative `goal.changed` event
 
 The only Ledger writer in the resident process. It validates Turn ownership and terminal state, Goal and Work Record revisions, leases, capabilities, atomic delegation, scheduling, recovery, and Human priority. Human input starts or steers a Turn directly. Mail is the bounded, acknowledged delivery path for asynchronous Agent communication, Human decisions, and Verification/Audit results; findings for child work are also escalated to CEO. Wake is reserved for future Goal/system motion.
 
-Wake status is scheduling-only: `queued → claimed → consumed`, with `cancelled` as the pending terminal path. Goal motion carries an explicit `goalId + goalRevision`; coalescing and suppression never cross Goal targets. Claiming is blocked while any Human Turn is active. Once the Turn is durably created, Wake records its `turnId` and no longer participates in execution.
+Wake status is scheduling-only: `queued → claimed → consumed`, with `cancelled` as the pending terminal path. Each Wake owns a durable trigger set; every trigger records source (`human|goal|system`) and `pending|resolved` state. Goal motion carries an explicit `goalId + goalRevision`; coalescing and suppression never cross Goal targets. Turn source and authority are derived only from pending triggers. Claiming is blocked while any Human Turn is active. Once the Turn is durably created, Wake records its `turnId` and resolves its triggers.
 
 Schedule has its own durable lifecycle: `pending → consumed|cancelled|superseded`. Creating the Wake and consuming the Schedule is one transaction. A Goal revision, phase, or owner change supersedes old bound Schedules instead of letting stale queue data abort daemon progress.
 

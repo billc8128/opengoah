@@ -48,6 +48,7 @@ export const demoSnapshot: ConsoleSnapshot = {
     { id: "growth-8", agent: "growth", triggerRef: "mail:decision-growth", status: "consumed", attempt:1,enqueuedSeq: 12846,claimedAt:"2026-08-20T14:18:02.000+08:00",consumedAt:"2026-08-20T14:18:02.000+08:00",turnId:"growth-8" },
     { id: "web-4", agent: "web", triggerRef: "goal:storefront", status: "queued", attempt:0,enqueuedSeq: 12844,claimedAt:null,consumedAt:null,turnId:null },
   ],
+  wakeTriggers: [],
   schedules: [
     { id: "schedule:operations", agent: "operations", nextWakeAt: "2026-08-20T14:30:00.000+08:00", reason: "Check fulfillment window", setBy: "operations", status: "pending", resolvedAt: null },
     { id: "schedule:web", agent: "web", nextWakeAt: "2026-08-20T14:30:00.000+08:00", reason: "Continue storefront launch", setBy: "ceo", status: "pending", resolvedAt: null },

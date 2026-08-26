@@ -76,16 +76,18 @@ export function assertLedgerConformance(create: LedgerConformanceFactory): void 
   try { ledger.putGoal({ id: "root", parentId: null, objective: "test", observationMethod, verificationMethod: observationMethod, owner: "a", phase: "active", revision: 4 }, "human"); } catch { reopened = true; }
   if (!reopened) throw new Error("ledger conformance: completed goal was reopened");
   const first = ledger.enqueueWake({ id: "z", agent: "a", triggerRef: "first", status: "queued", attempt: 0, enqueuedSeq: 0, claimedAt:null,consumedAt:null,turnId:null }, "supervisor");
+  if(ledger.wakeTriggers("z").length!==1||ledger.wakeTriggers("z")[0]?.status!=="pending")throw new Error("ledger conformance: initial Wake trigger is missing");
   ledger.enqueueWake({ id: "a", agent: "b", triggerRef: "second", status: "queued", attempt: 0, enqueuedSeq: 0, claimedAt:null,consumedAt:null,turnId:null }, "supervisor");
   const claimed = ledger.claimNextWake(clock.now().toISOString());
   if (claimed?.id !== "z") throw new Error("ledger conformance: wakes are not FIFO");
   ledger.putThread({id:"thread:a",agent:"a",parentThreadId:null,createdAt:clock.now().toISOString(),updatedAt:clock.now().toISOString()},"supervisor");const turn={id:"turn:a",threadId:"thread:a",source:"system" as const,goalId:null,goalRevision:null,status:"in_progress" as const,attempt:1,error:null,startedAt:clock.now().toISOString(),endedAt:null,leaseUntil:"2030-01-01T00:10:00.000Z",leaseToken:"lease",runnerPid:null};ledger.startTurnFromWake("z",turn,clock.now().toISOString());
   if(ledger.wake("z")?.turnId!==turn.id)throw new Error("ledger conformance: consumed Wake did not link its Turn");
+  if(ledger.wakeTriggers("z").some((trigger)=>trigger.status!=="resolved"))throw new Error("ledger conformance: consumed Wake retained pending triggers");
   if (first.event.ts !== clock.now().toISOString()) throw new Error("ledger conformance: injected clock was ignored");
   const informational = ledger.appendEvent({ streamId: "conformance:events", ts: clock.now().toISOString(), actor: "a", type: "transcript.conformance_info", data: {}, ignorable: true });
   if (ledger.latestEvent()?.seq !== informational.seq) throw new Error("ledger conformance: latest event was not the globally last append");
-  const before = JSON.stringify({ goals: ledger.goals(), wakes: ledger.wakes() });
+  const before = JSON.stringify({ goals: ledger.goals(), wakes: ledger.wakes(),triggers:ledger.wakeTriggers("z") });
   ledger.rebuildProjections();
-  if (JSON.stringify({ goals: ledger.goals(), wakes: ledger.wakes() }) !== before) throw new Error("ledger conformance: projection replay changed state");
+  if (JSON.stringify({ goals: ledger.goals(), wakes: ledger.wakes(),triggers:ledger.wakeTriggers("z") }) !== before) throw new Error("ledger conformance: projection replay changed state");
   ledger.close();
 }

@@ -36,6 +36,7 @@ export function consoleSnapshot(ledger: Ledger, supervisor: Supervisor, now = ne
     threads: ledger.threads(),
     turns: ledger.turns().map((turn)=>({...turn,leaseToken:null})),
     wakes: ledger.wakes(),
+    wakeTriggers:ledger.wakes().flatMap((wake)=>ledger.wakeTriggers(wake.id)),
     schedules: ledger.schedules(),
     mailbox: ledger.mailbox(),
     events,
