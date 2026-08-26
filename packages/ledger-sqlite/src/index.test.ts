@@ -107,12 +107,11 @@ test("a replacement Schedule supersedes the previous pending plan for the same A
 
 test("mail is acknowledged only by an atomic successful handoff", () => {
   const ledger = new SqliteLedger(":memory:", { clock: new FixedClock() });
-  ledger.enqueueWake(wake("w"), "supervisor");
-  ledger.claimNextWake("2030-01-01T00:00:00.000Z");const turn=activeTurn(ledger,"agent-1","turn-w");ledger.consumeWake("w",turn.id,"2030-01-01T00:00:01.000Z");
+  const turn=goalTurn(ledger,"agent-1","turn-w");
   ledger.putMail({ id: "m", to: "agent-1", from: "human", level: "emergency", body: {}, readAt: null }, "human");
   ledger.putMail({ id: "later", to: "agent-1", from: "human", level: "decision", body: {}, readAt: null }, "human");
   assert.equal(ledger.unreadMail("agent-1").length, 2);
-  ledger.commitHandoff(handoffCommit(turn.id,"w",["m"]));
+  ledger.commitHandoff(handoffCommit(ledger,turn.id,null,["m"]));
   assert.deepEqual(ledger.unreadMail("agent-1").map((mail) => mail.id), ["later"]);
   assert.equal(ledger.turn(turn.id)?.status,"completed");assert.equal(ledger.readStream(`turn:${turn.id}`).some((event)=>event.type==="transcript.completed"),true);
   ledger.close();
@@ -120,17 +119,22 @@ test("mail is acknowledged only by an atomic successful handoff", () => {
 
 test("Mail identity is immutable and batch conflicts commit nothing",()=>{const ledger=new SqliteLedger(":memory:",{clock:new FixedClock()});const original={id:"m",to:"a",from:"human",level:"decision" as const,body:{value:1},readAt:null};const first=ledger.putMail(original,"human");assert.equal(ledger.putMail(original,"human").seq,first.seq);assert.throws(()=>ledger.putMail({...original,to:"b"},"human"),/different content/);assert.throws(()=>ledger.putMails([{id:"new",to:"a",from:"human",level:"fyi",body:{},readAt:null},{...original,body:{value:2}}],"human"),/different content/);assert.equal(ledger.mailbox().some((mail)=>mail.id==="new"),false);ledger.close();});
 
-test("Handoff Schedule uses the same provenance and UTC normalization as putSchedule",()=>{const ledger=new SqliteLedger(":memory:",{clock:new FixedClock()});ledger.putGoal({id:"g",parentId:null,objective:"work",observationMethod:"observe",verificationMethod:"verify",owner:"agent-1",phase:"active",revision:0},"human");const turn=activeTurn(ledger,"agent-1","goal-turn");ledger.putTurn({...turn,goalId:"g",goalRevision:0},"supervisor");const commit=handoffCommit(turn.id,null);const nextWakeAt="2030-01-01T08:00:00+08:00";ledger.commitHandoff({...commit,output:{...commit.output,nextWakeAt},schedule:{id:"s",agent:"agent-1",nextWakeAt,reason:"continue",setBy:"agent-1",status:"pending",resolvedAt:null,goalId:"g",goalRevision:0}});assert.equal(ledger.schedules()[0]?.nextWakeAt,new FixedClock().value);assert.equal(ledger.dueSchedules(new FixedClock().value).length,1);ledger.close();});
+test("Handoff Schedule uses the same provenance and UTC normalization as putSchedule",()=>{const ledger=new SqliteLedger(":memory:",{clock:new FixedClock()});const turn=goalTurn(ledger,"agent-1","goal-turn","g");const commit=handoffCommit(ledger,turn.id,null);const nextWakeAt="2030-01-02T08:00:00+08:00";ledger.commitHandoff({...commit,output:{...commit.output,nextWakeAt},schedule:{id:"s",agent:"agent-1",nextWakeAt,reason:"continue",setBy:"agent-1",status:"pending",resolvedAt:null,goalId:"g",goalRevision:0}});assert.equal(ledger.schedules()[0]?.nextWakeAt,"2030-01-02T00:00:00.000Z");assert.equal(ledger.dueSchedules("2030-01-02T00:00:00.000Z").length,1);ledger.close();});
+
+test("Goal-bound Turn cannot bypass Work Record and Handoff completion",()=>{const ledger=new SqliteLedger(":memory:",{clock:new FixedClock()});const turn=goalTurn(ledger,"agent-1","goal-terminal");assert.throws(()=>ledger.finishTurn(turn.id,"completed",null,new FixedClock().value,"supervisor"),/commitHandoff/);assert.equal(ledger.turn(turn.id)?.status,"in_progress");ledger.close();});
+
+test("Handoff rejects contradictory Item, Mail, and Schedule representations",()=>{const ledger=new SqliteLedger(":memory:",{clock:new FixedClock()});const turn=goalTurn(ledger,"agent-1","goal-consistency","g");const commit=handoffCommit(ledger,turn.id,null);assert.throws(()=>ledger.commitHandoff({...commit,item:{...commit.item,data:{goalId:"other"}}}),/TurnOutput/);assert.throws(()=>ledger.commitHandoff({...commit,output:{...commit.output,mail:[{to:"human",level:"fyi",body:{expected:true}}]},outgoingMail:[{id:"m",to:"other",from:"agent-1",level:"fyi",body:{expected:false},readAt:null}]}),/outgoing Mail/);assert.throws(()=>ledger.commitHandoff({...commit,schedule:{id:"hidden",agent:"agent-1",nextWakeAt:"2030-01-02T00:00:00.000Z",reason:"hidden",setBy:"agent-1",status:"pending",resolvedAt:null,goalId:"g",goalRevision:0}}),/Schedule presence/);assert.equal(ledger.turn(turn.id)?.status,"in_progress");ledger.close();});
+
+test("reading Mail preserves a coalesced Schedule trigger on the same Wake",()=>{const ledger=new SqliteLedger(":memory:",{clock:new FixedClock()});ledger.putGoal({id:"g",parentId:null,objective:"work",observationMethod:null,verificationMethod:null,owner:"ceo",phase:"active",revision:0},"human");ledger.putMail({id:"m",to:"ceo",from:"verifier",level:"decision",body:{},readAt:null},"verifier");ledger.enqueueWake({...wake("multi","ceo"),triggerRef:"mail:m",goalId:"g",goalRevision:0},"supervisor");ledger.putSchedule(schedule("s","ceo",{goalId:"g",goalRevision:0}),"ceo");ledger.consumeSchedule("s",{...wake("scheduled","ceo"),triggerRef:`s@${new FixedClock().value}`,goalId:"g",goalRevision:0},new FixedClock().value);const human=activeTurn(ledger,"ceo","human","human");ledger.finishTurn(human.id,"completed",null,new FixedClock().value,"supervisor",["m"]);assert.equal(ledger.mailbox()[0]?.readAt!==null,true);assert.equal(ledger.schedules()[0]?.status,"consumed");assert.equal(ledger.wake("multi")?.status,"queued");ledger.close();});
 
 test("handoff event and mail acknowledgement roll back together", () => {
   let armed = false;
   const ledger = new SqliteLedger(":memory:", { clock: new FixedClock(), faultInjector: () => { if (armed) throw new Error("kill during handoff"); } });
-  ledger.enqueueWake(wake("w"), "supervisor");
-  ledger.claimNextWake("2030-01-01T00:00:00.000Z");const turn=activeTurn(ledger,"agent-1","turn-w");ledger.consumeWake("w",turn.id,"2030-01-01T00:00:01.000Z");
+  const turn=goalTurn(ledger,"agent-1","turn-w");
   ledger.putMail({ id: "m", to: "agent-1", from: "human", level: "emergency", body: {}, readAt: null }, "human");
   const before = JSON.stringify(ledger.events());
   armed = true;
-  assert.throws(() => ledger.commitHandoff(handoffCommit(turn.id,"w",["m"])), /kill during handoff/);
+  assert.throws(() => ledger.commitHandoff(handoffCommit(ledger,turn.id,null,["m"])), /kill during handoff/);
   assert.equal(JSON.stringify(ledger.events()), before);
   assert.equal(ledger.unreadMail("agent-1").length, 1);
   ledger.close();
@@ -367,4 +371,5 @@ function claimed(ledger: SqliteLedger): void {
   ledger.claimNextWake("2030-01-01T00:00:00.000Z");
 }
 function activeTurn(ledger:SqliteLedger,agent:string,id:string,source:"human"|"goal"|"system"="system"):import("goah-ledger-contract").TurnSnapshot{let thread=ledger.threads().find((candidate)=>candidate.agent===agent);if(!thread){const now="2030-01-01T00:00:00.000Z";thread={id:`thread:${agent}`,agent,parentThreadId:null,createdAt:now,updatedAt:now};ledger.putThread(thread,"supervisor");}const existing=ledger.turn(id);if(existing)return existing;const turn={id,threadId:thread.id,source,goalId:null,goalRevision:null,status:"in_progress" as const,attempt:1,error:null,startedAt:"2030-01-01T00:00:00.000Z",endedAt:null,leaseUntil:"2030-01-01T00:10:00.000Z",leaseToken:"lease",runnerPid:null};ledger.putTurn(turn,"supervisor");return turn;}
-function handoffCommit(turnId:string,sourceWakeId:string|null,mailIds:string[]=[]):import("goah-ledger-contract").HandoffCommit{const ts="2030-01-01T00:00:02.000Z";const output={handoff:{observations:[],results:[],nextSteps:[]},mail:[],nextWakeAt:null};return{agent:"agent-1",turnId,sourceWakeId,mailIds,ts,output,outgoingMail:[],schedule:null,item:{id:`handoff:${turnId}`,turnId,ordinal:1,type:"handoff",status:"completed",data:output.handoff,createdAt:ts,completedAt:ts}};}
+function goalTurn(ledger:SqliteLedger,agent:string,turnId:string,goalId=`goal:${turnId}`):import("goah-ledger-contract").TurnSnapshot{ledger.putGoal({id:goalId,parentId:null,objective:"work",observationMethod:"observe",verificationMethod:"verify",owner:agent,phase:"active",revision:0},"human");const turn=activeTurn(ledger,agent,turnId,"goal");ledger.putTurn({...turn,goalId,goalRevision:0},"supervisor");const evidence=ledger.appendEvent(event(agent,"observation",{ok:true}));ledger.updateWorkRecord({goalId,expectedRevision:0,goalRevision:0,content:"# Current State\n\nObserved current work.\n",reason:"record current work",evidence:[evidence.seq],turnId},agent);return ledger.turn(turnId)!;}
+function handoffCommit(ledger:SqliteLedger,turnId:string,sourceWakeId:string|null,mailIds:string[]=[]):import("goah-ledger-contract").HandoffCommit{const ts="2030-01-01T00:00:02.000Z";const turn=ledger.turn(turnId)!;const record=ledger.workRecord(turn.goalId!)!;const handoff={goalId:turn.goalId!,goalRevision:turn.goalRevision!,recordRevision:record.recordRevision,outcome:"progress" as const,evidence:record.evidence};const output={handoff,mail:[],nextWakeAt:null};return{agent:ledger.thread(turn.threadId)!.agent,turnId,sourceWakeId,mailIds,ts,output,outgoingMail:[],schedule:null,item:{id:`handoff:${turnId}`,turnId,ordinal:ledger.turnItems(turnId).length+1,type:"handoff",status:"completed",data:handoff,createdAt:ts,completedAt:ts}};}
