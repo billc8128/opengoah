@@ -7,7 +7,6 @@ import test from "node:test";
 import { controlStream,goalStream, replayTranscript, wakeStream, type Clock, type EventInput, type GoalSnapshot, type JsonValue, type ScheduleSnapshot, type WakeSnapshot } from "goah-ledger-contract";
 import { SQLITE_SCHEMA_VERSION, SqliteLedger } from "./index.js";
 
-const metric = { source: "test", window: "1h", direction: "at_least" as const, target: 1, freshnessMs: 60_000, onMissing: "abnormal" as const, onStale: "wake_owner" as const };
 function event(actor: string, type: string, data: JsonValue = {}, wakeId?: string): EventInput { return { streamId: wakeId ? wakeStream(wakeId) : controlStream(actor), ts: "2030-01-01T00:00:00.000Z", actor, type, data }; }
 class FixedClock implements Clock { constructor(readonly value = "2030-01-01T00:00:00.000Z") {} now(): Date { return new Date(this.value); } }
 function wake(id: string, agent = "agent-1"): WakeSnapshot { return { id, agent, triggerRef: `trigger:${id}`, status: "queued", attempt: 0, enqueuedSeq: 0, claimedAt:null,consumedAt:null,turnId:null }; }

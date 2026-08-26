@@ -26,7 +26,6 @@
     "./kernel": "./dist/kernel.js",
     "./transcript": "./dist/transcript.js",
     "./execution": "./dist/execution.js",
-    "./metrics": "./dist/metrics.js",
     "./sqlite": "./dist/sqlite.js",
     "./supervisor": "./dist/supervisor.js",
     "./runner-pi": "./dist/runner-pi.js",

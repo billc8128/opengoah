@@ -37,7 +37,7 @@ Implemented and tested today:
 - Ordinary Human Turns return normal responses; Goal-bound Turns require a current Work Record revision and compact Goal Handoff
 - Goal Mail is acknowledged atomically with its successful Handoff; ordinary Human conversation never uses Mail or Wake
 - Injected clocks, schema v18 fail-closed authoritative Goal changes, durable Wake trigger sets, revision-neutral Goal scheduling, and Turn-owned revision fencing, with indexed bounded queries and a public ledger conformance suite; earlier development schemas are intentionally rejected
-- Optional mechanical metric evaluation (missing/stale/sustain/guardrails), a total-silence tripwire, trigger coalescing, and FTS5 fact search; Goal itself has no required metric or target
+- Textual observation and verification methods executed by Agents with ordinary tools, plus trigger coalescing and FTS5 fact search
 - Official Pi 0.84.2 worker binding with `read`, `write`, `edit`, and `bash` for every Agent plus model-view-only mid-turn compaction
 - Durable textual Goal observation methods with root human confirmation, atomic child assignment, revision invalidation, replay, and evidence-backed completion
 - Interactive `goah` CEO shell over a resident Supervisor local control socket, including live goal revisions while Supervisor remains the only SQLite writer
@@ -173,7 +173,7 @@ Goah publishes one npm package: `@goah/cli`. The internal workspaces remain sepa
 
 | Source workspace | Public import | What it is |
 |---|---|---|
-| `ledger-contract` | `@goah/cli/kernel`, `/transcript`, `/execution`, `/metrics` | Generic event kernel, normalized Turn transcript vocabulary/replay, execution contracts, and optional metric policy. |
+| `ledger-contract` | `@goah/cli/kernel`, `/transcript`, `/execution` | Generic event kernel, normalized Turn transcript vocabulary/replay, and execution contracts. |
 | `ledger-sqlite` | `@goah/cli/sqlite` | Single-writer SQLite ledger and rebuildable standard projections. |
 | `supervisor` | `@goah/cli/supervisor` | Scheduler, wake lifecycle, Runner exit barriers, Active Context, and Goal coordination. |
 | `runner-pi` | `@goah/cli/runner-pi` | Pi adapter, process runner, normalized transcript events, exact request snapshots, local tools, and compaction. |

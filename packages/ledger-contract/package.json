@@ -23,7 +23,6 @@
     ".": "./dist/index.js",
     "./kernel": "./dist/kernel.js",
     "./transcript": "./dist/transcript.js",
-    "./execution": "./dist/execution.js",
-    "./metrics": "./dist/metrics.js"
+    "./execution": "./dist/execution.js"
   }
 }

@@ -164,7 +164,7 @@ async function route(request: IncomingMessage, response: ServerResponse, supervi
 }
 
 function isTrajectoryEvent(type: string): boolean {
-  return ["goal.", "delegation.", "handoff.", "wake.", "mail.", "schedule.", "metric.", "observation.", "ceo.", "human."].some((prefix) => type.startsWith(prefix))
+  return ["goal.", "delegation.", "handoff.", "wake.", "mail.", "schedule.", "observation.", "ceo.", "human."].some((prefix) => type.startsWith(prefix))
 }
 
 function positiveInteger(value: string | null): number | undefined { const parsed = Number(value); return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined }

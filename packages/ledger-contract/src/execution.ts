@@ -1,5 +1,4 @@
 import { type EventInput, type EventRecord, type EventStore, type JsonValue } from "./kernel.js";
-import type { MetricSample } from "./metrics.js";
 
 export type WakeStatus = "queued" | "claimed" | "consumed" | "cancelled";
 export type WakeTriggerStatus = "pending" | "resolved";
@@ -188,7 +187,6 @@ export interface Ledger extends EventStore {
   searchWorkRecords(query: string, limit?: number): WorkRecordSnapshot[];
   triggeringMail(): MailSnapshot[];
   searchEvents(query: string, limit?: number): EventRecord[];
-  metricSamples(goalId: string): MetricSample[];
   goals(): GoalSnapshot[];
   workRecords(): WorkRecordSnapshot[];
   schedules(): ScheduleSnapshot[];

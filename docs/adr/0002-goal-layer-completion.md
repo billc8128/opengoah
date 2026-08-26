@@ -1,6 +1,6 @@
 # ADR 0002: Goal-layer completion semantics
 
-- Status: accepted
+- Status: superseded; framework-owned Metric contracts were removed in contract 0.12
 - Date: 2026-08-19
 
 ## Decisions

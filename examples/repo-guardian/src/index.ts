@@ -2,7 +2,6 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { SqliteLedger } from "goah-ledger-sqlite";
 import { piWorkerPath, ProcessRunner } from "goah-runner-pi";
 import { renderDashboard, runSupervisorDaemon, Supervisor } from "goah-supervisor";
@@ -24,18 +23,15 @@ const runner = new ProcessRunner(model
   : { command: process.execPath, args: [fauxRunnerWorkerPath()], cwd: repo, env: { GOAH_FAUX_STEPS: JSON.stringify([{ handoff: { handoff: { observations: ["test status collected"], results: [], nextSteps: ["check again"] }, mail: [], nextWakeAt: new Date(Date.now() + 86_400_000).toISOString() } }]) } });
 const supervisor = new Supervisor(ledger, runner, new class { now(): Date { return new Date(); } }(), {
   silence: { notify: "human" },
-  verifyMetricsAfterWake: Boolean(model),
   retryPolicy: { maxAttempts: 2, baseDelayMs: 5_000 },
   profiles: [{
     agent: "guardian",
     role: "child",
-    systemPrompt: "Keep this repository's test metric green. Run the configured tests first. If they fail, diagnose from concrete output, make the smallest safe code change, rerun tests, and commit verified work with Git when appropriate. Manage branches or worktrees yourself when concurrent work could conflict. Never claim a repair without command evidence.",
+    systemPrompt: "Keep this repository's tests green. Run the configured tests with bash and interpret the concrete output yourself. If they fail, diagnose from evidence, make the smallest safe code change, rerun tests, and commit verified work with Git when appropriate. Manage branches or worktrees yourself when concurrent work could conflict. Never claim a repair without command evidence.",
   }],
 });
 
-if (!ledger.goal("repo-health")) supervisor.createGoal({ id: "repo-health", parentId: null, objective: "Keep the repository tests green", observationMethod: "Run the configured repository health metric and require a fresh passing result.", verificationMethod: "Run the configured repository health metric and require a fresh passing result.", owner: "guardian", phase: "active", revision: 0 });
-const workerDir = fileURLToPath(new URL(".", import.meta.url));
-supervisor.registerMetricCollector("repo-health", { source: "repo.tests", window: "latest", direction: "at_least", target: 1, freshnessMs: 172_800_000, onMissing: "wake_owner", onStale: "wake_owner" }, { command: process.execPath, args: [join(workerDir, "metric-worker.js")], env: { GOAH_GUARD_REPO: repo, ...(process.env.GOAH_GUARD_TEST_COMMAND ? { GOAH_GUARD_TEST_COMMAND: process.env.GOAH_GUARD_TEST_COMMAND } : {}) }, timeoutMs: 310_000 }, 86_400_000);
+if (!ledger.goal("repo-health")) supervisor.createGoal({ id: "repo-health", parentId: null, objective: "Keep the repository tests green", observationMethod: "Run the configured repository test command with bash and inspect its fresh output.", verificationMethod: "Rerun the repository test command and cite the successful Tool Result.", owner: "guardian", phase: "active", revision: 0 });
 supervisor.planWake("guardian", new Date().toISOString(), "initial repository health check", "supervisor");
 
 if (process.argv.includes("--daemon")) {

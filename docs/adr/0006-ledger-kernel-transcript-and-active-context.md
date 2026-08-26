@@ -18,7 +18,7 @@ Goah 0.3 introduces three logical layers without adding a service boundary:
 
 Supervisor builds an ephemeral Active Context View by deterministically rendering structured projections to Markdown. The composer does not call a model. The runner records the exact rendered context, system prompt, messages, tools, and behavior-affecting model configuration in `request.prepared` immediately before dispatch. Authentication values, authorization headers, abort handles, and transport-private objects are excluded mechanically.
 
-Goal no longer requires a metric or target. Applications may register a metric contract and collector independently.
+Goal no longer requires a metric or target. Observation and verification are Agent-owned textual methods executed with ordinary tools; Core exposes no Metric contract or collector.
 
 The layers remain source modules and public contract sections inside the existing packages. We do not introduce a general plugin framework, message queue, cache, or second resident service.
 

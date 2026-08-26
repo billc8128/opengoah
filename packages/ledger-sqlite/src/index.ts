@@ -20,7 +20,6 @@ import {
   type JsonValue,
   type Ledger,
   type MailSnapshot,
-  type MetricSample,
   type ReassignmentRequest,
   type ReassignmentResult,
   type ScheduleSnapshot,
@@ -619,9 +618,6 @@ export class SqliteLedger implements Ledger {
   }
   searchEvents(query: string, limit = 50): EventRecord[] {
     return (this.db.prepare("SELECT e.* FROM events_fts f JOIN events e ON e.seq=f.rowid WHERE events_fts MATCH ? ORDER BY rank LIMIT ?").all(query, limit) as Row[]).map(mapEvent);
-  }
-  metricSamples(goalId: string): MetricSample[] {
-    return (this.db.prepare("SELECT data FROM events WHERE type='metric.sampled' AND json_extract(data,'$.goalId')=? ORDER BY seq").all(goalId) as Array<{ data: string }>).map((row) => JSON.parse(row.data) as MetricSample);
   }
   events(): EventRecord[] { return (this.db.prepare("SELECT * FROM events ORDER BY seq").all() as Row[]).map(mapEvent); }
   goals(): GoalSnapshot[] { return (this.db.prepare("SELECT * FROM goals ORDER BY id").all() as Row[]).map(mapGoal); }

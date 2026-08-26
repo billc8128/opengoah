@@ -18,10 +18,10 @@ writeFileSync(join(app, "package.json"), `${JSON.stringify({ name: "goah-install
 execFileSync("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", tarball], { cwd: app, stdio: "pipe" });
 execFileSync(process.execPath, ["--input-type=module", "-e", `
   const modules = await Promise.all([
-    import('@goah/cli/kernel'), import('@goah/cli/transcript'), import('@goah/cli/execution'), import('@goah/cli/metrics'),
+    import('@goah/cli/kernel'), import('@goah/cli/transcript'), import('@goah/cli/execution'),
     import('@goah/cli/sqlite'), import('@goah/cli/supervisor'), import('@goah/cli/runner-pi'), import('@goah/cli/testkit'), import('@goah/cli')
   ]);
-  const names = ['controlStream','replayTranscript','assertHandoff','evaluateMetric','SqliteLedger','Supervisor','ProcessRunner','SimulatedClock','controlEndpoint'];
+  const names = ['controlStream','replayTranscript','assertHandoff','SqliteLedger','Supervisor','ProcessRunner','SimulatedClock','controlEndpoint'];
   for (let index = 0; index < names.length; index += 1) if (typeof modules[index][names[index]] !== 'function') throw new Error('missing public subpath export: '+names[index]);
 `], { cwd: app, stdio: "pipe" });
 execFileSync("git", ["init", "-b", "main"], { cwd: app });

@@ -60,7 +60,7 @@ Every Goal lifecycle mutation has exactly one authoritative `goal.changed` event
 
 The only Ledger writer in the resident process. It validates Turn ownership and terminal state, Goal and Work Record revisions, leases, capabilities, atomic delegation, scheduling, recovery, and Human priority. Human input starts or steers a Turn directly. Mail is the bounded, acknowledged delivery path for asynchronous Agent communication, Human decisions, and Verification/Audit results; findings for child work are also escalated to CEO. Wake is reserved for future Goal/system motion.
 
-Supervisor is a control plane, not the organization's decision maker. It may record facts, enforce ownership/fencing, deliver Mail, admit current Goal context, and recover failed execution. It must not decide whether a Goal needs decomposition, whether a metric means work should continue, whether an Agent's plan remains useful after a Goal revision, or whether a Handoff contains enough organizational motion. Those decisions belong to Agents through context and tools; configurable prompts may advise them without turning that advice into Supervisor rejection logic.
+Supervisor is a control plane, not the organization's decision maker. It may record facts, enforce ownership/fencing, deliver Mail, admit current Goal context, and recover failed execution. Goal observation and verification run inside Agents with ordinary tools; Core has no metric schema, collector, evaluator, or threshold policy. Supervisor must not decide whether a Goal needs decomposition, whether an Agent's plan remains useful after a Goal revision, or whether a Handoff contains enough organizational motion. Those decisions belong to Agents through context and tools; configurable prompts may advise them without turning that advice into Supervisor rejection logic.
 
 Wake status is scheduling-only: `queued → claimed → consumed`, with `cancelled` as the pending terminal path. Each Wake owns a durable trigger set; every trigger records source (`human|goal|system`) and `pending|resolved` state. Goal motion carries only `goalId`; queued motion survives Goal revisions, and Turn admission reads the current active Goal and freezes its current `goalRevision`. Coalescing never crosses Goal ids. Turn source and authority are derived only from pending triggers. Claiming is blocked while any Human Turn is active. Once the Turn is durably created, Wake records its `turnId` and resolves its triggers.
 
@@ -103,7 +103,7 @@ Legacy narrative Handoffs and `memory.appended` facts remain readable. Schema v9
 - Every Goal-bound RPC revalidates current phase, owner, revision, Agent Thread, and Turn binding; a Human or parent Goal mutation fences an older active Turn before it can perform more tools.
 - A Goal Turn without a current-Turn Work Record update is abnormal.
 - Failed/interrupted Turns do not consume undelivered asynchronous Mail.
-- Reading Mail cancels a pending Wake only when every direct or coalesced trigger on that Wake is a now-resolved Mail; Schedule, Metric, Goal, and unread-Mail motion is preserved.
+- Reading Mail cancels a pending Wake only when every direct or coalesced trigger on that Wake is a now-resolved Mail; Schedule, Goal, and unread-Mail motion is preserved.
 - Committed Work Record versions survive later Turn failure.
 - Turn persists the opaque Runner Profile id so sliding-lease recovery can terminate stale Runner ownership after a Supervisor restart.
 - Open Tool Calls are repaired to an explicit unknown result when a Turn is interrupted.

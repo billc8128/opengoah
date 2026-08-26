@@ -1,6 +1,6 @@
 # Operating goah
 
-`runSupervisorDaemon()` is the only resident process. Runner and metric code executes in child processes. Use the templates in `deploy/` with an explicit working directory and scoped provider credentials.
+`runSupervisorDaemon()` is the only resident process. Agent observation and verification execute through Runner tools. Use the templates in `deploy/` with an explicit working directory and scoped provider credentials.
 
 The repository guardian can be run once or supervised continuously:
 

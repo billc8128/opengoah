@@ -10,7 +10,6 @@ import { piWorkerPath, ProcessRunner, verificationWorkerPath } from "goah-runner
 import { calibrateVerificationThreshold, evaluateVerification, ProcessVerifierModel, renderDashboard, runSupervisorDaemon, Supervisor, VerificationPlane, type SupervisorOptions, type VerifierModel } from "goah-supervisor";
 import { assertLedgerConformance, createMemoryLedger, fauxRunnerWorkerPath, SimulatedClock } from "./index.js";
 
-const metric = { source: "test", window: "1h", direction: "at_least" as const, target: 1, freshnessMs: 60_000, onMissing: "abnormal" as const, onStale: "wake_owner" as const };
 function queuedWake(id: string, agent = "worker", triggerRef = `trigger:${id}`): WakeSnapshot { return { id, agent, triggerRef, status: "queued", attempt: 0, enqueuedSeq: 0, claimedAt:null,consumedAt:null,turnId:null }; }
 function goal(): GoalSnapshot { return { id: "root", parentId: null, objective: "produce a checked artifact", observationMethod: null, verificationMethod: null, owner: "worker", phase: "active", revision: 0 }; }
 function event(actor: string, type: string, data: JsonValue = {}, turnId?: string): EventInput { return { streamId: turnId ? wakeStream(turnId) : controlStream(actor), ts: "2026-08-18T00:00:00.000Z", actor, type, data }; }
@@ -289,18 +288,6 @@ test("a queued Mail Wake adopts the latest Goal revision at admission",async()=>
   ledger.close();
 });
 
-test("metric maintenance ignores inactive Goals instead of blocking Wake claims",async()=>{
-  const clock=new SimulatedClock();
-  const ledger=createMemoryLedger({clock});
-  const supervisor=new Supervisor(ledger,fauxRunner([]),clock);
-  ledger.putGoal(goal(),"human");
-  supervisor.registerMetricContract("root",{...metric,onMissing:"wake_owner"});
-  supervisor.transitionGoal("root","paused","human");
-  assert.equal(await supervisor.tick(),null);
-  assert.equal(ledger.wakes().length,0);
-  ledger.close();
-});
-
 test("recovery kills the recorded runner before another wake can use its local root", async () => {
   const repo = repository();
   const clock = new SimulatedClock();
@@ -337,16 +324,13 @@ test("supervisor leaves Git history decisions to the runner", async () => {
   ledger.close();
 });
 
-test("schedule, mail, and metric triggers are durable and coalesced", async () => {
+test("schedule and mail triggers are durable and coalesced", async () => {
   const clock = new SimulatedClock();
   const ledger = createMemoryLedger({ clock });
   const supervisor = new Supervisor(ledger, fauxRunner([{ handoff: { handoff: { observations: [], results: [], nextSteps: [] }, mail: [], nextWakeAt: null } }]), clock);
   supervisor.createGoal(goal());
-  supervisor.registerMetricContract("root", metric);
   ledger.putMail({ id: "decision", to: "worker", from: "human", level: "decision", body: {}, readAt: null }, "human");
   supervisor.planWake("worker", clock.now().toISOString(), "scheduled");
-  const evaluation = supervisor.recordMetric({ goalId: "root", source: "test", observedAt: clock.now().toISOString(), value: 0 });
-  assert.equal(evaluation.status, "missed");
   await supervisor.tick();
   assert.equal(ledger.wakes().filter((wake) => wake.agent === "worker").length, 2);
   assert.equal(ledger.events().some((event) => event.type === "wake_trigger.added"), true);
@@ -686,27 +670,6 @@ test("process verifier model runs on official Pi core and records findings", asy
 });
 
 test("process verifier output is bounded",async()=>{const model=new ProcessVerifierModel({command:process.execPath,args:["-e","process.stdin.resume();process.stdin.on('end',()=>process.stdout.write('x'.repeat(1100000)))"]});await assert.rejects(()=>model.blindAudit([]),/verifier output exceeded 1 MB/);});
-
-test("post-wake metric verification closes a failing repo-health loop", async () => {
-  const repo = repository();
-  const healthFile = join(repo, "healthy.txt");
-  const clock = new SimulatedClock();
-  const ledger = createMemoryLedger({ clock });
-  const runner = fauxRunner([{ write: { path: "healthy.txt", content: "ok\n" } }, { handoff: { handoff: { observations: ["failed first"], results: ["repaired"], nextSteps: [] }, mail: [], nextWakeAt: null } }], undefined, repo);
-  const supervisor = new Supervisor(ledger, runner, clock, { verifyMetricsAfterWake: true });
-  supervisor.createGoal({ id: "health", parentId: null, objective: "keep healthy", observationMethod: null, verificationMethod: null, owner: "worker", phase: "active", revision: 0 });
-  supervisor.registerMetricCollector("health", { source: "repo.health", window: "latest", direction: "at_least", target: 1, freshnessMs: 10_000, onMissing: "wake_owner", onStale: "wake_owner" }, {
-    command: process.execPath,
-    args: ["-e", "let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const r=JSON.parse(s);const fs=require('fs');process.stdout.write(JSON.stringify({goalId:r.goalId,source:'repo.health',observedAt:new Date().toISOString(),value:fs.existsSync(process.env.GOAH_HEALTH_FILE)?1:0}))})"],
-    env: { GOAH_HEALTH_FILE: healthFile },
-  }, 60_000);
-  const completed = await supervisor.runAvailable(4, 5);
-  assert.equal(completed.length, 1);
-  assert.equal(ledger.wakes().length, 1);
-  assert.deepEqual(ledger.metricSamples("health").map((sample) => sample.value), [0, 1]);
-  assert.equal(readFileSync(join(repo, "healthy.txt"), "utf8"), "ok\n");
-  ledger.close();
-});
 
 async function waitFor(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 2_000;

@@ -1,9 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { spawn, type ChildProcess } from "node:child_process";
 import {
   assertHandoff,
   controlStream,
-  evaluateMetric,
   goalStream,
   type AgentCapability,
   type AgentProfile,
@@ -21,10 +19,6 @@ import {
   type Ledger,
   type MailSnapshot,
   memoryStream,
-  type MetricEvaluation,
-  type MetricContract,
-  type MetricProcessSpec,
-  type MetricSample,
   type ReassignmentRequest,
   type ReassignmentResult,
   type Runner,
@@ -76,18 +70,13 @@ export interface SupervisorOptions {
   turnRetryPolicy?: { maxAttempts: number; baseDelayMs: number };
   profiles?: AgentProfile[];
   runnerProfiles?: RunnerProfile[];
-  verifyMetricsAfterWake?: boolean;
 }
-
-interface MetricCollectorRegistration { goalId: string; contract: MetricContract; spec: MetricProcessSpec; intervalMs: number; nextAt: number }
 
 export class Supervisor {
   readonly #leaseMs: number;
   readonly #memoryTailChars: number;
   #claimTail: Promise<void> = Promise.resolve();
   #humanTail:Promise<void>=Promise.resolve();
-  readonly #metricCollectors = new Map<string, MetricCollectorRegistration>();
-  readonly #metricContracts = new Map<string, MetricContract>();
   readonly #silence: { maxSilentMs: number; notify: string } | null;
   readonly #retryPolicy: NonNullable<SupervisorOptions["retryPolicy"]>;
   readonly #turnRetryPolicy: NonNullable<SupervisorOptions["turnRetryPolicy"]>;
@@ -96,7 +85,6 @@ export class Supervisor {
   readonly #handles = new Map<string, RunnerHandle>();
   readonly #executions=new Map<string,Promise<void>>();
   readonly #agentExecutions=new Map<string,Promise<void>>();
-  readonly #verifyMetricsAfterWake: boolean;
 
   #runner: Runner;
   constructor(readonly ledger: Ledger, runner: Runner, readonly clock: Clock, options: SupervisorOptions = {}) {
@@ -108,13 +96,6 @@ export class Supervisor {
     this.#turnRetryPolicy = options.turnRetryPolicy ?? { maxAttempts: 3, baseDelayMs: 1_000 };
     this.#profiles = new Map([["ceo", { agent: "ceo", role: "ceo" } satisfies AgentProfile], ...(options.profiles ?? []).map((profile) => [profile.agent, profile] as const)]);
     this.#runnerProfiles = new Map((options.runnerProfiles ?? []).map((profile) => [profile.id, profile] as const));
-    this.#verifyMetricsAfterWake = options.verifyMetricsAfterWake ?? false;
-  }
-
-  registerMetricContract(goalId: string, contract: MetricContract): void { this.#metricContracts.set(goalId, contract); }
-  registerMetricCollector(goalId: string, contract: MetricContract, spec: MetricProcessSpec, intervalMs = 60_000): void {
-    this.registerMetricContract(goalId, contract);
-    this.#metricCollectors.set(goalId, { goalId, contract, spec, intervalMs, nextAt: 0 });
   }
 
   /**
@@ -312,9 +293,6 @@ export class Supervisor {
       await this.#awaitAgentExecution(wake.agent);const currentWake=this.#wake(wake.id);if(currentWake.status!=="claimed")return currentWake;if(currentWake.goalId){const goal=this.ledger.goal(currentWake.goalId);if(!goal||goal.owner!==currentWake.agent||goal.phase!=="active"){this.ledger.cancelWake(currentWake.id,this.#now());return this.#wake(currentWake.id);}}const wakeTriggers=this.ledger.wakeTriggers(currentWake.id).filter((trigger)=>trigger.status==="pending");const turnContext = this.#turnContext(currentWake,wakeTriggers);const thread=this.threadFor(currentWake.agent);const now=this.#now();const leaseToken=randomUUID();const execution:TurnSnapshot={id:randomUUID(),threadId:thread.id,source:turnContext.source.kind,goalId:turnContext.goalBinding?.goalId??null,goalRevision:turnContext.goalBinding?.goalRevision??null,status:"in_progress",attempt:1,error:null,startedAt:now,endedAt:null,leaseUntil:new Date(this.clock.now().getTime()+this.#leaseMs).toISOString(),leaseToken,runnerPid:null,runnerProfileId:this.#runnerProfileId(currentWake.agent)};
       this.ledger.putThread({ ...thread,updatedAt:this.#now() },"supervisor");
       this.ledger.startTurnFromWake(currentWake.id,execution,now);createdTurnId=execution.id;const deliveredMail=this.#contextMail(currentWake.agent);const deliveredMailIds=deliveredMail.map((mail)=>mail.id);this.ledger.appendEvent({streamId:`turn:${execution.id}`,ts:now,actor:"supervisor",type:"run.admitted",data:{...turnContext,wakeTriggers} as unknown as JsonValue,ignorable:true});const revision=turnContext.goalBinding?this.ledger.workRecord(turnContext.goalBinding.goalId)?.recordRevision??-1:-1;await this.#trackExecution(execution,currentWake.agent,turnContext,()=>this.#goalContext(currentWake,turnContext,execution.id,deliveredMail,wakeTriggers),currentWake,deliveredMailIds,revision,wakeTriggers);
-      if (this.#verifyMetricsAfterWake) {
-        for (const goal of this.ledger.goalsForOwner(currentWake.agent)) if (this.#metricCollectors.has(goal.id)) await this.collectMetricNow(goal.id);
-      }
       return this.#wake(wake.id);
     } catch (error) {
       if(createdTurnId&&this.ledger.turn(createdTurnId)?.status==="in_progress")this.#failTurn(createdTurnId,error instanceof Error?error.message:String(error));const current=this.ledger.wake(wake.id);if(current?.status==="claimed")this.ledger.releaseWake(wake.id,this.#now());return this.#wake(wake.id);
@@ -328,8 +306,6 @@ export class Supervisor {
     await previous;
     try {
       for (const schedule of this.ledger.dueSchedules(this.#now())) this.#enqueueSchedule(schedule);
-      await this.#collectMetrics();
-      this.#scheduleMetricAlerts();
       this.#checkSystemSilence();
       for (const mail of this.ledger.triggeringMail()) {
         const thread=this.ledger.threads().find((candidate)=>candidate.agent===mail.to);if(thread&&this.ledger.activeTurn(thread.id))continue;
@@ -349,27 +325,6 @@ export class Supervisor {
       completed.push(...wakes);
       if (wakes.length === 0 || completed.length >= maxWakes) return completed;
     }
-  }
-
-  recordMetric(sample: MetricSample): MetricEvaluation {
-    const goal = this.ledger.goal(sample.goalId);
-    if (!goal) throw new Error(`metric goal not found: ${sample.goalId}`);
-    const contract = this.#metricContracts.get(goal.id);
-    if (!contract) throw new Error(`metric contract is not registered: ${goal.id}`);
-    if (contract.source !== sample.source) throw new Error("metric source does not match registered contract");
-    this.ledger.appendEvent({ streamId: `metric:${goal.id}`, ts: this.#now(), actor: "supervisor", type: "metric.sampled", data: sample as unknown as JsonValue });
-    const evaluation = evaluateMetric(contract, this.ledger.metricSamples(goal.id), this.#now());
-    this.ledger.appendEvent({ streamId: `metric:${goal.id}`, ts: this.#now(), actor: "supervisor", type: "metric.evaluated", data: evaluation as unknown as JsonValue });
-    if (goal.phase==="active"&&evaluation.shouldWakeOwner) this.#enqueueTrigger(goal.owner, `metric:${goal.id}:${sample.observedAt}`,{goalId:goal.id});
-    return evaluation;
-  }
-
-  async collectMetricNow(goalId: string): Promise<MetricEvaluation> {
-    const registration = this.#metricCollectors.get(goalId);
-    if (!registration) throw new Error(`metric collector is not registered: ${goalId}`);
-    registration.nextAt = this.clock.now().getTime() + registration.intervalMs;
-    const sample = await runJsonProcess<MetricSample>(registration.spec, { goalId });
-    return this.recordMetric({ ...sample, goalId });
   }
 
   #enqueueSchedule(schedule: ScheduleSnapshot): WakeSnapshot | null {
@@ -520,27 +475,6 @@ export class Supervisor {
     throw new Error(`unsupported Agent capability: ${method}`);
   }
 
-  async #collectMetrics(): Promise<void> {
-    const now = this.clock.now().getTime();
-    for (const registration of this.#metricCollectors.values()) {
-      if (registration.nextAt > now) continue;
-      if(this.ledger.goal(registration.goalId)?.phase!=="active")continue;
-      registration.nextAt = now + registration.intervalMs;
-      const sample = await runJsonProcess<MetricSample>(registration.spec, { goalId: registration.goalId });
-      this.recordMetric({ ...sample, goalId: registration.goalId });
-    }
-  }
-
-  #scheduleMetricAlerts(): void {
-    for (const [goalId, contract] of this.#metricContracts) {
-      const goal = this.ledger.goal(goalId);
-      if (!goal) continue;
-      const samples = this.ledger.metricSamples(goal.id);
-      const evaluation = evaluateMetric(contract, samples, this.#now());
-      if (goal.phase==="active"&&evaluation.shouldWakeOwner) this.#enqueueTrigger(goal.owner, `metric:${goal.id}:${evaluation.status}:${samples.at(-1)?.observedAt ?? "none"}`,{goalId:goal.id});
-    }
-  }
-
   /** The one mechanical floor: total ledger silence. Any event from anyone resets the clock; stall policy is the CEO's business, not the supervisor's. */
   #checkSystemSilence(): void {
     if (!this.#silence) return;
@@ -601,38 +535,6 @@ export function renderDashboard(ledger: Ledger): string {
   return `<!doctype html><html><head><meta charset="utf-8"><title>goah status</title><style>body{font:14px ui-monospace;margin:32px;background:#101418;color:#dce3e4}section{margin:32px 0}pre{white-space:pre-wrap;border:1px solid #334;padding:12px}</style></head><body><h1>goah</h1><p>seq ${ledger.events().at(-1)?.seq ?? 0}</p><section><h2>Team</h2><table>${rows(deriveTeam(ledger))}</table></section><section><h2>Goals</h2><table>${rows(ledger.goals())}</table></section><section><h2>Wakes</h2><table>${rows(ledger.wakes())}</table></section><section><h2>Mailbox</h2><table>${rows(ledger.mailbox())}</table></section></body></html>`;
 }
 
-async function runJsonProcess<T>(spec: MetricProcessSpec, input: unknown): Promise<T> {
-  const child = spawn(spec.command, spec.args, { detached: process.platform !== "win32", env: minimalEnvironment(spec.env), stdio: ["pipe", "pipe", "pipe"] });
-  let stdout = "";
-  let stderr = "";
-  let outputOverflow=false;const append=(channel:"stdout"|"stderr",chunk:Buffer)=>{const text=chunk.toString();const remaining=Math.max(0,1_000_000-stdout.length-stderr.length);if(channel==="stdout")stdout+=text.slice(0,remaining);else stderr+=text.slice(0,remaining);if(text.length>remaining&&!outputOverflow){outputOverflow=true;void terminateChild(child,500);}};child.stdout.on("data",(chunk:Buffer)=>append("stdout",chunk));child.stderr.on("data",(chunk:Buffer)=>append("stderr",chunk));
-  child.stdin.end(`${JSON.stringify(input)}\n`);
-  const timeoutMs = spec.timeoutMs ?? 30_000;
-  let timer: NodeJS.Timeout | undefined;
-  const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", (code, signal) => resolve({ code, signal }));
-  });
-  timer = setTimeout(() => { void terminateChild(child, 500); }, timeoutMs);
-  let result:{code:number|null;signal:NodeJS.Signals|null};
-  try{result=await exit;}finally{clearTimeout(timer);}
-  if(outputOverflow)throw new Error("metric output exceeded 1 MB");
-  if (result.code !== 0) throw new Error(stderr.trim() || `metric collector exited (${result.code ?? result.signal})`);
-  return JSON.parse(stdout.trim()) as T;
-}
-
-async function terminateChild(child: ChildProcess, graceMs: number): Promise<void> {
-  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
-  signalPid(child.pid, "SIGTERM");
-  await new Promise((resolve) => setTimeout(resolve, graceMs));
-  if (child.exitCode === null && child.signalCode === null) signalPid(child.pid, "SIGKILL");
-}
-function signalPid(pid: number, signal: NodeJS.Signals): void { try { process.kill(process.platform === "win32" ? pid : -pid, signal); } catch {} }
-function minimalEnvironment(explicit: Record<string, string> = {}): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {};
-  for (const name of ["PATH", "TMPDIR", "TMP", "TEMP", "SYSTEMROOT"]) if (process.env[name] !== undefined) env[name] = process.env[name];
-  return { ...env, ...explicit };
-}
 function escapeHtml(value: string): string { return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"); }
 function messageTextContent(content: unknown): string { if (typeof content === "string") return content; if (!Array.isArray(content)) return ""; return content.map((part) => part && typeof part === "object" && !Array.isArray(part) && (part as { type?: unknown }).type === "text" ? String((part as { text?: unknown }).text ?? "") : "").filter(Boolean).join("\n"); }
 function handoffBlocked(handoff: Handoff): boolean { return "goalId" in handoff ? handoff.outcome === "blocked" : Boolean(handoff.blocker); }

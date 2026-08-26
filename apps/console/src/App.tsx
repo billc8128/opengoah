@@ -202,7 +202,7 @@ function OrganizationTrajectory({ snapshot, onOpenThread }: { snapshot: ConsoleS
     } finally { setLoading(false) }
   }
 
-  return <Page title="Organization trajectory" description="Goal, wake, handoff, mail, schedule, verification, and observation milestones across every agent."><div className="org-trajectory-toolbar"><TrajectorySelect label="Agent" value={agent} onValueChange={setAgent} options={[{ value: "all", label: "All agents" }, ...snapshot.team.map((member) => ({ value: member.agent, label: displayAgent(member.agent) }))]} /><TrajectorySelect label="Event" value={category} onValueChange={setCategory} options={[{ value: "all", label: "All milestones" }, ...["goal", "delegation", "wake", "handoff", "mail", "schedule", "metric"].map((value) => ({ value, label: capitalize(value) }))]} /></div><div className="org-event-list">{items.map((item) => <OrganizationEvent key={item.event.seq} item={item} wake={item.wakeId ? snapshot.wakes.find((wake) => wake.id === item.wakeId) : undefined} thread={item.wakeId ? threadForWake(snapshot, item.wakeId) : undefined} onOpenThread={onOpenThread} />)}{!items.length && <Empty text="No organization milestones match these filters." />}</div>{remote?.nextBeforeSeq && <button className="load-older" disabled={loading} onClick={loadOlder}>{loading ? "Loading…" : "Load older events"}</button>}</Page>
+  return <Page title="Organization trajectory" description="Goal, wake, handoff, mail, schedule, verification, and observation milestones across every agent."><div className="org-trajectory-toolbar"><TrajectorySelect label="Agent" value={agent} onValueChange={setAgent} options={[{ value: "all", label: "All agents" }, ...snapshot.team.map((member) => ({ value: member.agent, label: displayAgent(member.agent) }))]} /><TrajectorySelect label="Event" value={category} onValueChange={setCategory} options={[{ value: "all", label: "All milestones" }, ...["goal", "delegation", "wake", "handoff", "mail", "schedule", "observation"].map((value) => ({ value, label: capitalize(value) }))]} /></div><div className="org-event-list">{items.map((item) => <OrganizationEvent key={item.event.seq} item={item} wake={item.wakeId ? snapshot.wakes.find((wake) => wake.id === item.wakeId) : undefined} thread={item.wakeId ? threadForWake(snapshot, item.wakeId) : undefined} onOpenThread={onOpenThread} />)}{!items.length && <Empty text="No organization milestones match these filters." />}</div>{remote?.nextBeforeSeq && <button className="load-older" disabled={loading} onClick={loadOlder}>{loading ? "Loading…" : "Load older events"}</button>}</Page>
 }
 
 function TrajectorySelect({ label, value, onValueChange, options }: { label: string; value: string; onValueChange(value: string): void; options: Array<{ value: string; label: string }> }) {
@@ -477,7 +477,7 @@ function organizationItems(snapshot: ConsoleSnapshot): TrajectoryItemView[] {
     return { event, wakeId, agent: wakeId ? wakeAgents.get(wakeId) ?? event.actor : event.actor }
   })
 }
-function isOrganizationEvent(type: string): boolean { return ["goal.", "delegation.", "handoff.", "wake.", "mail.", "schedule.", "metric.", "observation.", "ceo.", "human."].some((prefix) => type.startsWith(prefix)) }
+function isOrganizationEvent(type: string): boolean { return ["goal.", "delegation.", "handoff.", "wake.", "mail.", "schedule.", "observation.", "ceo.", "human."].some((prefix) => type.startsWith(prefix)) }
 function eventNarrative(event: EventView, resolvedAgent = event.actor): string {
   const data = record(event.data)
   if (event.type === "handoff.recorded") return `Handoff: ${firstString(data.results) || firstString(data.observations) || "work recorded"}`
@@ -485,7 +485,7 @@ function eventNarrative(event: EventView, resolvedAgent = event.actor): string {
   if (event.type === "delegation.created") return `Delegated a child goal: ${String(data.reason ?? data.goalId ?? "new responsibility")}`
   if (event.type === "goal.changed") { const snapshot = record(data.snapshot); return `Goal ${String(data.operation??snapshot.phase??"updated")}: ${String(snapshot.objective ?? "goal state changed")}` }
   if (event.type === "goal.reassigned") return `Reassigned goal from ${displayAgent(String(data.oldOwner ?? "unknown"))} to ${displayAgent(String(data.newOwner ?? "unknown"))}`
-  if (event.type === "metric.evaluated" || event.type === "observation.confirmed") return `Observation confirmed: ${String(data.summary ?? data.status ?? "evidence recorded")}`
+  if (event.type === "observation.confirmed") return `Observation confirmed: ${String(data.summary ?? data.status ?? "evidence recorded")}`
   if (event.type === "wake.enqueued") return "Wake queued"
   if (event.type === "wake.claimed") return "Wake claimed"
   if (event.type === "wake.consumed") return "Wake created a Turn"
@@ -495,7 +495,7 @@ function eventNarrative(event: EventView, resolvedAgent = event.actor): string {
   if (event.type === "mail.sent" || event.type === "mail.delivered") return `Mail delivered: ${String(data.summary ?? data.level ?? "message")}`
   return `${event.type.replaceAll(".", " ")}: ${summarize(event.data)}`
 }
-function eventTone(event: EventView): string { if (event.type.includes("abnormal") || event.type.includes("failed")) return "danger"; if (event.type.startsWith("metric.") || event.type.includes("confirmed")) return "success"; return "active-tone" }
+function eventTone(event: EventView): string { if (event.type.includes("abnormal") || event.type.includes("failed")) return "danger"; if (event.type.includes("confirmed")) return "success"; return "active-tone" }
 function displayAgent(value: string): string { if (value === "ceo") return "CEO"; if (value === "human") return "Human"; if (value === "supervisor") return "Supervisor"; return `${capitalize(value.replaceAll("-", " "))} Agent` }
 function capitalize(value: string): string { return value ? value[0]!.toUpperCase() + value.slice(1) : value }
 function formatTime(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? "—" : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }) }

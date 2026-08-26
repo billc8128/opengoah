@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { CONTRACT_VERSION, wakeStream, type AgentProfile, type MetricContract, type MetricProcessSpec, type RunnerProfile } from "goah-ledger-contract";
+import { CONTRACT_VERSION, wakeStream, type AgentProfile, type RunnerProfile } from "goah-ledger-contract";
 import { SQLITE_SCHEMA_VERSION, SqliteLedger } from "goah-ledger-sqlite";
 import { createPiModel, piWorkerPath, ProcessRunner, resolveEnvSpec, type ProcessRunnerOptions } from "goah-runner-pi";
 import { renderDashboard, runSupervisorDaemon, RunnerRouter, Supervisor } from "goah-supervisor";
@@ -17,8 +17,6 @@ export interface GoahConfig {
   profiles?: AgentProfile[];
   silencePolicy?: { maxSilentMs?: number; notify?: string } | null;
   retryPolicy?: { maxAttempts: number; baseDelayMs: number };
-  verifyMetricsAfterWake?: boolean;
-  metrics?: Array<{ goalId: string; contract: MetricContract; intervalMs: number; process: MetricProcessSpec }>;
 }
 
 export interface InitOptions {
@@ -58,7 +56,6 @@ export function loadConfig(path = "goah.config.json"): GoahConfig {
     config.runnerProfiles = [{ id: "default", runner: "pi", config: { provider, model, ...(keyRef ? { apiKeyEnv: keyRef[1].slice(4) } : {}), ...(env.GOAH_PI_BASE_URL ? { baseUrl: env.GOAH_PI_BASE_URL } : {}) } }];
     if (config.profiles) config.profiles = config.profiles.map((profile) => ({ ...profile, runnerProfile: profile.runnerProfile ?? "default" }));
   }
-  for (const metric of config.metrics ?? []) metric.process.command = resolveCommand(metric.process.command);
   return config;
 }
 
@@ -73,9 +70,7 @@ export function createRuntime(config: GoahConfig): { ledger: SqliteLedger; super
     ...(config.runnerProfiles ? { runnerProfiles: config.runnerProfiles } : {}),
     ...(config.silencePolicy !== undefined ? { silence: config.silencePolicy } : {}),
     ...(config.retryPolicy ? { retryPolicy: config.retryPolicy } : {}),
-    ...(config.verifyMetricsAfterWake !== undefined ? { verifyMetricsAfterWake: config.verifyMetricsAfterWake } : {}),
   });
-  for (const metric of config.metrics ?? []) supervisor.registerMetricCollector(metric.goalId, metric.contract, metric.process, metric.intervalMs);
   return { ledger, supervisor };
 }
 
@@ -280,7 +275,7 @@ export function statusSnapshot(ledger: SqliteLedger): object {
   const wakes = ledger.wakes().map((wake) => {
     const turn=wake.turnId?ledger.turn(wake.turnId):null;const turnEvents=turn?ledger.readStream(`turn:${turn.id}`):[];const tokensUsed=turnEvents.reduce((total,event)=>total+assistantTokens(event.data),0);return{...wake,tokensUsed,abnormalReason:turn?.status==="failed"?field(turn.error,"message"):null};
   });
-  const goals = ledger.goals().map((goal) => ({ ...goal, evaluation: [...events].reverse().find((event) => event.streamId === `metric:${goal.id}` && event.type === "metric.evaluated")?.data ?? null }));
+  const goals = ledger.goals();
   const handoffs = events.filter((event) => event.type === "handoff.recorded").slice(-20).map((event) => ({ seq: event.seq, ts: event.ts, agent: event.actor, streamId: event.streamId, handoff: event.data }));
   const modelCapabilitiesByAgent=Object.fromEntries(ledger.threads().flatMap((thread)=>{const turnIds=new Set(ledger.turns(thread.id).map((turn)=>turn.id));const capability=[...events].reverse().find((event)=>event.type==="transcript.started"&&event.streamId.startsWith("turn:")&&turnIds.has(event.streamId.slice("turn:".length)))?.data;return capability?[[thread.agent,capability]]:[];}));const modelCapabilities=modelCapabilitiesByAgent.ceo??[...events].reverse().find((event)=>event.type==="transcript.started")?.data??null;
   return { seq: events.at(-1)?.seq ?? 0, threads: ledger.threads(), turns: ledger.turns().map((turn)=>({...turn,leaseToken:null})), goals, wakes,wakeTriggers:wakes.flatMap((wake)=>ledger.wakeTriggers(wake.id)), schedules:ledger.schedules(), modelCapabilities,modelCapabilitiesByAgent, recentHandoffs: handoffs };
