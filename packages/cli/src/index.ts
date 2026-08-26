@@ -15,7 +15,6 @@ export interface GoahConfig {
   runner?: { command: string; args: string[]; env?: Record<string, string>; inheritEnv?: string[] };
   runnerProfiles?: RunnerProfile[];
   profiles?: AgentProfile[];
-  silencePolicy?: { maxSilentMs?: number; notify?: string } | null;
   retryPolicy?: { maxAttempts: number; baseDelayMs: number };
 }
 
@@ -68,7 +67,6 @@ export function createRuntime(config: GoahConfig): { ledger: SqliteLedger; super
   const supervisor = new Supervisor(ledger, runner, new class { now(): Date { return new Date(); } }(), {
     ...(config.profiles ? { profiles: config.profiles } : {}),
     ...(config.runnerProfiles ? { runnerProfiles: config.runnerProfiles } : {}),
-    ...(config.silencePolicy !== undefined ? { silence: config.silencePolicy } : {}),
     ...(config.retryPolicy ? { retryPolicy: config.retryPolicy } : {}),
   });
   return { ledger, supervisor };
@@ -83,7 +81,6 @@ export function defaultConfig(directory: string, options: InitOptions = {}): Goa
     stateDir: defaultStateDir(directory),
     runnerProfiles: [runnerProfile],
     profiles: [{ agent: "ceo", role: "ceo", runnerProfile: "default" }, { agent: options.agent ?? "worker", role: "child", runnerProfile: "default" }],
-    silencePolicy: { maxSilentMs: 12 * 3_600_000, notify: "ceo" },
   };
 }
 

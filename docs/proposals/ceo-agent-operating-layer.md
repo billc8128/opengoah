@@ -521,7 +521,7 @@ Raw Transcript events remain accessible through `ledger_search` and Inspector. R
 
 ### CEO policy failure
 
-- Invariant failure rejects handoff and records `ceo.motion_invalid`.
+- Organization liveness is CEO policy expressed through context and tools; Supervisor does not reject a structurally valid Handoff for lacking motion.
 - Supervisor may retry once with the violation injected.
 - Repeated violation escalates to human rather than fabricating team motion.
 

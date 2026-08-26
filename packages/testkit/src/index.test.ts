@@ -7,7 +7,7 @@ import { getEventListeners } from "node:events";
 import test from "node:test";
 import { controlStream,goalStream, wakeStream, type Clock, type EventInput, type GoalSnapshot, type JsonValue,type RunRequest, type Runner, type TurnSnapshot, type WakeSnapshot } from "goah-ledger-contract";
 import { piWorkerPath, ProcessRunner, verificationWorkerPath } from "goah-runner-pi";
-import { calibrateVerificationThreshold, evaluateVerification, ProcessVerifierModel, renderDashboard, runSupervisorDaemon, Supervisor, VerificationPlane, type SupervisorOptions, type VerifierModel } from "goah-supervisor";
+import { calibrateVerificationThreshold, evaluateVerification, ProcessVerifierModel, renderDashboard, runSupervisorDaemon, Supervisor, VerificationPlane, type VerifierModel } from "goah-supervisor";
 import { assertLedgerConformance, createMemoryLedger, fauxRunnerWorkerPath, SimulatedClock } from "./index.js";
 
 function queuedWake(id: string, agent = "worker", triggerRef = `trigger:${id}`): WakeSnapshot { return { id, agent, triggerRef, status: "queued", attempt: 0, enqueuedSeq: 0, claimedAt:null,consumedAt:null,turnId:null }; }
@@ -368,7 +368,7 @@ test("verification plane records findings and reports calibrated metrics", async
   const plane = new VerificationPlane(ledger, supervisor, model);
   await plane.verifyTurn("w");
   assert.equal(verifiedTurn,"w");
-  assert.deepEqual(ledger.mailbox().filter((mail)=>mail.from==="verifier").map((mail)=>mail.to).sort(),["ceo","worker"]);
+  assert.deepEqual(ledger.mailbox().filter((mail)=>mail.from==="verifier").map((mail)=>mail.to),["worker"]);
   await plane.auditGlobal();
   assert.match(blindPayload, /tool.fact/);
   assert.deepEqual(evaluateVerification([
@@ -419,13 +419,13 @@ test("two agents run concurrently while CEO context and dashboard see the organi
   ledger.close();
 });
 
-test("daemon polling does not accumulate AbortSignal listeners",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const supervisor=new Supervisor(ledger,fauxRunner([]),clock,{silence:null});const controller=new AbortController();const running=runSupervisorDaemon(supervisor,{pollMs:0,signal:controller.signal});await new Promise((resolve)=>setTimeout(resolve,30));assert.ok(getEventListeners(controller.signal,"abort").length<=1);controller.abort();await running;ledger.close();});
+test("daemon polling does not accumulate AbortSignal listeners",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const supervisor=new Supervisor(ledger,fauxRunner([]),clock);const controller=new AbortController();const running=runSupervisorDaemon(supervisor,{pollMs:0,signal:controller.signal});await new Promise((resolve)=>setTimeout(resolve,30));assert.ok(getEventListeners(controller.signal,"abort").length<=1);controller.abort();await running;ledger.close();});
 
 test("accelerated 30-day soak keeps wake context bounded and projections replayable", async () => {
   const clock = new SimulatedClock();
   const ledger = createMemoryLedger({ clock });
   const contextFile = join(mkdtempSync(join(tmpdir(), "goah-soak-")), "context.json");
-  const supervisor = new Supervisor(ledger, fauxRunner([{ handoff: { handoff: { outcome:"progress", evidence:[1] }, mail: [], nextWakeAt: null } }], contextFile), clock, { silence: null });
+  const supervisor = new Supervisor(ledger, fauxRunner([{ handoff: { handoff: { outcome:"progress", evidence:[1] }, mail: [], nextWakeAt: null } }], contextFile), clock);
   supervisor.createGoal(goal());
   for (let day = 0; day < 30; day += 1) {
     supervisor.planWake("worker", clock.now().toISOString(), `day-${day}`);
@@ -576,43 +576,14 @@ test("human observation confirmation and root revision wake CEO without preservi
   ledger.close();
 });
 
-test("CEO rejects a motionless active organization and injects the violation into retry context", async () => {
+test("Supervisor accepts a valid declarative CEO Handoff without inventing organization motion", async () => {
   const clock = new SimulatedClock();
   const ledger = createMemoryLedger({ clock });
-  const contextFile = join(mkdtempSync(join(tmpdir(), "goah-ceo-invalid-")), "context.json");
-  const supervisor = new Supervisor(ledger, fauxRunner([{ handoff: { handoff: { outcome:"progress", evidence:[1] }, mail: [], nextWakeAt: null } }], contextFile), clock, { retryPolicy: { maxAttempts: 2, baseDelayMs: 1 } });
+  const supervisor = new Supervisor(ledger, fauxRunner([{ handoff: { handoff: { outcome:"progress", evidence:[1] }, mail: [], nextWakeAt: null } }]), clock, { retryPolicy: { maxAttempts: 2, baseDelayMs: 1 } });
   const started = supervisor.startGoal("operate without stalling", "root-motion");
   assert.equal(started.wake.agent, "ceo");
-  const invalid=await supervisor.tick();assert.equal(invalid?.status,"consumed");assert.equal(ledger.turn(invalid!.turnId!)?.status,"failed");
-  assert.equal(ledger.events().some((item) => item.type === "ceo.motion_invalid"), true);
-  clock.advance(2);const recovery=await supervisor.tick();assert.equal(recovery?.status,"consumed");assert.equal(ledger.turn(recovery!.turnId!)?.status,"failed");
-  assert.match((JSON.parse(readFileSync(contextFile, "utf8")) as { text: string }).text, /ceo\.motion_invalid/);
-  ledger.close();
-});
-
-test("system-silence tripwire asks the CEO for confirmation after total ledger silence", async () => {
-  const clock = new SimulatedClock();
-  const ledger = createMemoryLedger({ clock });
-  const policy: SupervisorOptions = { profiles: [{ agent: "ceo", role: "ceo" }], silence: { maxSilentMs: 6 * 3_600_000 } };
-  const first = new Supervisor(ledger, fauxRunner([{ handoff: { handoff: { outcome:"blocked", evidence:[1] }, mail: [], nextWakeAt: null } }]), clock, policy);
-  first.startGoal("grow daily views", "views");
-  assert.equal((await first.tick())?.status, "consumed");
-
-  clock.advance(5 * 3_600_000);
-  const quiet = new Supervisor(ledger, fauxRunner([{ handoff: { handoff: { outcome:"progress", evidence:[1] }, mail: [], nextWakeAt: null } }]), clock, policy);
-  assert.equal(await quiet.tick(), null);
-  assert.equal(ledger.events().some((event) => event.type === "watchdog.system_silence"), false);
-
-  clock.advance(2 * 3_600_000);
-  const confirming = new Supervisor(ledger, fauxRunner([{ handoff: { handoff: { outcome:"blocked", evidence:[1] }, mail: [], nextWakeAt: null } }]), clock, policy);
-  assert.equal((await confirming.tick())?.status, "consumed");
-  assert.equal(ledger.events().some((event) => event.type === "watchdog.system_silence"), true);
-  const silenceMail = ledger.mailbox().find((mail) => mail.id.startsWith("silence:"));
-  assert.ok(silenceMail);
-  assert.equal(silenceMail.to, "ceo");
-  assert.equal(silenceMail.level, "decision");
-  assert.equal(silenceMail.readAt !== null, true);
-  assert.equal(ledger.lastEvent("ceo", "handoff.recorded") !== null, true);
+  const completed=await supervisor.tick();assert.equal(completed?.status,"consumed");assert.equal(ledger.turn(completed!.turnId!)?.status,"completed");
+  assert.equal(ledger.events().some((item) => item.type === "ceo.motion_invalid"), false);
   ledger.close();
 });
 
@@ -626,7 +597,7 @@ test("one root goal forms a two-agent organization and returns completion contro
       { rpc: { method: "goal.delegate", params: { id: "d-operations", parentGoalId: "company",expectedParentRevision:1, childGoal: { id: "operations", objective: "design fulfillment", observationMethod: "Verify the objective through an evidence-backed handoff.", verificationMethod: "Verify the objective through an evidence-backed handoff.", owner: "operator" }, brief: { deliverable: "plan" }, reason: "independent operating boundary", evidence: [1] } } },
       { handoff: { handoff: { outcome:"progress", evidence:[1] }, mail: [], nextWakeAt: "2026-08-19T00:00:00.000Z" } },
     ],
-    "child-handoff:": [
+    "ceo|mail:": [
       { rpc: { method: "goal.complete", params: { goalId: "market", revision: 0, reason: "material handoff satisfies the observation method", evidence: ["$LATEST_SOURCE_SEQ"] } } },
       { rpc: { method: "goal.complete", params: { goalId: "operations", revision: 0, reason: "material handoff satisfies the observation method", evidence: ["$LATEST_SOURCE_SEQ"] } } },
       { rpc: { method: "human.request", params: { type: "completion_recommendation", message: "review consolidated child results", evidence: [1] } } },
@@ -634,8 +605,8 @@ test("one root goal forms a two-agent organization and returns completion contro
     ],
   };
   const byAgent = {
-    research: [{ handoff: { handoff: { outcome:"completion_proposed", evidence:[1] }, mail: [], nextWakeAt: "2026-08-20T00:00:00.000Z" } }],
-    operator: [{ handoff: { handoff: { outcome:"completion_proposed", evidence:[1] }, mail: [], nextWakeAt: "2026-08-20T00:00:00.000Z" } }],
+    research: [{ handoff: { handoff: { outcome:"completion_proposed", evidence:[1] }, mail: [{to:"ceo",level:"decision",body:{type:"completion_proposal",goalId:"company",childGoalId:"market"}}], nextWakeAt: "2026-08-20T00:00:00.000Z" } }],
+    operator: [{ handoff: { handoff: { outcome:"completion_proposed", evidence:[1] }, mail: [{to:"ceo",level:"decision",body:{type:"completion_proposal",goalId:"company",childGoalId:"operations"}}], nextWakeAt: "2026-08-20T00:00:00.000Z" } }],
   };
   const runner = new ProcessRunner({ command: process.execPath, args: [fauxRunnerWorkerPath()], env: { GOAH_FAUX_STEPS_BY_AGENT: JSON.stringify(byAgent), GOAH_FAUX_STEPS_BY_TRIGGER: JSON.stringify(byTrigger) }, killGraceMs: 25 });
   const supervisor = new Supervisor(ledger, runner, clock);

@@ -58,7 +58,7 @@ Every Goal lifecycle mutation has exactly one authoritative `goal.changed` event
 
 ### Supervisor
 
-The only Ledger writer in the resident process. It validates Turn ownership and terminal state, Goal and Work Record revisions, leases, capabilities, atomic delegation, scheduling, recovery, and Human priority. Human input starts or steers a Turn directly. Mail is the bounded, acknowledged delivery path for asynchronous Agent communication, Human decisions, and Verification/Audit results; findings for child work are also escalated to CEO. Wake is reserved for future Goal/system motion.
+The only Ledger writer in the resident process. It validates Turn ownership and terminal state, Goal and Work Record revisions, leases, capabilities, atomic delegation, scheduling, recovery, and Human priority. Human input starts or steers a Turn directly. Mail is the bounded, acknowledged delivery path for explicit asynchronous Agent communication, Human decisions, and Verification/Audit results. Wake is reserved for requested future Goal/system motion and runtime recovery.
 
 Supervisor is a control plane, not the organization's decision maker. It may record facts, enforce ownership/fencing, deliver Mail, admit current Goal context, and recover failed execution. Goal observation and verification run inside Agents with ordinary tools; Core has no metric schema, collector, evaluator, or threshold policy. Supervisor must not decide whether a Goal needs decomposition, whether an Agent's plan remains useful after a Goal revision, or whether a Handoff contains enough organizational motion. Those decisions belong to Agents through context and tools; configurable prompts may advise them without turning that advice into Supervisor rejection logic.
 

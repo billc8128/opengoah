@@ -19,7 +19,6 @@ export interface ActiveContextInput {
   lastHandoff: EventRecord | null;
   teamHandoffs: EventRecord[];
   team: TeamMemberView[];
-  revisionWarnings: string[];
   recoveryEvents: EventRecord[];
   /** Durable agent-owned working-memory facts; injected as a bounded advisory tail. */
   workingMemory?: readonly EventRecord[];
@@ -29,7 +28,7 @@ export interface ActiveContextInput {
 export function selectRecoveryEvents(events: EventRecord[]): EventRecord[] {
   const unknownCalls = new Set(events.filter((event) => event.type === "tool.completed" && field(field(event.data, "result"), "outcome") === "unknown").map((event) => String(field(event.data, "callId"))));
   return events.filter((event) => {
-    if (["transcript.interrupted", "context.compacted", "ceo.motion_invalid"].includes(event.type)) return true;
+    if (["transcript.interrupted", "context.compacted"].includes(event.type)) return true;
     if (event.type === "tool.called") return unknownCalls.has(String(field(event.data, "callId")));
     if (event.type === "tool.completed") return unknownCalls.has(String(field(event.data, "callId")));
     return false;
@@ -64,7 +63,6 @@ export function composeActiveContext(input: ActiveContextInput): ActiveContextVi
     ["Objectives", input.goals.map((goal) => `- [${goal.id}] ${goal.objective} (owner: ${goal.owner}, phase: ${goal.phase}, revision: ${goal.revision})`)],
     ["Observation methods", input.goals.map((goal) => `## ${goal.id}\n\n${goal.observationMethod ?? "MISSING — inspect the project and request authoritative confirmation before claiming progress or completion."}`)],
     ["Verification methods", input.goals.map((goal) => `## ${goal.id}\n\n${goal.verificationMethod ?? "MISSING — define authoritative completion evidence before claiming completion."}`)],
-    ["Revision barriers", input.revisionWarnings.map((warning) => `- ${warning}`)],
     ["Wake", [...input.wakeTriggers.filter((trigger)=>trigger.status==="pending").map((trigger)=>`- [${trigger.source}] ${trigger.triggerRef}`), `- Attempt: ${input.wake.attempt}`]],
     ["Working memory", (input.workingMemory ?? []).map((event) => `- ${String(field(event.data, "note") ?? "")} [event:${event.seq}]`)],
     ["Last outcome", typeof handoff?.outcome === "string" ? [`- ${handoff.outcome}${input.lastHandoff ? ` [event:${input.lastHandoff.seq}]` : ""}`] : []],
