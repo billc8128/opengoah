@@ -351,14 +351,14 @@ test("supervisor renews a live runner lease instead of treating duration as a ta
   ledger.close();
 });
 
-test("verification plane records findings and reports calibrated metrics", async () => {
+test("verification plane records findings and reports calibrated quality", async () => {
   const clock = new SimulatedClock();
   const ledger = createMemoryLedger({ clock });
   const supervisor = new Supervisor(ledger, fauxRunner([]), clock);
   supervisor.createGoal(goal());
   const evidence = ledger.appendEvent({ ...event("worker", "tool.fact", { value: 1 }, "w"), ts: clock.now().toISOString() });
   const verifyTurn=testTurn(ledger,"worker","w");ledger.finishTurn(verifyTurn.id,"completed",null,clock.now().toISOString(),"supervisor");
-  ledger.appendEvent({ ...event("worker", "handoff.recorded", { results: ["claimed"] }, "w"), ts: clock.now().toISOString() });
+  ledger.appendEvent({ ...event("worker", "handoff.recorded", {goalId:"root",goalRevision:0,recordRevision:1,outcome:"progress",evidence:[evidence.seq]}, "w"), ts: clock.now().toISOString() });
   let blindPayload = "";
   let verifiedTurn="";
   const model: VerifierModel = {
@@ -545,7 +545,7 @@ test("CEO role delegates atomically and receives its dedicated operating policy"
   assert.throws(() => ledger.commitDelegation({ id: "self-delegation", parentGoalId: "ceo-root",expectedParentRevision:0, childGoal: { id: "self-child", objective: "vague", observationMethod: "none", verificationMethod: "none", owner: "ceo" }, brief: {}, reason: "self", evidence: [evidence.seq] }, "ceo"), /distinct worker agent/);
   const contextFile = join(mkdtempSync(join(tmpdir(), "goah-ceo-")), "context.json");
   const supervisor = new Supervisor(ledger, fauxRunner([
-    { rpc: { method: "goal.delegate", params: { id: "delegation-1", parentGoalId: "ceo-root",expectedParentRevision:0, childGoal: { id: "child", objective: "own metric", observationMethod: "Verify the objective through an evidence-backed handoff.", verificationMethod: "Verify the objective through an evidence-backed handoff.", owner: "worker" }, brief: { deliverable: "metric" }, reason: "independent result", evidence: [evidence.seq] } } },
+    { rpc: { method: "goal.delegate", params: { id: "delegation-1", parentGoalId: "ceo-root",expectedParentRevision:0, childGoal: { id: "child", objective: "own observation", observationMethod: "Verify the objective through an evidence-backed handoff.", verificationMethod: "Verify the objective through an evidence-backed handoff.", owner: "worker" }, brief: { deliverable: "evidence" }, reason: "independent result", evidence: [evidence.seq] } } },
     { handoff: { handoff: { outcome:"progress", evidence:[1] }, mail: [], nextWakeAt: null } },
   ], contextFile), clock, { profiles: [{ agent: "ceo", role: "ceo" }] });
   supervisor.planWake("ceo", clock.now().toISOString(), "replan");
@@ -586,6 +586,10 @@ test("Supervisor accepts a valid declarative CEO Handoff without inventing organ
   assert.equal(ledger.events().some((item) => item.type === "ceo.motion_invalid"), false);
   ledger.close();
 });
+
+test("all Goal Handoff outcomes are declarative and have no implicit effects",async()=>{for(const outcome of ["progress","waiting","blocked","completion_proposed"] as const){const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const supervisor=new Supervisor(ledger,fauxRunner([{handoff:{handoff:{outcome,evidence:[1]},mail:[],nextWakeAt:null}}]),clock);supervisor.createGoal(goal());supervisor.planWake("worker",clock.now().toISOString(),outcome);const wake=await supervisor.tick();assert.equal(ledger.turn(wake!.turnId!)?.status,"completed");assert.equal(ledger.goal("root")?.phase,"active");assert.equal(ledger.mailbox().length,0);assert.equal(ledger.schedules().filter((schedule)=>schedule.status==="pending").length,0);assert.equal(ledger.wakes().length,1);ledger.close();}});
+
+test("Mail and Schedule effects occur only when the Agent requests them explicitly",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const nextWakeAt=new Date(clock.now().getTime()+60_000).toISOString();const supervisor=new Supervisor(ledger,fauxRunner([{handoff:{handoff:{outcome:"waiting",evidence:[1]},mail:[{to:"ceo",level:"decision",body:{type:"explicit_notice"}}],nextWakeAt}}]),clock);supervisor.createGoal(goal());supervisor.planWake("worker",clock.now().toISOString(),"work");await supervisor.tick();assert.equal(ledger.unreadMail("ceo").some((mail)=>(mail.body as {type?:string}).type==="explicit_notice"),true);assert.equal(ledger.schedules().some((schedule)=>schedule.status==="pending"&&schedule.nextWakeAt===nextWakeAt),true);ledger.close();});
 
 test("one root goal forms a two-agent organization and returns completion control to the human", async () => {
   const clock = new SimulatedClock();

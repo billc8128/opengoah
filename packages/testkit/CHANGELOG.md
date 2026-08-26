@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added Agent-owned decision tests for declarative outcomes, explicit Mail/Schedule effects, parent-targeted Mail, and admission-time Goal revision binding.
+
 - Added conformance and regression coverage for scheduling-only Wakes, Turn-owned recovery, Human priority, Action provenance, reasoning Items, and canonical Transcript terminals.
 
 ## 0.6.0

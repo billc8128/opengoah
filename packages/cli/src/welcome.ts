@@ -50,8 +50,8 @@ export function welcomeSnapshot(stateDir: string, runner: RunnerDisplay): Welcom
     const handoffRows = (db.prepare("SELECT actor, data FROM events WHERE type='handoff.recorded' ORDER BY seq DESC LIMIT ?").all(WELCOME_HANDOFF_SLOTS) as unknown as HandoffRow[]).reverse();
     const handoffs = handoffRows.flatMap((row) => {
       try {
-        const data = JSON.parse(row.data) as { results?: unknown[] };
-        const result = Array.isArray(data.results) && typeof data.results[0] === "string" ? data.results[0] : "";
+        const data = JSON.parse(row.data) as { outcome?: unknown };
+        const result = typeof data.outcome === "string" ? data.outcome.replaceAll("_", " ") : "";
         return [{ agent: row.actor, result }];
       } catch { return [{ agent: row.actor, result: "" }]; }
     });

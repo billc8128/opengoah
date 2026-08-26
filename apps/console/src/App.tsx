@@ -315,12 +315,8 @@ function TracePayload({ value }: { value: unknown }) {
 
 function WorkRecord({ event, compact = false, onOpen, onRaw }: { event: EventView; compact?: boolean; onOpen?: () => void; onRaw?: () => void }) {
   const data = record(event.data)
-  const observations = stringArray(data.observations)
-  const results = stringArray(data.results)
-  const nextSteps = stringArray(data.nextSteps)
-  const blocker = typeof data.blocker === "string" ? data.blocker : null
-  const summary = results[0] ?? observations[0] ?? "Work recorded"
-  return <Accordion.Root className={compact ? "work-record compact" : "work-record"} type="single" collapsible><Accordion.Item value={`record-${event.seq}`}><Accordion.Header><Accordion.Trigger className="work-record-summary"><Bot /><span className="record-agent"><strong>{displayAgent(event.actor)}</strong><small>{formatDateTime(event.ts)} · #{event.seq}</small></span><span className="record-outcome">{summary}</span>{nextSteps[0] && <span className="record-next">Next: {nextSteps[0]}</span>}<ChevronRight /></Accordion.Trigger></Accordion.Header><Accordion.Content className="work-record-content"><div className="work-record-body"><RecordSection title="Observed" values={observations} /><RecordSection title="Completed" values={results} /><RecordSection title="Next" values={nextSteps} />{blocker && <RecordSection title="Blocked" values={[blocker]} tone="danger" />}</div>{(onOpen || onRaw) && <footer>{onOpen && <button onClick={onOpen}>Open thread</button>}{onRaw && <button onClick={onRaw}>Raw events</button>}</footer>}</Accordion.Content></Accordion.Item></Accordion.Root>
+  const outcome=typeof data.outcome==="string"?data.outcome:"recorded";const evidence=Array.isArray(data.evidence)?data.evidence.filter((value):value is number=>typeof value==="number").map((value)=>`Event #${value}`):[]
+  return <Accordion.Root className={compact ? "work-record compact" : "work-record"} type="single" collapsible><Accordion.Item value={`record-${event.seq}`}><Accordion.Header><Accordion.Trigger className="work-record-summary"><Bot /><span className="record-agent"><strong>{displayAgent(event.actor)}</strong><small>{formatDateTime(event.ts)} · #{event.seq}</small></span><span className="record-outcome">{outcome.replaceAll("_"," ")}</span><ChevronRight /></Accordion.Trigger></Accordion.Header><Accordion.Content className="work-record-content"><div className="work-record-body"><RecordSection title="Evidence" values={evidence} tone={outcome==="blocked"?"danger":undefined} /></div>{(onOpen || onRaw) && <footer>{onOpen && <button onClick={onOpen}>Open thread</button>}{onRaw && <button onClick={onRaw}>Raw events</button>}</footer>}</Accordion.Content></Accordion.Item></Accordion.Root>
 }
 
 function RecordSection({ title, values, tone }: { title: string; values: string[]; tone?: string }) {
@@ -332,7 +328,7 @@ function SettingsView({ snapshot }: { snapshot: ConsoleSnapshot }) {
   return <Page title="Settings" description="Local Console runtime details. Agent and runner configuration remains authoritative in goah.config.json."><div className="settings-list"><div><span>Mode</span><strong>Local, loopback only</strong></div><div><span>Refresh</span><strong>Every 2 seconds</strong></div><div><span>Latest event</span><strong>Seq #{snapshot.seq}</strong></div><div><span>Event payloads</span><strong>Redacted by default</strong></div></div></Page>
 }
 
-type ChatExchange = { kind: "user" | "ceo"; seq: number; turnId?:string; text: string; handoff?: { observations: string[]; results: string[]; nextSteps: string[]; blocker?: string;goalId?:string;outcome?:string;recordRevision?:number } }
+type ChatExchange = { kind: "user" | "ceo"; seq: number; turnId?:string; text: string; handoff?: { goalId?:string;outcome?:string;recordRevision?:number;evidence:number[] } }
 type LiveChat = { status: "running" | "done" | "error";turnId:string|null;prompt:string; text: string; lines: string[]; handoff: ChatExchange["handoff"] }
 
 function chatHistory(snapshot: ConsoleSnapshot): ChatExchange[] {
@@ -452,10 +448,8 @@ function HandoffBlock({ handoff, seq }: { handoff: NonNullable<ChatExchange["han
   return (
     <div className="chat-handoff">
       {handoff.goalId&&<section><h3>{handoff.outcome?.replaceAll("_"," ")??"Goal updated"}</h3><p>{handoff.goalId}{handoff.recordRevision!==undefined?` · Work Record r${handoff.recordRevision}`:""}</p></section>}
-      {handoff.observations.length > 0 && <section><h3>Observed</h3>{handoff.observations.map((value) => <p key={value}>{value}</p>)}</section>}
-      {handoff.results.length > 0 && <section><h3>Completed</h3>{handoff.results.map((value) => <p key={value}>{value}</p>)}</section>}
-      {handoff.nextSteps.length > 0 && <section><h3>Next</h3>{handoff.nextSteps.map((value) => <p key={value}>{value}</p>)}</section>}
-      {handoff.blocker && <section className="danger"><h3>Blocked</h3><p>{handoff.blocker}</p></section>}
+      <section className={handoff.outcome==="blocked"?"danger":undefined}><h3>Outcome</h3><p>{handoff.outcome?.replaceAll("_"," ")??"recorded"}</p></section>
+      {handoff.evidence.length > 0 && <section><h3>Evidence</h3><p>{handoff.evidence.map((value)=>`#${value}`).join(", ")}</p></section>}
       {seq > 0 && <small>Handoff · #{seq}</small>}
     </div>
   )
@@ -480,7 +474,7 @@ function organizationItems(snapshot: ConsoleSnapshot): TrajectoryItemView[] {
 function isOrganizationEvent(type: string): boolean { return ["goal.", "delegation.", "handoff.", "wake.", "mail.", "schedule.", "observation.", "ceo.", "human."].some((prefix) => type.startsWith(prefix)) }
 function eventNarrative(event: EventView, resolvedAgent = event.actor): string {
   const data = record(event.data)
-  if (event.type === "handoff.recorded") return `Handoff: ${firstString(data.results) || firstString(data.observations) || "work recorded"}`
+  if (event.type === "handoff.recorded") return `Handoff: ${String(data.outcome??"recorded").replaceAll("_"," ")}`
   if (event.type === "goal.delegated") return `CEO delegated: ${String(data.reason ?? data.goalId ?? "child goal")}`
   if (event.type === "delegation.created") return `Delegated a child goal: ${String(data.reason ?? data.goalId ?? "new responsibility")}`
   if (event.type === "goal.changed") { const snapshot = record(data.snapshot); return `Goal ${String(data.operation??snapshot.phase??"updated")}: ${String(snapshot.objective ?? "goal state changed")}` }
@@ -507,19 +501,12 @@ function record(value: unknown): Record<string, unknown> { return value && typeo
 function handoffOf(value: unknown): NonNullable<ChatExchange["handoff"]> {
   const handoff = record(value)
   return {
-    observations: stringList(handoff.observations),
-    results: stringList(handoff.results),
-    nextSteps: stringList(handoff.nextSteps),
+    evidence:Array.isArray(handoff.evidence)?handoff.evidence.filter((value):value is number=>typeof value==="number"):[],
     ...(typeof handoff.goalId==="string"?{goalId:handoff.goalId}:{}),
     ...(typeof handoff.outcome==="string"?{outcome:handoff.outcome}:{}),
     ...(typeof handoff.recordRevision==="number"?{recordRevision:handoff.recordRevision}:{}),
-    ...(typeof handoff.blocker === "string" && handoff.blocker ? { blocker: handoff.blocker } : {}),
   }
 }
-
-function stringList(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [] }
-function firstString(value: unknown): string { return Array.isArray(value) && typeof value[0] === "string" ? value[0] : "" }
-function stringArray(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [] }
 function messageContent(value: unknown): string { const message = record(value); const content = message.content; if (typeof content === "string") return content; if (!Array.isArray(content)) return "Message recorded"; return content.map((item) => typeof item === "string" ? item : typeof item === "object" && item !== null && "text" in item ? String((item as { text?: unknown }).text ?? "") : "").filter(Boolean).join(" ") }
 function threadForWake(snapshot: ConsoleSnapshot, wakeId: string): ThreadView | undefined { const wake=snapshot.wakes.find((candidate)=>candidate.id===wakeId);const turn = wake?.turnId?snapshot.turns.find((candidate) => candidate.id === wake.turnId):undefined; return turn ? snapshot.threads.find((thread) => thread.id === turn.threadId) : undefined }
 function threadDuration(turns: TurnView[]): string { if (!turns.length) return "0s"; const start = new Date(turns[0]!.startedAt).getTime(); const end = new Date(turns.at(-1)!.endedAt ?? turns.at(-1)!.startedAt).getTime(); const seconds = Math.max(0, Math.round((end - start) / 1_000)); return seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s` }
@@ -529,7 +516,7 @@ function turnItemText(item: TurnItemView): string {
   if (typeof data.text === "string") return data.text
   if (item.type === "tool_call") return `${String(data.tool ?? "tool")} called`
   if (item.type === "tool_result") return `${String(data.callId ?? "tool")} returned ${summarize(data.result)}`
-  if (item.type === "handoff") return firstString(data.results) || firstString(data.observations) || "Work record updated"
+  if (item.type === "handoff") return `Goal ${String(data.outcome??"recorded").replaceAll("_"," ")}`
   return summarize(item.data)
 }
 function demoThreadDetail(snapshot: ConsoleSnapshot, thread: ThreadView): ThreadDetailView {

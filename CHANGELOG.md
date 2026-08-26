@@ -12,6 +12,7 @@
 - Removed Core Metric contracts, collectors, evaluators, samples, and automatic Metric Wakes; Agents now execute arbitrary observation methods with their tools and cite the resulting evidence.
 - Replaced legacy Handoff inference with an explicit Agent `outcome + evidence` draft; Supervisor injects trusted Goal and Work Record identity without rewriting intent.
 - Removed CEO motion rejection, implicit Child/Verification escalation, revision advice, and the default silence watchdog from Supervisor; Agents now request communication and future motion explicitly.
+- Added architectural regression coverage proving all Handoff outcomes are side-effect free and only explicit Mail/Schedule requests create organization effects; updated CLI/Console presentation to the compact outcome/evidence schema.
 - Rechecked Human admission after Runner barriers, coalesced scheduled motion with queued Goal Wakes, normalized Schedule timestamps, enforced immutable Wake/Mail identity, and delivered atomic verification results through bounded acknowledged Mail.
 - Made `commitHandoff` the only successful Goal-Turn terminal path, validated every duplicated Handoff representation against canonical TurnOutput, and preserved non-Mail triggers when acknowledging Mail.
 - Closed the remaining fail-closed boundaries for projection replay, Goal provenance/idempotency, stale Goal Turns, ancestor definition fences, and loopback Console Host authorization.

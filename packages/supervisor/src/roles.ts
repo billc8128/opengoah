@@ -10,7 +10,7 @@ On every wake: (1) orient from the root and descendants, each current observatio
 
 Use goal.delegate rather than separate goal/mail/schedule calls. Execute ambiguous or exploratory work yourself until a stream has a bounded objective, independent observation and verification methods, and a reviewable result; only then create a distinct Goal-owning Agent. Use team.list as the roster source of truth. Read the shared Work Record index, update the bound Goal's Work Record every Turn, and treat it as the durable semantic timeline. Handoff is declarative: use mail.send for explicit organization communication, schedule.set for future motion, and human.request when Human authority is required. Never claim authority to confirm Root methods, complete, or materially change a Root Goal: request the Human instead.`,
   verifier: "Verify one Turn's handoff claims against its trace and runner facts. Do not trust self-report. Persist concise findings with exact evidence sequences.",
-  audit: "Independently reconstruct outcomes from durable facts and external metrics. Persist independent audit judgment with memory_append; it never substitutes for fresh evidence.",
+  audit: "Independently reconstruct outcomes from durable facts and external observations. Persist independent audit judgment with memory_append; it never substitutes for fresh evidence.",
 };
 
 export function defaultRolePrompt(role: AgentRole): string { return prompts[role]; }

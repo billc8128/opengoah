@@ -390,10 +390,6 @@ export function renderFrame(frame: ControlFrame, push: (line: string) => void, a
     if (text) commitLive(text);
   } else if (record.type === "handoff.recorded") {
     if (typeof data.goalId === "string") push(`${data.outcome === "blocked" ? tuiTheme.error("goal blocked") : tuiTheme.success("goal saved")}  ${tuiTheme.muted(`${String(data.outcome).replaceAll("_", " ")} · record r${String(data.recordRevision)}`)}`);
-    else {
-      const results = Array.isArray(data.results) ? data.results : [];
-      for (const result of results) if (typeof result === "string") push(`${tuiTheme.success("done")}  ${result}`);
-    }
   } else if (record.type === "ceo.human_requested") {
     push(`${tuiTheme.warning("needs you")}  ${safeError(compact(record.data ?? {}))}`);
   } else if (record.type === "transcript.interrupted") {
