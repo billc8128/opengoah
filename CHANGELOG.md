@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Removed the unused Action/Connector aggregate so Runner Tool Calls are the sole execution vocabulary; simplified verification, CLI, TUI, Console, examples, and testkit accordingly.
+- Added terminal Schedule states with atomic Wake creation and Goal-revision supersession, plus a per-Agent Runner-exit barrier that prevents replacement Turn overlap.
+- Moved projection authority out of business event payloads into private schema-v16 Event metadata; raw facts may now use fields such as `projection` and `snapshot` safely.
+- Rechecked Human admission after Runner barriers, coalesced scheduled motion with queued Goal Wakes, normalized Schedule timestamps, enforced immutable Wake/Mail identity, and delivered atomic verification results through bounded acknowledged Mail.
 - Closed the remaining fail-closed boundaries for projection replay, Goal provenance/idempotency, stale Goal Turns, ancestor definition fences, and loopback Console Host authorization.
 - Unified every Goal lifecycle mutation under the authoritative `goal.changed` event envelope and made the Goal projection directly rebuildable from it.
 - Made scheduling Goal-aware, persisted Runner recovery identity, serialized Human admission, fenced organization mutations, and unified terminal Turn presentation across TUI and Console; schema v15 makes `goal.changed` authoritative, validates replay/provenance fail-closed, and intentionally rejects earlier development state.

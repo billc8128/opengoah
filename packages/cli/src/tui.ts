@@ -100,7 +100,7 @@ function statusText(mode: "ready" | "working" | "queued" | "setup", queued = 0):
   if (mode === "setup") return tuiTheme.accent("opening setup…");
   return `${tuiTheme.muted("ready")}  ${tuiTheme.accent("/help")}`;
 }
-export type TuiInputAction = "quit" | "help" | "status" | "records" | "stop" | "model" | "login" | "logout" | "setup" | "goal" | "approval" | "unknown" | "empty" | "steer" | "send";
+export type TuiInputAction = "quit" | "help" | "status" | "records" | "stop" | "model" | "login" | "logout" | "setup" | "goal" | "unknown" | "empty" | "steer" | "send";
 export function classifyTuiInput(value: string, busy: boolean): { action: TuiInputAction; text: string } {
   const text = value.trim();
   if (!text) return { action: "empty", text };
@@ -114,7 +114,6 @@ export function classifyTuiInput(value: string, busy: boolean): { action: TuiInp
   if (text === "/logout" || text.startsWith("/logout ")) return { action: "logout", text };
   if (text === "/setup" || text.startsWith("/setup ")) return { action: "setup", text };
   if (text.startsWith("/goal ") || text.startsWith("/observe ")) return { action: "goal", text };
-  if (text.startsWith("/approve ") || text.startsWith("/reject ")) return { action: "approval", text };
   if (text.startsWith("/")) return { action: "unknown", text };
   return { action: busy ? "steer" : "send", text };
 }
@@ -276,7 +275,7 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
     const { action, text } = classifyTuiInput(line, busy.active);
     input.setText("");
     if (action === "quit") { exiting = true; activeStream?.abort(); tui.stop(); resolveExit(); return; }
-    if (action === "help") { push(`${tuiTheme.strong("Commands")}\n  /model  /login  /logout  /setup  /status\n  /records  /history  /goal  /observe  /approve\n  /reject  /stop  /quit\n`); return; }
+    if (action === "help") { push(`${tuiTheme.strong("Commands")}\n  /model  /login  /logout  /setup  /status\n  /records  /history  /goal  /observe  /stop  /quit\n`); return; }
     if (action === "status") { void printStatus(stateDir, push).finally(() => refreshGoalBar(stateDir, goalView, tui)); return; }
     if (action === "records") { void printRecords(text, stateDir, push); return; }
     if (action === "stop") { void stopCeoWake(stateDir, push); return; }
@@ -285,7 +284,6 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
     if (action === "logout") { void launchRunnerCommand("auth", ["logout", text.slice("/logout".length).trim()].filter(Boolean)); return; }
     if (action === "setup") { void launchSetup(text); return; }
     if (action === "goal") { void slashGoal(text, stateDir, push).finally(() => refreshGoalBar(stateDir, goalView, tui)); return; }
-    if (action === "approval") { void slashApprove(text, stateDir, push); return; }
     if (action === "unknown") { push(errorLine(`Unknown command: ${text.split(/\s+/, 1)[0]}. Use /help to list commands.`)); return; }
     if (action === "steer") { submitSteer(text); return; }
     if (action === "send") void send(text);
@@ -486,20 +484,6 @@ async function slashGoal(text: string, stateDir: string, push: (line: string) =>
     const updated = await requestControl(stateDir, op);
     const goal = updated && typeof updated === "object" && !Array.isArray(updated) && (updated as Record<string, unknown>).goal && typeof (updated as Record<string, unknown>).goal === "object" ? (updated as Record<string, unknown>).goal as Record<string, unknown> : updated as Record<string, unknown>;
     push(`${tuiTheme.success(isGoal ? "goal updated" : "observation set")}  ${String(goal?.objective ?? value)}\n`);
-  } catch (error) { push(errorLine(error)); }
-}
-
-/** /approve ID --reason TEXT --evidence SEQ[,SEQ] (and /reject with the same shape). */
-async function slashApprove(text: string, stateDir: string, push: (line: string) => void): Promise<void> {
-  const approve = text.startsWith("/approve ");
-  const rest = text.slice(approve ? 9 : 8).match(/^(\S+)(?:\s+--reason\s+(.*?))?(?:\s+--evidence\s+([\d,]+))?$/);
-  if (!rest) { push(errorLine("usage: /approve ACTION_ID --reason TEXT --evidence SEQ[,SEQ]")); return; }
-  const [, id = "", reason = "terminal approval", evidence = ""] = rest;
-  try {
-    const op = approve ? { op: "action.approve" as const, id, reason, evidence: evidence ? evidence.split(",").map(Number) : [] }
-      : { op: "action.reject" as const, id, reason, evidence: evidence ? evidence.split(",").map(Number) : [] };
-    await requestControl(stateDir, op);
-    push(`${tuiTheme.success(approve ? "approved" : "rejected")}  ${id}`);
   } catch (error) { push(errorLine(error)); }
 }
 

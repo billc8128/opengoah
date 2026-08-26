@@ -1,6 +1,6 @@
 # Operating goah
 
-`runSupervisorDaemon()` is the only resident process. Runner, metric, and connector code executes in child processes. Use the templates in `deploy/` with an explicit working directory, scoped provider credentials, and platform-side spending limits.
+`runSupervisorDaemon()` is the only resident process. Runner and metric code executes in child processes. Use the templates in `deploy/` with an explicit working directory and scoped provider credentials.
 
 The repository guardian can be run once or supervised continuously:
 
@@ -23,7 +23,7 @@ Goal operators can inspect and revise lifecycle state with `goal-show`, `goal-up
 
 Runner RPC is bidirectional but fenced by the active Turn lease. `sourceWake` is optional scheduling provenance. Default child capabilities cover ledger search, mail, scheduling, actions, and advice acknowledgement. Only CEO profiles can write child goals; verifier/audit profiles can write audit advice.
 
-Thread inspection is read-only and does not resolve provider or connector secrets. `goah thread` restores a durable Thread containing multiple Turns and Items; `--continue` subscribes to its in-progress Turn. Inspectors address `threadId`, `turnId`, and `itemId` rather than treating a Wake stream as the conversation. Raw model requests and tool results remain sensitive and exports are redacted by default.
+Thread inspection is read-only and does not resolve provider secrets. `goah thread` restores a durable Thread containing multiple Turns and Items; `--continue` subscribes to its in-progress Turn. Inspectors address `threadId`, `turnId`, and `itemId` rather than treating a Wake stream as the conversation. Raw model requests and tool results remain sensitive and exports are redacted by default.
 
 Schemas 1–14 predate fail-closed authoritative Goal replay and are intentionally not migrated. Recreate the local Goah state before starting a build that uses schema 15; `goah doctor` reports this incompatibility directly.
 

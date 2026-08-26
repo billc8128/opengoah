@@ -32,19 +32,7 @@ export interface WakeView {
   turnId: string | null
 }
 
-export interface ActionView {
-  id: string
-  agent: string
-  createdInTurn: string
-  kind: string
-  connector: string
-  reason: string
-  status: string
-  gated: boolean
-  evidence: number[]
-}
-
-export interface ScheduleView { id: string; agent: string; nextWakeAt: string; reason: string; setBy: string }
+export interface ScheduleView { id: string; agent: string; nextWakeAt: string; reason: string; setBy: string; status: "pending" | "consumed" | "cancelled" | "superseded"; resolvedAt: string | null }
 export interface MailView { id: string; to: string; from: string; level: string; body: JsonValue; readAt: string | null }
 export interface EventView { seq: number; streamId: string; streamSeq: number; ts: string; actor: string; type: string; data: JsonValue }
 export interface TrajectoryItemView { event: EventView; agent: string; wakeId: string | null }
@@ -91,7 +79,6 @@ export interface ConsoleSnapshot {
   threads: ThreadView[]
   turns: TurnView[]
   wakes: WakeView[]
-  actions: ActionView[]
   schedules: ScheduleView[]
   mailbox: MailView[]
   events: EventView[]

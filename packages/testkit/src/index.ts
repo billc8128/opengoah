@@ -1,12 +1,8 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  CONTRACT_VERSION,
   type Clock,
-  type ConnectorManifest,
-  type ConnectorProcessSpec,
   type JsonValue,
   type Ledger,
   type RunRequest,
@@ -62,28 +58,6 @@ export class FauxPiDriver implements PiDriver {
   }
 }
 
-interface MockState { dispatched: string[]; failAfterEffect: boolean }
-
-export class MockConnector {
-  readonly statePath = join(tmpdir(), `goah-mock-connector-${crypto.randomUUID()}.json`);
-  readonly manifest: ConnectorManifest;
-  readonly spec: ConnectorProcessSpec;
-  constructor(connector = "mock", kind = "mock.write") {
-    this.manifest = {
-      contractVersion: CONTRACT_VERSION,
-      connector,
-      dryRun: true,
-      capabilities: [{ kind, nativeIdempotency: true, query: "by_idempotency_key", automaticRetry: false, risk: "reversible" }],
-    };
-    writeFileSync(this.statePath, JSON.stringify({ dispatched: [], failAfterEffect: false } satisfies MockState));
-    this.spec = { manifest: this.manifest, command: process.execPath, args: [mockConnectorWorkerPath()], env: { GOAH_MOCK_CONNECTOR_STATE: this.statePath }, timeoutMs: 2_000 };
-  }
-  get dispatched(): string[] { return this.#state().dispatched; }
-  set failAfterEffect(value: boolean) { const state = this.#state(); state.failAfterEffect = value; writeFileSync(this.statePath, JSON.stringify(state)); }
-  #state(): MockState { return JSON.parse(readFileSync(this.statePath, "utf8")) as MockState; }
-}
-
-export function mockConnectorWorkerPath(): string { return fileURLToPath(new URL("./mock-connector-worker.js", import.meta.url)); }
 export function fauxRunnerWorkerPath(): string { return fileURLToPath(new URL("./faux-runner-worker.js", import.meta.url)); }
 
 export interface LedgerConformanceFactory { (clock: Clock): Ledger }
@@ -108,11 +82,6 @@ export function assertLedgerConformance(create: LedgerConformanceFactory): void 
   ledger.putThread({id:"thread:a",agent:"a",parentThreadId:null,createdAt:clock.now().toISOString(),updatedAt:clock.now().toISOString()},"supervisor");const turn={id:"turn:a",threadId:"thread:a",source:"system" as const,goalId:null,goalRevision:null,status:"in_progress" as const,attempt:1,error:null,startedAt:clock.now().toISOString(),endedAt:null,leaseUntil:"2030-01-01T00:10:00.000Z",leaseToken:"lease",runnerPid:null};ledger.startTurnFromWake("z",turn,clock.now().toISOString());
   if(ledger.wake("z")?.turnId!==turn.id)throw new Error("ledger conformance: consumed Wake did not link its Turn");
   if (first.event.ts !== clock.now().toISOString()) throw new Error("ledger conformance: injected clock was ignored");
-  let rejected = false;
-  try {
-    ledger.requestAction({ id: "bad", agent: "a", createdInTurn:"turn:a",kind: "mock", connector: "mock", payload: {}, reason: "bad", evidence: [999_999], gated: false, status: "requested", reconciledAt: null, externalRef: null, auditAdvice: null, adviceAcked: false }, "a");
-  } catch { rejected = true; }
-  if (!rejected) throw new Error("ledger conformance: nonexistent evidence was accepted");
   const informational = ledger.appendEvent({ streamId: "conformance:events", ts: clock.now().toISOString(), actor: "a", type: "transcript.conformance_info", data: {}, ignorable: true });
   if (ledger.latestEvent()?.seq !== informational.seq) throw new Error("ledger conformance: latest event was not the globally last append");
   const before = JSON.stringify({ goals: ledger.goals(), wakes: ledger.wakes() });

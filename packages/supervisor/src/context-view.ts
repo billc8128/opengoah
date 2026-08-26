@@ -1,4 +1,4 @@
-import type { ActionSnapshot, AgentCapability, AgentRole, EventRecord, GoalSnapshot, JsonValue, MailSnapshot, TeamMemberView, WakeSnapshot } from "goah-ledger-contract";
+import type { AgentCapability, AgentRole, EventRecord, GoalSnapshot, JsonValue, MailSnapshot, TeamMemberView, WakeSnapshot } from "goah-ledger-contract";
 
 export interface ActiveContextView {
   role: AgentRole;
@@ -15,7 +15,6 @@ export interface ActiveContextInput {
   wake: WakeSnapshot;
   goals: GoalSnapshot[];
   mail: MailSnapshot[];
-  actions: ActionSnapshot[];
   lastHandoff: EventRecord | null;
   teamHandoffs: EventRecord[];
   team: TeamMemberView[];
@@ -58,7 +57,6 @@ export function composeActiveContext(input: ActiveContextInput): ActiveContextVi
   if (input.lastHandoff) sourceSeqs.add(input.lastHandoff.seq);
   for (const event of input.teamHandoffs) sourceSeqs.add(event.seq);
   for (const event of input.recoveryEvents) sourceSeqs.add(event.seq);
-  for (const action of input.actions) for (const seq of action.evidence) sourceSeqs.add(seq);
   for (const event of input.workingMemory ?? []) sourceSeqs.add(event.seq);
 
   const sections: Array<[string, string[]]> = [
@@ -72,12 +70,9 @@ export function composeActiveContext(input: ActiveContextInput): ActiveContextVi
     ["Verified", lines(handoff?.results).map((line) => `${line}${input.lastHandoff ? ` [event:${input.lastHandoff.seq}]` : ""}`)],
     ["Open", [
       ...(typeof handoff?.blocker === "string" && handoff.blocker ? [`- ${handoff.blocker}`] : []),
-      ...input.actions.filter((action) => action.status === "unknown").map((action) => `- Action ${action.id} has unknown external outcome; reconcile before retrying.`),
-      ...input.actions.filter((action) => action.auditAdvice && !action.adviceAcked).map((action) => `- Audit advice for ${action.id}: ${render(action.auditAdvice!.body)}`),
     ]],
     ["Next", lines(handoff?.nextSteps)],
-    ["Incoming", input.mail.map((mail) => `- [${mail.level}] from ${mail.from}: ${render(mail.body)}`)],
-    ["External actions", input.actions.filter((action) => !["confirmed", "failed"].includes(action.status)).map((action) => `- ${action.id}: ${action.kind} — ${action.status}`)],
+    ["Incoming", input.mail.map((mail) => `- [${mail.level}] ${mail.id} from ${mail.from}: ${render(mail.body,2_000)}`)],
     ["Team motion", input.team.map((member) => `- ${member.agent}: ${member.status}; goals=${member.goalIds.join(",") || "none"}; next=${member.nextWakeAt ?? "none"}; handoff=${member.lastHandoffSeq ?? "none"}`)],
     ["Team handoffs", input.teamHandoffs.map((event) => `- ${event.actor}: ${render(event.data)} [event:${event.seq}]`)],
     ["Recovery", input.recoveryEvents.map((event) => `- ${event.type}: ${render(event.data)} [event:${event.seq}]`)],
@@ -87,5 +82,5 @@ export function composeActiveContext(input: ActiveContextInput): ActiveContextVi
 }
 
 function lines(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").map((item) => `- ${item}`) : []; }
-function render(value: JsonValue): string { return typeof value === "string" ? value : JSON.stringify(value); }
+function render(value: JsonValue,maxChars=Number.POSITIVE_INFINITY): string { const text=typeof value === "string" ? value : JSON.stringify(value);return text.length<=maxChars?text:`${text.slice(0,maxChars)}…`; }
 function field(value: unknown, key: string): unknown { return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>)[key] : undefined; }

@@ -78,7 +78,7 @@ Goal remains durable intent spanning multiple Turns. Work Record remains the sol
 - transparent organization-wide Work Record reads;
 - Human Root purpose and final-completion authority;
 - CEO Child decomposition and completion authority;
-- atomic delegation, reassignment, Action approval, and reconciliation;
+- atomic delegation and reassignment;
 - Runner-owned provider/model/auth, compaction, and local execution;
 - process isolation, fencing, and kill-before-recovery.
 

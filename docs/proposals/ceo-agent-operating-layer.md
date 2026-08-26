@@ -8,6 +8,8 @@ Rendered document: [`../../Goah-CEO-Agent-Operating-Layer.html`](../../Goah-CEO-
 
 Implementation note: the contracts, atomic SQLite transactions, CEO tool surface and policy, interactive `goah` shell, resident Supervisor control socket, universal Pi coding tools, durable Goal observation methods, derived roster, motion/revision validation, recovery injection, and deterministic two-child canary are implemented for `0.5.0`. A long-running real-model Milestone D canary remains operational validation rather than an architectural dependency.
 
+External Action, Connector, approval, and audit-advice sections in this historical proposal are superseded by [ADR 0013](../adr/0013-runtime-lifecycle-closure.md). The current runtime uses Turn Tool Calls only; an isolated ExternalEffect layer is deferred.
+
 ## 1. Decision summary
 
 CEO Agent is the sole user-facing Agent identity in Goah. Users give goals, corrections, approvals, and questions to CEO; they do not coordinate child Agents directly. CEO translates human intent into a durable Goal tree, delegates bounded ownership to short-lived child Agents, observes evidence and handoffs, restructures the team when needed, and recommends root completion back to the human.
@@ -20,7 +22,7 @@ human intent
 CEO identity (short-lived process, durable ledger state)
     ↓ goal decomposition / delegation / review
 child Agent identities (derived from active Goal ownership)
-    ↓ facts, actions, handoffs
+    ↓ facts, tool calls, handoffs
 shared ledger
     ↓ bounded CEO Active Context
 next CEO wake
@@ -69,7 +71,7 @@ goah "Launch a profitable store"
 goah --continue
 ```
 
-The shell starts or attaches to the local Supervisor, streams CEO text and tool activity, accepts corrections and approvals, and may exit without stopping background organization work. Re-entering `goah` reconstructs the same CEO from Ledger state rather than provider thread identity.
+The shell starts or attaches to the local Supervisor, streams CEO text and tool activity, accepts corrections and decisions, and may exit without stopping background organization work. Re-entering `goah` reconstructs the same CEO from Ledger state rather than provider thread identity.
 
 Lower-level commands remain available for inspection, automation, and recovery:
 
@@ -78,7 +80,6 @@ goah goal start --objective "Launch a profitable store"
 goah goal update <root-goal-id> --objective "..."
 goah ceo status
 goah ceo inbox
-goah ceo approve <action-id> --reason "..." --evidence <seqs>
 goah goal complete <root-goal-id>
 ```
 
@@ -104,7 +105,7 @@ The user experiences one continuous CEO even though each wake is a new process. 
 - team roster projection;
 - unread human/child mail;
 - recent child handoffs;
-- unresolved actions, blockers, and audit advice;
+- unresolved Tool Calls, blockers, and recovery facts;
 - CEO schedule and recovery facts.
 
 Provider thread identity is not the source of continuity.
@@ -122,7 +123,7 @@ Every Agent runs in a local or cloud computer working directory and receives the
 
 These four tools are infrastructure, not role capabilities. CEO and every child receive them. `handoff` and role-scoped Goah RPC tools are layered on top.
 
-Discovery follows the same filesystem-first model as Codex: Agents inspect the current directory, `goah.config.json`, scripts, documentation, and non-secret connector manifests with Bash and file tools. Goah does not add `capability.list`, `connector.list`, or `metric.list` merely to mirror readable project configuration. Ledger queries and protected mutations still use RPC because Agents never receive a database connection or external credentials.
+Discovery follows the same filesystem-first model as Codex: Agents inspect the current directory, `goah.config.json`, scripts, and documentation with Bash and file tools. Goah does not add mirror discovery RPCs for readable project configuration. Ledger queries and protected mutations still use RPC because Agents never receive a database connection.
 
 ## 4. Team model without an Agent table
 
@@ -239,7 +240,7 @@ Objective and observation method form one revisioned pair:
 
 ### 5.4 Root revision semantics
 
-A material human revision to the root objective clears its previous observation method by default. CEO receives a high-priority revision wake, reviews all descendants, and proposes a new or explicitly reused method. Children derived from an older root revision may finish their current safe step, but cannot begin a new gated/high-risk action until CEO revalidates their objective/method pair.
+A material human revision to the root objective clears its previous observation method by default. CEO receives a high-priority revision wake, reviews all descendants, and proposes a new or explicitly reused method. Children derived from an older root revision receive an explicit revision warning until CEO revalidates their objective/method pair.
 
 This creates a revision barrier without killing useful local work or treating every wording edit as a destructive reset.
 
@@ -345,11 +346,10 @@ The default CEO receives high-level tools:
 | `ledger_search` | Read facts/evidence on demand |
 | `schedule_review` | Set CEO’s next review wake |
 | `request_human` | Durable human decision/completion request |
-| `submit_action` | Existing external-action protocol |
 
 Low-level `goal.put` remains an internal/advanced mutation tool, but every accepted mutation commits the same authoritative `goal.changed` event.
 
-Child Agents keep the smaller Goah control surface: owned Goal plus observation method, ledger search, mail, own schedule, actions, audit acknowledgement, and handoff. They still retain the four Pi coding tools. They cannot delegate unless a deployment explicitly grants that role.
+Child Agents keep the smaller Goah control surface: owned Goal plus observation method, ledger search, mail, own schedule, Work Record, and handoff. They still retain the four Pi coding tools. They cannot delegate unless a deployment explicitly grants that role.
 
 ## 8. Default CEO Operating Policy
 
@@ -368,7 +368,7 @@ Read:
 - derived team roster;
 - unread human/child mail;
 - latest handoff per child;
-- blockers, exhausted retries, unknown actions, and audit advice;
+- blockers, exhausted retries, unknown Tool Calls, and verification findings;
 - previous CEO assessment and next review;
 - each Goal's current observation method and the root revision on which child work was based.
 
@@ -426,7 +426,7 @@ CEO exits with one of:
 - a human request blocking further progress;
 - a root-completion recommendation with evidence.
 
-“No action, no schedule, no blocker” is invalid while the root Goal is active.
+“No child motion, no schedule, no blocker” is invalid while the root Goal is active.
 
 ### 8.2 Re-plan triggers
 
@@ -438,7 +438,7 @@ CEO is woken by:
 - child abnormal after retry exhaustion;
 - material child handoff;
 - child request/decision mail;
-- unknown/high-risk action;
+- unknown Tool Call outcome;
 - audit finding;
 - CEO’s own scheduled review;
 - system-silence tripwire confirmation;
@@ -471,7 +471,7 @@ CEO receives a bounded organizational view, not raw team transcripts.
 # Decisions required
 - Reassign launch or request human approval
 
-# Unknown external actions
+# Unknown Tool Call outcomes
 
 # Previous CEO plan
 
@@ -531,7 +531,6 @@ Human can always:
 
 - revise/pause/resume the root Goal;
 - answer CEO decision mail;
-- approve/reject gated actions;
 - inspect roster, Goals, wakes, handoffs, and evidence;
 - force a CEO wake;
 - complete or cancel the root Goal;
@@ -572,7 +571,7 @@ Acceptance: CEO cannot finish an active root while leaving an `idle_unplanned` c
 - root creation automatically wakes CEO
 - status/dashboard show CEO recommendation and team roster
 
-Acceptance: root creation, CEO messaging, status, approval, and automatic wake are available through CLI contracts.
+Acceptance: root creation, CEO messaging, status, and automatic wake are available through CLI contracts.
 
 ### Milestone D — real multi-Agent canary (deterministic canary implemented; real-model long run pending)
 

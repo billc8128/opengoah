@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Removed Action approval commands and Console surfaces; snapshots now expose the closed Schedule lifecycle instead.
 - Local Console rejects non-canonical Host headers before setting its auth cookie; generic goal-update no longer bypasses atomic ownership reassignment.
 - Console organization views now consume the authoritative `goal.changed` operation envelope.
 - Drained terminal Turn events exactly once, exposed Handoffs consistently, separated Console thinking from assistant prose, restored assistant history, and removed Referer-based local API authorization.

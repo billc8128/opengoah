@@ -1,9 +1,10 @@
-import { controlStream, type ActionSnapshot, type EventRecord, type JsonValue, type Ledger } from "goah-ledger-contract";
+import { createHash } from "node:crypto";
+import { type EventRecord, type JsonValue, type Ledger, type MailSnapshot } from "goah-ledger-contract";
 import { spawn } from "node:child_process";
 import type { Supervisor } from "./index.js";
 
 export interface VerificationFinding {
-  actionId: string;
+  id: string;
   body: JsonValue;
   evidence: number[];
   riskWeight: number;
@@ -11,18 +12,16 @@ export interface VerificationFinding {
 
 export interface VerificationResult { findings: VerificationFinding[]; tokensUsed: number }
 export interface VerifierModel {
-  verifyTurn(input: { turnId: string; handoff: JsonValue | null; trace: EventRecord[]; actions: ActionSnapshot[] }): Promise<VerificationResult>;
+  verifyTurn(input: { turnId: string; handoff: JsonValue | null; trace: EventRecord[] }): Promise<VerificationResult>;
   blindAudit(facts: EventRecord[]): Promise<VerificationResult>;
-  reasonAudit(input: { facts: EventRecord[]; reasons: Array<{ actionId: string; reason: string; evidence: number[] }> }): Promise<VerificationResult>;
 }
 
 export interface VerifierProcessSpec { command: string; args: string[]; env?: Record<string, string>; timeoutMs?: number }
 
 export class ProcessVerifierModel implements VerifierModel {
   constructor(readonly spec: VerifierProcessSpec) {}
-  verifyTurn(input: { turnId: string; handoff: JsonValue | null; trace: EventRecord[]; actions: ActionSnapshot[] }): Promise<VerificationResult> { return this.#call("verify_turn", input); }
+  verifyTurn(input: { turnId: string; handoff: JsonValue | null; trace: EventRecord[] }): Promise<VerificationResult> { return this.#call("verify_turn", input); }
   blindAudit(facts: EventRecord[]): Promise<VerificationResult> { return this.#call("blind_audit", { facts }); }
-  reasonAudit(input: { facts: EventRecord[]; reasons: Array<{ actionId: string; reason: string; evidence: number[] }> }): Promise<VerificationResult> { return this.#call("reason_audit", input); }
 
   async #call(operation: string, input: unknown): Promise<VerificationResult> {
     const env: NodeJS.ProcessEnv = {};
@@ -50,30 +49,26 @@ export class VerificationPlane {
     const turn=this.ledger.turn(turnId);if(!turn)throw new Error(`Turn not found: ${turnId}`);if(turn.status==="in_progress")throw new Error("cannot verify an in-progress Turn");
     const trace = this.ledger.readStream(`turn:${turnId}`);
     const handoff = this.ledger.turnItems(turnId).findLast((item) => item.type === "handoff")?.data ?? null;
-    const actions = this.ledger.actions().filter((action) => action.createdInTurn === turnId);
-    const result = await this.model.verifyTurn({ turnId, handoff, trace, actions });
-    this.#apply(result, "verifier", turnId);
-    this.ledger.appendEvent({ streamId: `turn:${turnId}`, ts: this.supervisor.clock.now().toISOString(), actor: "verifier", type: "verification.completed", data: { turnId, findings: result.findings.length, tokensUsed: result.tokensUsed } });
+    const result = await this.model.verifyTurn({ turnId, handoff, trace });
+    this.#validate(result);
+    const thread=this.ledger.thread(turn.threadId);if(!thread)throw new Error("verified Turn has no Thread");
+    const level=result.findings.length?"decision" as const:"fyi" as const;const body={type:"verification_result",turnId,agent:thread.agent,...(turn.goalId?{goalId:turn.goalId}:{}),findings:result.findings,tokensUsed:result.tokensUsed} as unknown as JsonValue;const mail:MailSnapshot[]=[{id:this.#mailId("verification",turnId,thread.agent,result),to:thread.agent,from:"verifier",level,body,readAt:null}];if(result.findings.length&&thread.agent!=="ceo")mail.push({id:this.#mailId("verification",turnId,"ceo",result),to:"ceo",from:"verifier",level:"decision",body:{type:"verification_result",turnId,agent:"ceo",targetAgent:thread.agent,...(turn.goalId?{targetGoalId:turn.goalId}:{}),findings:result.findings as unknown as JsonValue,tokensUsed:result.tokensUsed},readAt:null});this.ledger.putMails(mail,"verifier");
     return result;
   }
 
-  async auditGlobal(sinceSeq = 0): Promise<{ blind: VerificationResult; reasoned: VerificationResult }> {
-    const facts = this.ledger.eventsSince(sinceSeq).filter((event) => !["handoff.recorded", "runner.note"].includes(event.type)).map(blindFact);
-    const blind = await this.model.blindAudit(facts);
-    const reasons = this.ledger.actions().map((action) => ({ actionId: action.id, reason: action.reason, evidence: action.evidence }));
-    const reasoned = await this.model.reasonAudit({ facts, reasons });
-    this.#apply(blind, "audit");
-    this.#apply(reasoned, "audit");
-    this.ledger.appendEvent({ streamId: controlStream("audit"), ts: this.supervisor.clock.now().toISOString(), actor: "audit", type: "audit.completed", data: { sinceSeq, blindFindings: blind.findings.length, reasonedFindings: reasoned.findings.length, tokensUsed: blind.tokensUsed + reasoned.tokensUsed } });
-    return { blind, reasoned };
+  async auditGlobal(sinceSeq = 0): Promise<VerificationResult> {
+    const facts = this.ledger.eventsSince(sinceSeq).filter((event) => !["handoff.recorded", "runner.note"].includes(event.type));
+    const result = await this.model.blindAudit(facts);
+    this.#validate(result);
+    this.ledger.putMail({id:this.#mailId("audit",String(sinceSeq),"ceo",result),to:"ceo",from:"audit",level:result.findings.length?"decision":"fyi",body:{type:"audit_result",sinceSeq,findings:result.findings as unknown as JsonValue,tokensUsed:result.tokensUsed},readAt:null},"audit");
+    return result;
   }
 
-  #apply(result: VerificationResult, by: "verifier" | "audit", turnId?: string): void {
-    for (const finding of result.findings) {
-      if (!this.ledger.action(finding.actionId)) continue;
-      this.supervisor.putAuditAdvice(finding.actionId, { by, body: finding.body, evidence: finding.evidence });
-    }
+  #validate(result:VerificationResult):void {
+    const evidence=new Set(this.ledger.events().map((event)=>event.seq));
+    for(const finding of result.findings)if(!finding.id.trim()||finding.evidence.length===0||finding.evidence.some((seq)=>!evidence.has(seq)))throw new Error("verification finding requires an id and existing evidence");
   }
+  #mailId(kind:string,source:string,recipient:string,result:VerificationResult):string{const digest=createHash("sha256").update(JSON.stringify(result)).digest("hex").slice(0,16);return `${kind}:${source}:${recipient}:${digest}`;}
 }
 
 export interface VerificationLabel { id: string; shouldFlag: boolean; riskWeight: number }
@@ -98,14 +93,4 @@ export function calibrateVerificationThreshold(labels: VerificationLabel[], pred
     if (metrics.precision >= minimumPrecision && metrics.riskWeightedRecall > bestRecall) { selected = threshold; bestRecall = metrics.riskWeightedRecall; }
   }
   return selected;
-}
-
-function blindFact(event: EventRecord): EventRecord {
-  if (!event.type.startsWith("action.")) return event;
-  const data = structuredClone(event.data) as Record<string, unknown>;
-  const snapshot = data.snapshot as Record<string, unknown> | undefined;
-  if (snapshot) { delete snapshot.reason; delete snapshot.evidence; delete snapshot.auditAdvice; }
-  delete data.reason;
-  delete data.evidence;
-  return { ...event, data: data as JsonValue };
 }

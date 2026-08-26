@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Schema v16 removes Action projection storage, adds terminal Schedule state, atomically consumes Schedules with their Wakes, and stores projection metadata outside event business payloads.
+- Canonicalized Schedule timestamps, coalesced due schedules with queued Goal Wakes, rejected conflicting Wake ids, and kept one snapshot authority per projection event.
+- Mail creation is now immutable and idempotent, supports atomic batches, and Handoff Schedules use the same provenance and UTC normalization as direct scheduling.
 - Schema v15 replaces `goal.put` lifecycle facts with one authoritative, projection-driving `goal.changed` event for every Goal operation; raw/Runner events cannot drive projections, replay validates the complete causal chain, and idempotent operations return their original snapshots.
 - Schema v12 makes Turn the sole execution owner, reduces Wake to scheduling state, requires Turn provenance for Actions, and rejects all earlier development schemas.
 - Wake-to-Turn creation rechecks Human priority transactionally; direct terminal writes are forbidden; Goal completion retries are idempotent; ordinary source-Wake responses acknowledge Mail atomically.

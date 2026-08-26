@@ -72,7 +72,7 @@ test("local Console serves assets, redacted snapshots, and CEO control through S
 
 function rawRequest(url:string,host:string):Promise<{status:number;setCookie:string[]|undefined}>{return new Promise((resolve,reject)=>{const target=new URL(url);const call=request({hostname:target.hostname,port:target.port,path:target.pathname,headers:{host}},(response)=>{response.resume();response.once("end",()=>resolve({status:response.statusCode??0,setCookie:response.headers["set-cookie"]}));});call.once("error",reject);call.end();});}
 
-test("Console chat streams a CEO interaction and decisions resolve gated actions", async () => {
+test("Console chat streams a CEO interaction and survives client disconnects", async () => {
   const root = mkdtempSync(join(tmpdir(), "goah-console-chat-"))
   const configPath = join(root, "goah.config.json")
   const config = { ...defaultConfig(root, { provider: "faux" }), stateDir: join(root, "state") }
@@ -115,20 +115,10 @@ test("Console chat streams a CEO interaction and decisions resolve gated actions
     await reader.cancel()
     assert.ok(runtime.ledger.turns().some((turn) => turn.source === "human"))
 
-    const seed = runtime.ledger.appendEvent({ streamId: "control:test", ts: new Date().toISOString(), actor: "worker", type: "fact", data: { text: "evidence" } })
-    const now=new Date().toISOString();runtime.ledger.putThread({id:"thread:worker",agent:"worker",parentThreadId:runtime.ledger.threads().find((thread)=>thread.agent==="ceo")!.id,createdAt:now,updatedAt:now},"supervisor");runtime.ledger.putTurn({id:"turn:worker",threadId:"thread:worker",source:"system",goalId:null,goalRevision:null,status:"in_progress",attempt:1,error:null,startedAt:now,endedAt:null,leaseUntil:new Date(Date.now()+60_000).toISOString(),leaseToken:"test",runnerPid:null},"supervisor");
-    await runtime.supervisor.submitAction({ id: "web-action", agent: "worker", createdInTurn:"turn:worker",kind: "publish", payload: {}, reason: "publish needs review", evidence: [seed.seq], auditAdvice: null, adviceAcked: false }, "missing-connector")
-    assert.equal(runtime.ledger.action("web-action")?.status, "requested")
-    const decision = await fetch(`${metadata.url}api/action?token=${metadata.token}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id: "web-action", decision: "reject", reason: "not during the test", evidence: [seed.seq] }),
-    })
-    assert.equal(decision.status, 200)
-    assert.equal(runtime.ledger.action("web-action")?.status, "failed")
   } finally {
     controller.abort()
     await server
+    for(const turn of runtime.ledger.turns().filter((candidate)=>candidate.status==="in_progress"))await runtime.supervisor.interruptTurn(turn.id)
     runtime.ledger.close()
   }
 })

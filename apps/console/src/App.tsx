@@ -6,7 +6,6 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  CircleAlert,
   Clock3,
   Copy,
   Database,
@@ -18,10 +17,9 @@ import {
   Send,
   Settings,
   Users,
-  X,
 } from "lucide-react"
 
-import { Accordion, Collapsible, Dialog, ScrollArea, Select, Tabs } from "./components/ui/primitives"
+import { Accordion, Collapsible, ScrollArea, Select, Tabs } from "./components/ui/primitives"
 import { demoSnapshot } from "./demo"
 import type { ConsoleSnapshot, EventView, GoalView, TeamView, ThreadDetailView, ThreadView, TrajectoryItemView, TrajectoryPageView, TurnItemView, TurnView } from "./types"
 
@@ -38,7 +36,6 @@ export function App() {
   const [selectedAgent, setSelectedAgent] = useState("growth")
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null)
   const [connection, setConnection] = useState<"loading" | "live" | "error">(isDemo ? "live" : "loading")
-  const [approvalsOpen, setApprovalsOpen] = useState(false)
 
   const load = useCallback(async () => {
     if (isDemo) return
@@ -67,7 +64,7 @@ export function App() {
       <Sidebar view={view} onView={setView} />
       <main className="console-main">
         {connection === "error" && <div className="connection-banner">Live refresh paused. Retrying the local Supervisor…</div>}
-        {view === "overview" && <Overview snapshot={snapshot} root={root} onView={setView} onTalk={() => setView("chat")} onApprovals={() => setApprovalsOpen(true)} />}
+        {view === "overview" && <Overview snapshot={snapshot} root={root} onView={setView} onTalk={() => setView("chat")} />}
         {view === "chat" && <ChatView snapshot={snapshot} onRefresh={load} />}
         {view === "trajectory" && <OrganizationTrajectory snapshot={snapshot} onOpenThread={openThread} />}
         {view === "thread" && <ThreadTrace snapshot={snapshot} selectedThreadId={selectedThreadId} onSelectThread={setSelectedThreadId} onBack={() => setView("trajectory")} />}
@@ -75,7 +72,6 @@ export function App() {
         {view === "agents" && <Agents snapshot={snapshot} selected={selectedAgent} onSelect={setSelectedAgent} onOpenThread={openThread} />}
         {view === "settings" && <SettingsView snapshot={snapshot} />}
       </main>
-      {approvalsOpen && <ApprovalDialog snapshot={snapshot} onRefresh={load} onClose={() => setApprovalsOpen(false)} />}
     </div>
   )
 }
@@ -108,10 +104,9 @@ function Sidebar({ view, onView }: { view: View; onView(view: View): void }) {
   )
 }
 
-function Overview({ snapshot, root, onView, onTalk, onApprovals }: { snapshot: ConsoleSnapshot; root: GoalView | null; onView(view: View): void; onTalk(): void; onApprovals(): void }) {
+function Overview({ snapshot, root, onView, onTalk }: { snapshot: ConsoleSnapshot; root: GoalView | null; onView(view: View): void; onTalk(): void }) {
   const children = snapshot.goals.filter((goal) => goal.parentId === root?.id)
   const ceo = snapshot.team.find((member) => member.agent === "ceo")
-  const attention = snapshot.actions.filter((action) => ["requested", "unknown"].includes(action.status))
   const recoveredTurnIds=new Set(snapshot.wakes.flatMap((wake)=>wake.triggerRef.startsWith("recovery:")?[wake.triggerRef.slice("recovery:".length).split(":")[0]!]:[]));const recovery=snapshot.turns.filter((turn)=>turn.status==="failed"&&!recoveredTurnIds.has(turn.id)).map((turn)=>({turn,agent:snapshot.threads.find((thread)=>thread.id===turn.threadId)?.agent??"unknown"}));
   const trajectory = trajectoryEvents(snapshot.events).slice(-3).reverse()
   return (
@@ -127,10 +122,7 @@ function Overview({ snapshot, root, onView, onTalk, onApprovals }: { snapshot: C
             <button className="header-action" onClick={onTalk}><MessageCircle /> Talk to CEO</button>
           </div>
           <p className="observation"><strong>Observation:</strong> {root?.observationMethod ?? "Waiting for the CEO to propose an observation method."}</p>
-          {(attention[0] || recovery[0]) && <button type="button" className="attention-strip attention-link" onClick={onApprovals}>
-            {attention[0] && <span><CircleAlert /> Approval needed: <strong>{attention[0].kind}</strong></span>}
-            {recovery[0] && <span className="danger"><RefreshCcw /> Recovery needed: <strong>{displayAgent(recovery[0].agent)}</strong></span>}
-          </button>}
+          {recovery[0] && <button type="button" className="attention-strip attention-link" onClick={() => onView("trajectory")}><span className="danger"><RefreshCcw /> Recovery needed: <strong>{displayAgent(recovery[0].agent)}</strong></span></button>}
         </header>
 
         <section className="organization" aria-labelledby="organization-title">
@@ -210,7 +202,7 @@ function OrganizationTrajectory({ snapshot, onOpenThread }: { snapshot: ConsoleS
     } finally { setLoading(false) }
   }
 
-  return <Page title="Organization trajectory" description="Goal, wake, handoff, mail, action, and observation milestones across every agent."><div className="org-trajectory-toolbar"><TrajectorySelect label="Agent" value={agent} onValueChange={setAgent} options={[{ value: "all", label: "All agents" }, ...snapshot.team.map((member) => ({ value: member.agent, label: displayAgent(member.agent) }))]} /><TrajectorySelect label="Event" value={category} onValueChange={setCategory} options={[{ value: "all", label: "All milestones" }, ...["goal", "delegation", "wake", "handoff", "mail", "schedule", "action", "metric"].map((value) => ({ value, label: capitalize(value) }))]} /></div><div className="org-event-list">{items.map((item) => <OrganizationEvent key={item.event.seq} item={item} wake={item.wakeId ? snapshot.wakes.find((wake) => wake.id === item.wakeId) : undefined} thread={item.wakeId ? threadForWake(snapshot, item.wakeId) : undefined} onOpenThread={onOpenThread} />)}{!items.length && <Empty text="No organization milestones match these filters." />}</div>{remote?.nextBeforeSeq && <button className="load-older" disabled={loading} onClick={loadOlder}>{loading ? "Loading…" : "Load older events"}</button>}</Page>
+  return <Page title="Organization trajectory" description="Goal, wake, handoff, mail, schedule, verification, and observation milestones across every agent."><div className="org-trajectory-toolbar"><TrajectorySelect label="Agent" value={agent} onValueChange={setAgent} options={[{ value: "all", label: "All agents" }, ...snapshot.team.map((member) => ({ value: member.agent, label: displayAgent(member.agent) }))]} /><TrajectorySelect label="Event" value={category} onValueChange={setCategory} options={[{ value: "all", label: "All milestones" }, ...["goal", "delegation", "wake", "handoff", "mail", "schedule", "metric"].map((value) => ({ value, label: capitalize(value) }))]} /></div><div className="org-event-list">{items.map((item) => <OrganizationEvent key={item.event.seq} item={item} wake={item.wakeId ? snapshot.wakes.find((wake) => wake.id === item.wakeId) : undefined} thread={item.wakeId ? threadForWake(snapshot, item.wakeId) : undefined} onOpenThread={onOpenThread} />)}{!items.length && <Empty text="No organization milestones match these filters." />}</div>{remote?.nextBeforeSeq && <button className="load-older" disabled={loading} onClick={loadOlder}>{loading ? "Loading…" : "Load older events"}</button>}</Page>
 }
 
 function TrajectorySelect({ label, value, onValueChange, options }: { label: string; value: string; onValueChange(value: string): void; options: Array<{ value: string; label: string }> }) {
@@ -289,7 +281,7 @@ function Ledger({ snapshot }: { snapshot: ConsoleSnapshot }) {
       <Tabs.Root value={mode} onValueChange={(value) => setMode(value as "work" | "raw")}>
         <div className="ledger-mode"><Tabs.List aria-label="Ledger view"><Tabs.Trigger value="work">Work records</Tabs.Trigger><Tabs.Trigger value="raw">Raw events</Tabs.Trigger></Tabs.List><label><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={mode === "work" ? "Search work records" : "Search events"} /></label></div>
         <Tabs.Content value="work"><div className="work-ledger">{records.map((event) => <WorkRecord key={event.seq} event={event} onRaw={() => setMode("raw")} />)}{!records.length && <Empty text="No agent-authored work records yet." />}</div></Tabs.Content>
-        <Tabs.Content value="raw"><div className="ledger-toolbar"><div>{["all", "goal", "wake", "mail", "action", "thread", "turn", "item", "transcript"].map((item) => <button className={filter === item ? "selected" : ""} key={item} onClick={() => setFilter(item)}>{capitalize(item)}</button>)}</div></div><div className="ledger-table" role="table"><div className="ledger-head" role="row"><span>Seq</span><span>Local time</span><span>Stream</span><span>Actor</span><span>Event</span><span>Fact</span></div>{filtered.map((event) => <div className="ledger-row" role="row" key={event.seq}><code>{event.seq}</code><time>{formatTime(event.ts)}</time><code>{event.streamId}</code><span>{displayAgent(event.actor)}</span><strong>{event.type}</strong><span>{summarize(event.data)}</span></div>)}{!filtered.length && <Empty text="No matching events." />}</div></Tabs.Content>
+        <Tabs.Content value="raw"><div className="ledger-toolbar"><div>{["all", "goal", "wake", "mail", "thread", "turn", "item", "transcript"].map((item) => <button className={filter === item ? "selected" : ""} key={item} onClick={() => setFilter(item)}>{capitalize(item)}</button>)}</div></div><div className="ledger-table" role="table"><div className="ledger-head" role="row"><span>Seq</span><span>Local time</span><span>Stream</span><span>Actor</span><span>Event</span><span>Fact</span></div>{filtered.map((event) => <div className="ledger-row" role="row" key={event.seq}><code>{event.seq}</code><time>{formatTime(event.ts)}</time><code>{event.streamId}</code><span>{displayAgent(event.actor)}</span><strong>{event.type}</strong><span>{summarize(event.data)}</span></div>)}{!filtered.length && <Empty text="No matching events." />}</div></Tabs.Content>
       </Tabs.Root>
     </Page>
   )
@@ -337,7 +329,7 @@ function RecordSection({ title, values, tone }: { title: string; values: string[
 }
 
 function SettingsView({ snapshot }: { snapshot: ConsoleSnapshot }) {
-  return <Page title="Settings" description="Local Console runtime details. Agent and connector configuration remains authoritative in goah.config.json."><div className="settings-list"><div><span>Mode</span><strong>Local, loopback only</strong></div><div><span>Refresh</span><strong>Every 2 seconds</strong></div><div><span>Latest event</span><strong>Seq #{snapshot.seq}</strong></div><div><span>Event payloads</span><strong>Redacted by default</strong></div></div></Page>
+  return <Page title="Settings" description="Local Console runtime details. Agent and runner configuration remains authoritative in goah.config.json."><div className="settings-list"><div><span>Mode</span><strong>Local, loopback only</strong></div><div><span>Refresh</span><strong>Every 2 seconds</strong></div><div><span>Latest event</span><strong>Seq #{snapshot.seq}</strong></div><div><span>Event payloads</span><strong>Redacted by default</strong></div></div></Page>
 }
 
 type ChatExchange = { kind: "user" | "ceo"; seq: number; turnId?:string; text: string; handoff?: { observations: string[]; results: string[]; nextSteps: string[]; blocker?: string;goalId?:string;outcome?:string;recordRevision?:number } }
@@ -469,49 +461,6 @@ function HandoffBlock({ handoff, seq }: { handoff: NonNullable<ChatExchange["han
   )
 }
 
-function ApprovalDialog({ snapshot, onRefresh, onClose }: { snapshot: ConsoleSnapshot; onRefresh(): void; onClose(): void }) {
-  const pending = snapshot.actions.filter((action) => ["requested", "unknown"].includes(action.status))
-  const [reasons, setReasons] = useState<Record<string, string>>({})
-  const [busy, setBusy] = useState<string | null>(null)
-  const decide = async (id: string, decision: "approve" | "reject") => {
-    const action = pending.find((item) => item.id === id)
-    if (!action) return
-    const reason = (reasons[id] ?? "").trim() || (decision === "approve" ? "Approved from Console" : "Rejected from Console")
-    setBusy(id)
-    try {
-      const response = await fetch("/api/action", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, decision, reason, evidence: action.evidence }) })
-      if (!response.ok) throw new Error("decision failed")
-      onRefresh()
-    } catch { window.alert("提交失败，请重试") } finally { setBusy(null) }
-  }
-  return (
-    <Dialog.Root open onOpenChange={(open) => { if (!open) onClose() }}>
-      <Dialog.Portal><Dialog.Overlay className="modal-backdrop" /><Dialog.Content className="approval-dialog">
-        <Dialog.Close className="close" aria-label="Close"><X /></Dialog.Close>
-        <Dialog.Title>需要决策的动作</Dialog.Title>
-        <Dialog.Description className="sr-only">审查外部动作的理由和证据，然后批准或拒绝。</Dialog.Description>
-        {pending.length === 0 && <p className="chat-empty">没有待决策动作。</p>}
-        {pending.map((action) => (
-          <article key={action.id} className="approval-card">
-            <header><strong>{action.kind}</strong><span className={`status ${action.status === "unknown" ? "status-blocked" : ""}`}><i />{action.status}</span></header>
-            <dl>
-              <div><dt>Agent</dt><dd>{displayAgent(action.agent)}</dd></div>
-              <div><dt>Connector</dt><dd>{action.connector}</dd></div>
-              <div><dt>Evidence</dt><dd>{action.evidence.join(", ") || "none"}</dd></div>
-            </dl>
-            <p className="approval-reason">{action.reason}</p>
-            <textarea value={reasons[action.id] ?? ""} onChange={(event) => setReasons((current) => ({ ...current, [action.id]: event.target.value }))} placeholder="你的决定理由（默认提供一条）" />
-            <footer>
-              <button className="primary" disabled={busy === action.id} onClick={() => void decide(action.id, "approve")}><Check /> 批准</button>
-              <button className="reject" disabled={busy === action.id} onClick={() => void decide(action.id, "reject")}>拒绝</button>
-            </footer>
-          </article>
-        ))}
-      </Dialog.Content></Dialog.Portal>
-    </Dialog.Root>
-  )
-}
-
 function Page({ title, description, children }: { title: string; description?: string; children: ReactNode }) {
   return <section className="page"><header><h1>{title}</h1>{description && <span>{description}</span>}</header>{children}</section>
 }
@@ -528,7 +477,7 @@ function organizationItems(snapshot: ConsoleSnapshot): TrajectoryItemView[] {
     return { event, wakeId, agent: wakeId ? wakeAgents.get(wakeId) ?? event.actor : event.actor }
   })
 }
-function isOrganizationEvent(type: string): boolean { return ["goal.", "delegation.", "handoff.", "wake.", "mail.", "schedule.", "action.", "metric.", "observation.", "ceo.", "human."].some((prefix) => type.startsWith(prefix)) }
+function isOrganizationEvent(type: string): boolean { return ["goal.", "delegation.", "handoff.", "wake.", "mail.", "schedule.", "metric.", "observation.", "ceo.", "human."].some((prefix) => type.startsWith(prefix)) }
 function eventNarrative(event: EventView, resolvedAgent = event.actor): string {
   const data = record(event.data)
   if (event.type === "handoff.recorded") return `Handoff: ${firstString(data.results) || firstString(data.observations) || "work recorded"}`
@@ -537,17 +486,16 @@ function eventNarrative(event: EventView, resolvedAgent = event.actor): string {
   if (event.type === "goal.changed") { const snapshot = record(data.snapshot); return `Goal ${String(data.operation??snapshot.phase??"updated")}: ${String(snapshot.objective ?? "goal state changed")}` }
   if (event.type === "goal.reassigned") return `Reassigned goal from ${displayAgent(String(data.oldOwner ?? "unknown"))} to ${displayAgent(String(data.newOwner ?? "unknown"))}`
   if (event.type === "metric.evaluated" || event.type === "observation.confirmed") return `Observation confirmed: ${String(data.summary ?? data.status ?? "evidence recorded")}`
-  if (event.type === "action.requested") return `Action awaiting approval: ${String(data.kind ?? "external action")}`
   if (event.type === "wake.enqueued") return "Wake queued"
   if (event.type === "wake.claimed") return "Wake claimed"
   if (event.type === "wake.consumed") return "Wake created a Turn"
   if (event.type === "wake.cancelled") return "Wake cancelled"
   if (event.type === "schedule.put") { const snapshot = record(data.snapshot); return `Next wake scheduled for ${formatDateTime(String(snapshot.nextWakeAt ?? ""))}: ${String(snapshot.reason ?? "scheduled work")}` }
-  if (event.type === "mail.put") { const snapshot = record(data.snapshot); return `Mail from ${displayAgent(String(snapshot.from ?? event.actor))} to ${displayAgent(String(snapshot.to ?? "unknown"))}` }
+  if (event.type === "mail.put") { const snapshot = record(data.snapshot);const body=record(snapshot.body);if(body.type==="verification_result"||body.type==="audit_result")return `${body.type==="audit_result"?"Audit":"Verification"} delivered to ${displayAgent(String(snapshot.to??"unknown"))}: ${Array.isArray(body.findings)?body.findings.length:0} finding(s)`;return `Mail from ${displayAgent(String(snapshot.from ?? event.actor))} to ${displayAgent(String(snapshot.to ?? "unknown"))}` }
   if (event.type === "mail.sent" || event.type === "mail.delivered") return `Mail delivered: ${String(data.summary ?? data.level ?? "message")}`
   return `${event.type.replaceAll(".", " ")}: ${summarize(event.data)}`
 }
-function eventTone(event: EventView): string { if (event.type.includes("abnormal") || event.type.includes("failed")) return "danger"; if (event.type.startsWith("action.")) return "attention-tone"; if (event.type.startsWith("metric.") || event.type.includes("confirmed")) return "success"; return "active-tone" }
+function eventTone(event: EventView): string { if (event.type.includes("abnormal") || event.type.includes("failed")) return "danger"; if (event.type.startsWith("metric.") || event.type.includes("confirmed")) return "success"; return "active-tone" }
 function displayAgent(value: string): string { if (value === "ceo") return "CEO"; if (value === "human") return "Human"; if (value === "supervisor") return "Supervisor"; return `${capitalize(value.replaceAll("-", " "))} Agent` }
 function capitalize(value: string): string { return value ? value[0]!.toUpperCase() + value.slice(1) : value }
 function formatTime(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? "—" : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }) }

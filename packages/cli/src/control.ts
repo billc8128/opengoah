@@ -27,8 +27,6 @@ export type ControlRequest =
   | { op: "work.record"; goalId: string }
   | { op: "work.history"; goalId: string }
   | { op: "work.diff"; goalId: string; fromRevision: number; toRevision: number }
-  | { op: "action.approve"; id: string; reason: string; evidence: number[] }
-  | { op: "action.reject"; id: string; reason: string; evidence: number[] }
   | { op: "wake.stop"; agent: string }
   | { op: "daemon.stop" }
   | { op: "daemon.version" }
@@ -148,8 +146,6 @@ async function dispatch(request: ControlRequest, socket: Socket, supervisor: Sup
   else if (request.op === "work.record") value = ledger.workRecord(request.goalId);
   else if (request.op === "work.history") value = ledger.workRecordHistory(request.goalId);
   else if (request.op === "work.diff") value = ledger.workRecordDiff(request.goalId, request.fromRevision, request.toRevision);
-  else if (request.op === "action.approve") value = await supervisor.approveAction(request.id, "human", request.reason, request.evidence);
-  else if (request.op === "action.reject") value = await supervisor.rejectAction(request.id, "human", request.reason, request.evidence);
   else if (request.op === "wake.stop") value = await supervisor.stopAgentWake(request.agent);
   else if (request.op === "turn.interrupt") value = await supervisor.interruptTurn(request.turnId);
   else if (request.op === "turn.steer") value = await supervisor.startHumanTurn(request.message);
@@ -184,7 +180,7 @@ async function* turnFrames(turnId: string, ledger: Ledger, isActive: () => boole
 }
 
 function snapshot(ledger: Ledger, supervisor: Supervisor): JsonValue {
-  return { seq: ledger.events().at(-1)?.seq ?? 0, threads: ledger.threads(), turns: ledger.turns().map((turn)=>({...turn,leaseToken:null})), goals: ledger.goals(), team: supervisor.teamList(), wakes: ledger.wakes(), actions: ledger.actions() } as unknown as JsonValue;
+  return { seq: ledger.events().at(-1)?.seq ?? 0, threads: ledger.threads(), turns: ledger.turns().map((turn)=>({...turn,leaseToken:null})), goals: ledger.goals(), team: supervisor.teamList(), wakes: ledger.wakes(), schedules: ledger.schedules() } as unknown as JsonValue;
 }
 function ceoStatus(ledger: Ledger, supervisor: Supervisor): JsonValue {
   return { roots: ledger.goals().filter((goal) => goal.parentId === null && goal.owner === "ceo"), team: supervisor.teamList(), pendingHuman: ledger.unreadMail("human"), recentCeoHandoffs: ledger.eventsSince(0, ["handoff.recorded"]).filter((event) => event.actor === "ceo").slice(-10) } as unknown as JsonValue;

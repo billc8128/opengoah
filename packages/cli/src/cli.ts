@@ -194,10 +194,7 @@ async function main(): Promise<void> {
         ? supervisor.completeGoal({ goalId: id, revision: ledger.goal(id)?.revision ?? -1, reason: required("--reason"), evidence: evidence() }, option("--actor") ?? "human")
         : supervisor.transitionGoal(id, command === "goal-pause" ? "paused" : "active", option("--actor") ?? "human");
       console.log(JSON.stringify({ goal }, null, 2));
-    } else if (command === "action-list") console.log(JSON.stringify(ledger.actions(), null, 2));
-    else if (command === "approve" || command === "ceo-approve") console.log(JSON.stringify(await supervisor.approveAction(requiredPositional(1, "action id"), option("--actor") ?? "human", required("--reason"), evidence()), null, 2));
-    else if (command === "reject") console.log(JSON.stringify(supervisor.rejectAction(requiredPositional(1, "action id"), option("--actor") ?? "human", required("--reason"), evidence()), null, 2));
-    else if (command === "dashboard") { const path = option("--output") ?? join(config.stateDir, "status.html"); writeFileSync(path, (await import("goah-supervisor")).renderDashboard(ledger)); console.log(path); }
+    } else if (command === "dashboard") { const path = option("--output") ?? join(config.stateDir, "status.html"); writeFileSync(path, (await import("goah-supervisor")).renderDashboard(ledger)); console.log(path); }
     else throw new Error(`unknown command: ${command}`);
   } finally {
     runtime?.ledger.close();
@@ -261,8 +258,6 @@ function remoteRequest(command: string): ControlRequest | null {
   if (command === "ceo-send") return { op: "ceo.send", message: required("--message") };
   if (command === "ceo-status") return { op: "ceo.status" };
   if (command === "ceo-inbox") return { op: "ceo.inbox" };
-  if (command === "approve" || command === "ceo-approve") return { op: "action.approve", id: requiredPositional(1, "action id"), reason: required("--reason"), evidence: evidence() };
-  if (command === "reject") return { op: "action.reject", id: requiredPositional(1, "action id"), reason: required("--reason"), evidence: evidence() };
   return null;
 }
 
@@ -281,7 +276,6 @@ goah web [--open]
 goah goal start --objective TEXT [--id ID]
 goah ceo send --message TEXT
 goah ceo status | ceo inbox
-goah ceo approve ACTION_ID --reason TEXT --evidence SEQ[,SEQ]
 goah goal-create --id ID --owner AGENT --objective TEXT [--observation-method TEXT] [--wake-now]
 goah goal-show ID | goal-list
 goah goal-update ID [--objective TEXT] [--observation-method TEXT] [--actor ACTOR]
@@ -294,7 +288,7 @@ goah thread show|replay|export THREAD_ID [--output FILE] [--raw]
 goah context show TURN_ID
 goah events --stream STREAM_ID [--from N]
 goah memory AGENT [--tail N]
-goah start | web [--open] | status | goal-list | action-list | approve | reject | dashboard
+goah start | web [--open] | status | goal-list | dashboard
 Runner file and Git operations execute locally under the directory containing goah.config.json.`);
 }
 function printConfigurationHelp(command: string): void {
@@ -336,12 +330,12 @@ function evidence(): number[] { return required("--evidence").split(",").map(Num
 function providerOption(value: string): string {
   return value.trim();
 }
-function mutates(command: string): boolean { return ["start", "run-once", "wake", "goal-start", "ceo-send", "ceo-approve", "goal-create", "goal-update", "goal-pause", "goal-resume", "goal-complete", "approve", "reject"].includes(command); }
+function mutates(command: string): boolean { return ["start", "run-once", "wake", "goal-start", "ceo-send", "goal-create", "goal-update", "goal-pause", "goal-resume", "goal-complete"].includes(command); }
 function normalizeArgs(values: string[]): string[] {
   if ((values[0] === "goal" || values[0] === "ceo") && values[1] && !values[1].startsWith("--")) return [`${values[0]}-${values[1]}`, ...values.slice(2)];
   return values;
 }
-function knownCommand(value: string): boolean { return ["setup", "help", "version", "update", "runner", "daemon", "auth", "login", "logout", "model", "init", "doctor", "web", "start", "run-once", "wake", "status", "thread", "context", "events", "memory", "goal-list", "goal-show", "goal-create", "goal-update", "goal-pause", "goal-resume", "goal-complete", "goal-start", "ceo-send", "ceo-status", "ceo-inbox", "ceo-approve", "action-list", "approve", "reject", "dashboard"].includes(value); }
+function knownCommand(value: string): boolean { return ["setup", "help", "version", "update", "runner", "daemon", "auth", "login", "logout", "model", "init", "doctor", "web", "start", "run-once", "wake", "status", "thread", "context", "events", "memory", "goal-list", "goal-show", "goal-create", "goal-update", "goal-pause", "goal-resume", "goal-complete", "goal-start", "ceo-send", "ceo-status", "ceo-inbox", "dashboard"].includes(value); }
 function asRecord(value: JsonValue): Record<string, JsonValue> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("expected an object"); return value; }
 function firstRecord(value: JsonValue | undefined): Record<string, JsonValue> | null { return Array.isArray(value) && value[0] && typeof value[0] === "object" && !Array.isArray(value[0]) ? value[0] : null; }
 function messageText(value: JsonValue | undefined): string {
@@ -505,7 +499,7 @@ function stdioInteraction(): RunnerSetupInteraction & { close(): void } {
 function packageVersion(): string { return (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version; }
 function closestCommand(value: string): string | null {
   let best: { command: string; distance: number } | null = null;
-  for (const command of ["setup", "help", "auth", "login", "logout", "model", "doctor", "web", "start", "status", "thread", "context", "events", "memory", "goal", "ceo", "approve", "reject", "dashboard"]) {
+  for (const command of ["setup", "help", "auth", "login", "logout", "model", "doctor", "web", "start", "status", "thread", "context", "events", "memory", "goal", "ceo", "dashboard"]) {
     const distance = editDistance(value, command);
     if (!best || distance < best.distance) best = { command, distance };
   }

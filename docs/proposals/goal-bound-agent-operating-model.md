@@ -77,7 +77,7 @@ The change is not a move from a Goal-oriented system to a task-oriented Agent. I
 | Human root authority | Human still authorizes Root purpose and final completion | CEO may operationalize intent but cannot acquire authority by writing prose |
 | Atomic delegation and reassignment | Child Goal, ownership, communication, Work Record, and Wake commit together | A partially created organization is not recoverable or trustworthy |
 | Sliding lease, fencing, and kill-before-recovery | Turn owns Runner execution; Wake only schedules a future Goal Turn | Process failure and duplicate ownership remain control-plane problems without making Wake an execution identity |
-| Evidence-backed Action state machine | `unknown`, query-based reconciliation, capability gates, and approval remain unchanged | Interaction improvements must not weaken external side-effect safety |
+| Normalized Tool Call trace | Calls, results, and interrupted unknown outcomes remain Turn Items | Goah preserves inspectable execution without a duplicate Action aggregate |
 | Runner-owned execution and configuration | Provider/model registry, authentication, compaction, and local execution remain inside each Runner | Different Runners have different execution and provider semantics |
 | Revisioned Goal lifecycle | Goal changes remain CAS-protected and phases remain mechanically validated | Stale Agents must not overwrite current purpose or lifecycle state |
 | Model-judged organization, mechanically enforced transitions | CEO chooses decomposition; Supervisor validates authority and atomicity | Open-ended judgment belongs to the model, durable invariants do not |
@@ -130,7 +130,7 @@ This proposal does not introduce generic task Sub-agents, relax Child Goal obser
 
 - Make `goah` usable for ordinary conversation and bounded coding work.
 - Preserve long-running Goal execution across processes, Wakes, restarts, and Agent ownership changes.
-- Preserve evidence-backed external actions, replay, recovery, leases, and revision fences.
+- Preserve replay, recovery, leases, tool-call repair, and revision fences.
 - Give Goal Agents a shared, versioned semantic memory with an inspectable timeline.
 - Keep organization creation and motion model-judged but mechanically safe.
 - Make the UI quiet by default while retaining complete local auditability.
@@ -140,7 +140,7 @@ This proposal does not introduce generic task Sub-agents, relax Child Goal obser
 - Treat every Human message as a Goal.
 - Implement Git object, index, branch, merge, or commit semantics for Work Records.
 - Introduce task-only Sub-agents.
-- Duplicate Goal state, Action state, or raw tool results inside Work Records.
+- Duplicate Goal state or raw tool results inside Work Records.
 - Inject every Work Record in full into every model request.
 - Move provider or model configuration into Goah Core; those remain Runner-owned.
 - Replace the append-only Ledger with documents or model-authored prose.
@@ -572,10 +572,10 @@ Ledger and Work Record are complementary:
 | exact tool calls and results | observations derived from evidence |
 | messages and model requests | decisions and rejected approaches |
 | Turn lease, retry and recovery facts | completed work summary |
-| Action state and reconciliation | blockers and next steps |
+| Tool Call state and results | blockers and next steps |
 | immutable global order | versioned human/Agent-readable document |
 
-Work Record references facts by Ledger sequence. It does not copy Goal objective, owner, phase, raw tool output, or Action state as authoritative fields. UI may render those facts alongside the document.
+Work Record references facts by Ledger sequence. It does not copy Goal objective, owner, phase, or raw tool output as authoritative fields. UI may render those facts alongside the document.
 
 The apparent duplication between an immutable Work Record event and the `work_records` table is intentional event/projection duplication: events are authority; the table is disposable and replayable.
 
@@ -696,7 +696,7 @@ Goah supplies Turn context, Goal tools, Work Record tools, organization tools, a
 - An abnormal Goal Turn retains every committed Work Record version but does not produce a successful Handoff or acknowledge Mail.
 - Delegation and reassignment remain idempotent transactions.
 - A completed Goal admits no new automatic Wake.
-- External Action `unknown` and reconciliation semantics remain unchanged.
+- Interrupted Tool Calls retain explicit unknown results in the Turn trace.
 - Lease fencing and kill-before-recovery remain unchanged.
 
 ## 17. User experience
@@ -743,7 +743,7 @@ Hide by default:
 
 ## 18. Migration
 
-This development release has no external users, so schema v15 does not migrate schemas 1–14. Development workspaces are recreated. Goal and Work Record semantics remain the target schema; authoritative Goal changes, fail-closed replay, execution ownership, Goal-targeted scheduling, and conversation storage are replaced together.
+This development release has no external users, so schema v16 does not migrate earlier development schemas. Development workspaces are recreated. Goal and Work Record semantics remain the target schema; authoritative Goal changes, private projection metadata, closed Schedule lifecycles, execution ownership, Goal-targeted scheduling, and conversation storage are replaced together.
 
 ## 19. Implementation sequence
 

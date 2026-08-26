@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { CONTRACT_VERSION, wakeStream, type AgentProfile, type ConnectorManifest, type MetricContract, type MetricProcessSpec, type RunnerProfile } from "goah-ledger-contract";
+import { CONTRACT_VERSION, wakeStream, type AgentProfile, type MetricContract, type MetricProcessSpec, type RunnerProfile } from "goah-ledger-contract";
 import { SQLITE_SCHEMA_VERSION, SqliteLedger } from "goah-ledger-sqlite";
 import { createPiModel, piWorkerPath, ProcessRunner, resolveEnvSpec, type ProcessRunnerOptions } from "goah-runner-pi";
 import { renderDashboard, runSupervisorDaemon, RunnerRouter, Supervisor } from "goah-supervisor";
@@ -15,12 +15,9 @@ export interface GoahConfig {
   runner?: { command: string; args: string[]; env?: Record<string, string>; inheritEnv?: string[] };
   runnerProfiles?: RunnerProfile[];
   profiles?: AgentProfile[];
-  approvers?: string[];
-  auditWriters?: string[];
   silencePolicy?: { maxSilentMs?: number; notify?: string } | null;
   retryPolicy?: { maxAttempts: number; baseDelayMs: number };
   verifyMetricsAfterWake?: boolean;
-  connectors?: Array<{ manifest: ConnectorManifest; command: string; args: string[]; env?: Record<string, string>; timeoutMs?: number }>;
   metrics?: Array<{ goalId: string; contract: MetricContract; intervalMs: number; process: MetricProcessSpec }>;
 }
 
@@ -61,7 +58,6 @@ export function loadConfig(path = "goah.config.json"): GoahConfig {
     config.runnerProfiles = [{ id: "default", runner: "pi", config: { provider, model, ...(keyRef ? { apiKeyEnv: keyRef[1].slice(4) } : {}), ...(env.GOAH_PI_BASE_URL ? { baseUrl: env.GOAH_PI_BASE_URL } : {}) } }];
     if (config.profiles) config.profiles = config.profiles.map((profile) => ({ ...profile, runnerProfile: profile.runnerProfile ?? "default" }));
   }
-  for (const connector of config.connectors ?? []) connector.command = resolveCommand(connector.command);
   for (const metric of config.metrics ?? []) metric.process.command = resolveCommand(metric.process.command);
   return config;
 }
@@ -75,13 +71,10 @@ export function createRuntime(config: GoahConfig): { ledger: SqliteLedger; super
   const supervisor = new Supervisor(ledger, runner, new class { now(): Date { return new Date(); } }(), {
     ...(config.profiles ? { profiles: config.profiles } : {}),
     ...(config.runnerProfiles ? { runnerProfiles: config.runnerProfiles } : {}),
-    ...(config.approvers ? { approvers: config.approvers } : {}),
-    ...(config.auditWriters ? { auditWriters: config.auditWriters } : {}),
     ...(config.silencePolicy !== undefined ? { silence: config.silencePolicy } : {}),
     ...(config.retryPolicy ? { retryPolicy: config.retryPolicy } : {}),
     ...(config.verifyMetricsAfterWake !== undefined ? { verifyMetricsAfterWake: config.verifyMetricsAfterWake } : {}),
   });
-  for (const connector of config.connectors ?? []) supervisor.registerConnector(connector);
   for (const metric of config.metrics ?? []) supervisor.registerMetricCollector(metric.goalId, metric.contract, metric.process, metric.intervalMs);
   return { ledger, supervisor };
 }
@@ -95,8 +88,6 @@ export function defaultConfig(directory: string, options: InitOptions = {}): Goa
     stateDir: defaultStateDir(directory),
     runnerProfiles: [runnerProfile],
     profiles: [{ agent: "ceo", role: "ceo", runnerProfile: "default" }, { agent: options.agent ?? "worker", role: "child", runnerProfile: "default" }],
-    approvers: ["human", "ceo"],
-    auditWriters: ["verifier", "audit"],
     silencePolicy: { maxSilentMs: 12 * 3_600_000, notify: "ceo" },
   };
 }
@@ -261,7 +252,7 @@ export function diagnoseConfig(config: GoahConfig): { ok: boolean; checks: Docto
     try {
       const version = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
       if (version > SQLITE_SCHEMA_VERSION) throw new Error(`ledger schema ${version} is newer than supported schema ${SQLITE_SCHEMA_VERSION}`);
-      if(version>0&&version<SQLITE_SCHEMA_VERSION)throw new Error(`ledger schema ${version} predates Turn-owned execution; recreate this development workspace`);
+      if(version>0&&version<SQLITE_SCHEMA_VERSION)throw new Error(`ledger schema ${version} predates runtime schema ${SQLITE_SCHEMA_VERSION}; recreate this development workspace`);
       return `${database} (schema ${version})`;
     }
     finally { db.close(); }
@@ -292,7 +283,7 @@ export function statusSnapshot(ledger: SqliteLedger): object {
   const goals = ledger.goals().map((goal) => ({ ...goal, evaluation: [...events].reverse().find((event) => event.streamId === `metric:${goal.id}` && event.type === "metric.evaluated")?.data ?? null }));
   const handoffs = events.filter((event) => event.type === "handoff.recorded").slice(-20).map((event) => ({ seq: event.seq, ts: event.ts, agent: event.actor, streamId: event.streamId, handoff: event.data }));
   const modelCapabilitiesByAgent=Object.fromEntries(ledger.threads().flatMap((thread)=>{const turnIds=new Set(ledger.turns(thread.id).map((turn)=>turn.id));const capability=[...events].reverse().find((event)=>event.type==="transcript.started"&&event.streamId.startsWith("turn:")&&turnIds.has(event.streamId.slice("turn:".length)))?.data;return capability?[[thread.agent,capability]]:[];}));const modelCapabilities=modelCapabilitiesByAgent.ceo??[...events].reverse().find((event)=>event.type==="transcript.started")?.data??null;
-  return { seq: events.at(-1)?.seq ?? 0, threads: ledger.threads(), turns: ledger.turns().map((turn)=>({...turn,leaseToken:null})), goals, wakes, actions: ledger.actions(), modelCapabilities,modelCapabilitiesByAgent, recentHandoffs: handoffs };
+  return { seq: events.at(-1)?.seq ?? 0, threads: ledger.threads(), turns: ledger.turns().map((turn)=>({...turn,leaseToken:null})), goals, wakes, schedules:ledger.schedules(), modelCapabilities,modelCapabilitiesByAgent, recentHandoffs: handoffs };
 }
 
 function defaultModel(provider: string): string {

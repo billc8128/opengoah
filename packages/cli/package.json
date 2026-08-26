@@ -1,6 +1,6 @@
 {
   "name": "@goah/cli",
-  "version": "0.11.5",
+  "version": "0.12.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -43,11 +43,11 @@
     "@earendil-works/pi-agent-core": "0.84.2",
     "@earendil-works/pi-ai": "0.84.2",
     "@earendil-works/pi-tui": "^0.84.2",
-    "goah-ledger-contract": "0.9.0",
-    "goah-ledger-sqlite": "0.9.0",
-    "goah-runner-pi": "0.9.0",
-    "goah-supervisor": "0.9.0",
-    "goah-testkit": "0.9.0"
+    "goah-ledger-contract": "0.10.0",
+    "goah-ledger-sqlite": "0.10.0",
+    "goah-runner-pi": "0.10.0",
+    "goah-supervisor": "0.10.0",
+    "goah-testkit": "0.10.0"
   },
   "bundledDependencies": [
     "goah-ledger-contract",

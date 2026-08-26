@@ -1,9 +1,9 @@
 # Goah Architecture
 
 Status: current
-Date: 2026-08-25
+Date: 2026-08-26
 
-Goah is a Goal-oriented Agent Harness with a normal interactive CEO surface. The complete Goal operating model is defined in [Goal-bound Agent Operating Model](./proposals/goal-bound-agent-operating-model.md). [ADR 0012](./adr/0012-unified-thread-turn-item-runtime.md) defines the unified Thread/Turn/Item runtime; [ADR 0011](./adr/0011-goal-bound-turns-and-work-record-filesystem.md) defines Goal binding and Work Records.
+Goah is a Goal-oriented Agent Harness with a normal interactive CEO surface. The complete Goal operating model is defined in [Goal-bound Agent Operating Model](./proposals/goal-bound-agent-operating-model.md). [ADR 0012](./adr/0012-unified-thread-turn-item-runtime.md) defines the unified Thread/Turn/Item runtime; [ADR 0013](./adr/0013-runtime-lifecycle-closure.md) closes Schedule, Runner-exit, projection, and external-effect boundaries.
 
 ## Product boundary
 
@@ -51,17 +51,20 @@ Current projections are rebuilt from events:
 - Schedule
 - Wakes
 - Mailbox
-- Actions
 
 Handoff remains an event-level control result rather than a current-state projection.
 
-Every Goal lifecycle mutation has exactly one authoritative `goal.changed` event. The event carries operation, previous revision, complete next snapshot, reason, evidence, authority, and optional source Turn/Wake/idempotency key; the Goal table is rebuilt directly from those same events. Raw and Runner events cannot carry projection writes. Replay validates event type, revision chain, evidence order, authority, causal Turn/Wake binding, and idempotency keys before applying a snapshot. Operation-specific events such as `delegation.created` remain workflow facts, not competing Goal state authorities.
+Every Goal lifecycle mutation has exactly one authoritative `goal.changed` event. The event carries operation, previous revision, complete next snapshot, reason, evidence, authority, and optional source Turn/Wake/idempotency key; the Goal table is rebuilt directly from those same events. Only the projection name is stored in private SQLite metadata; each typed event carries one authoritative snapshot. Raw and Runner events cannot carry projection writes, even when their business data contains fields named `projection` or `snapshot`. Replay validates event type, revision chain, evidence order, authority, causal Turn/Wake binding, and idempotency keys before applying a snapshot.
 
 ### Supervisor
 
-The only Ledger writer in the resident process. It validates Turn ownership and terminal state, Goal and Work Record revisions, leases, capabilities, atomic delegation, Action gates, scheduling, recovery, and Human priority. Human input starts or steers a Turn directly. Mail is reserved for asynchronous Agent communication and Human decisions. Wake is reserved for future Goal/system motion.
+The only Ledger writer in the resident process. It validates Turn ownership and terminal state, Goal and Work Record revisions, leases, capabilities, atomic delegation, scheduling, recovery, and Human priority. Human input starts or steers a Turn directly. Mail is the bounded, acknowledged delivery path for asynchronous Agent communication, Human decisions, and Verification/Audit results; findings for child work are also escalated to CEO. Wake is reserved for future Goal/system motion.
 
 Wake status is scheduling-only: `queued → claimed → consumed`, with `cancelled` as the pending terminal path. Goal motion carries an explicit `goalId + goalRevision`; coalescing and suppression never cross Goal targets. Claiming is blocked while any Human Turn is active. Once the Turn is durably created, Wake records its `turnId` and no longer participates in execution.
+
+Schedule has its own durable lifecycle: `pending → consumed|cancelled|superseded`. Creating the Wake and consuming the Schedule is one transaction. A Goal revision, phase, or owner change supersedes old bound Schedules instead of letting stale queue data abort daemon progress.
+
+Each Agent has one execution lane. A terminal Turn revokes Ledger authority immediately, but the lane remains occupied until its Runner process actually exits. No replacement Turn starts before that termination barrier clears.
 
 ### Runner
 
@@ -77,8 +80,8 @@ Receives a `RunRequest` containing Turn identity, source, optional Goal binding,
 6. CEO controls Child Goal decomposition, ownership, verification, and completion.
 7. Goal Handoff points to Work Record revision instead of duplicating semantic prose.
 8. An in-progress Human Turn prevents new automatic Goal Turns from starting.
-9. External Actions preserve evidence, approval, `unknown`, and query-based reconciliation semantics.
-10. Provider/model/auth semantics stay inside each Runner.
+9. A single Agent never has overlapping Runner processes, including during preemption.
+10. Provider/model/auth and ordinary tool permission semantics stay inside each Runner.
 
 ## State and continuity
 
@@ -95,13 +98,17 @@ Legacy narrative Handoffs and `memory.appended` facts remain readable. Schema v9
 ## Failure model
 
 - A stale Goal or Work Record revision is rejected.
-- Every Goal-bound RPC revalidates current phase, owner, revision, Agent Thread, and Turn binding; a Human or parent Goal mutation fences an older active Turn before it can perform more tools or Actions.
+- Every Goal-bound RPC revalidates current phase, owner, revision, Agent Thread, and Turn binding; a Human or parent Goal mutation fences an older active Turn before it can perform more tools.
 - A Goal Turn without a current-Turn Work Record update is abnormal.
 - Failed/interrupted Turns do not consume undelivered asynchronous Mail.
 - Committed Work Record versions survive later Turn failure.
 - Turn persists the opaque Runner Profile id so sliding-lease recovery can terminate stale Runner ownership after a Supervisor restart.
-- An interrupted external side effect becomes `unknown`, never silently retried.
+- Open Tool Calls are repaired to an explicit unknown result when a Turn is interrupted.
 - Delegation and reassignment are idempotent atomic transactions.
+
+## Deferred external effects
+
+Goah currently has no Action or Connector aggregate. Runner Tool Calls are the only execution vocabulary. A future optional `ExternalEffect` subsystem is justified only when credentials are withheld from Runner processes and an operation requires durable approval, idempotency, reconciliation, or cross-Turn recovery. It must not become a second representation for ordinary Tool Calls.
 
 ## Historical documents
 

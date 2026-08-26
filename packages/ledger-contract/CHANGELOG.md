@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Contract 0.10 removes Action/Connector types, adds the closed Schedule lifecycle, and separates Goal event data from private projection metadata.
 - Contract 0.9 defines the authoritative `GoalChangedData` envelope and Goal mutation provenance.
 - Replaced Wake-owned execution with Turn attempt/lease/PID/fencing, scheduling-only Wake states, `TurnOutput`, `RunnerCandidateResult`, and Action Turn provenance.
 - Added Turn source/Goal binding, ordinary Runner responses, Goal verification methods, Work Record contracts, compact Goal Handoffs, and shared-record capabilities.

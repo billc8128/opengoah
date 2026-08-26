@@ -3,10 +3,10 @@ import test from "node:test";
 import { classifyTuiInput, findLiveTurnId, renderFrame, renderTuiHeader, renderUserMessage } from "./tui.js";
 import { stripAnsi } from "./tui-theme.js";
 
-test("TUI routes ordinary text, queued follow-ups, and approvals", () => {
+test("TUI routes ordinary text, queued follow-ups, and commands", () => {
   assert.deepEqual(classifyTuiInput("Launch the store", false), { action: "send", text: "Launch the store" });
   assert.deepEqual(classifyTuiInput("correct the budget", true), { action: "steer", text: "correct the budget" });
-  assert.equal(classifyTuiInput("/approve a --reason ok --evidence 1", false).action, "approval");
+  assert.equal(classifyTuiInput("/approve a --reason ok --evidence 1", false).action, "unknown");
   assert.equal(classifyTuiInput("/stop", true).action, "stop");
   assert.equal(classifyTuiInput("/records", false).action, "records");
   assert.equal(classifyTuiInput("/history root", false).action, "records");

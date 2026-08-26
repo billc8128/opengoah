@@ -7,7 +7,6 @@ const events: EventView[] = [
   { seq: 12842, streamId: "metric:orders", streamSeq: 18, ts: "2026-08-20T14:12:57.000+08:00", actor: "operations", type: "metric.evaluated", data: { status: "passed", summary: "Orders p95 fulfillment ≤ 48h" } },
   { seq: 12843, streamId: "wake:growth-7", streamSeq: 31, ts: "2026-08-20T14:13:21.000+08:00", actor: "growth", type: "handoff.recorded", data: { observations: ["342 paying users"], results: ["ROAS 2.8"], nextSteps: ["Scale winning channel"] } },
   { seq: 12844, streamId: "wake:web-4", streamSeq: 1, ts: "2026-08-20T14:14:18.000+08:00", actor: "web", type: "wake.enqueued", data: { reason: "Launch storefront", nextWakeAt: "2026-08-20T14:30:00.000+08:00" } },
-  { seq: 12845, streamId: "action:publish-storefront", streamSeq: 1, ts: "2026-08-20T14:16:21.000+08:00", actor: "web", type: "action.requested", data: { kind: "publish.storefront", reason: "Validated landing page is ready" } },
   { seq: 12846, streamId: "mail:decision-growth", streamSeq: 1, ts: "2026-08-20T14:17:04.000+08:00", actor: "ceo", type: "mail.sent", data: { to: "growth", level: "decision", summary: "Increase paid acquisition carefully" } },
   { seq: 12847, streamId: "wake:growth-8", streamSeq: 2, ts: "2026-08-20T14:18:02.000+08:00", actor: "supervisor", type: "wake.consumed", data: { turnId:"growth-8",triggerRef: "mail:decision-growth" } },
   { seq: 12848, streamId: "wake:growth-8", streamSeq: 3, ts: "2026-08-20T14:18:03.000+08:00", actor: "growth", type: "request.prepared", data: { activeContext: "Goal: Acquire 500 paying users. Observation method: count paid Stripe users and require 30-day ROAS ≥ 2.0. CEO decision: increase paid acquisition carefully.", provider: "faux", model: "faux-goah" } },
@@ -18,7 +17,7 @@ const events: EventView[] = [
   { seq: 12853, streamId: "wake:growth-8", streamSeq: 8, ts: "2026-08-20T14:18:12.000+08:00", actor: "growth", type: "message.assistant.completed", data: { message: { id: "growth-a2", role: "assistant", content: "The observation passes: 342 paid users and ROAS 2.8. I’ll preserve the current winner and prepare a bounded spend increase for approval." } } },
   { seq: 12854, streamId: "wake:growth-8", streamSeq: 9, ts: "2026-08-20T14:18:13.000+08:00", actor: "growth", type: "tool.called", data: { callId: "write-plan", name: "write", arguments: { path: "growth/next-experiment.md", content: "Scale Meta Ads by 12% with a 48-hour ROAS guardrail." } } },
   { seq: 12855, streamId: "wake:growth-8", streamSeq: 10, ts: "2026-08-20T14:18:14.000+08:00", actor: "growth", type: "tool.completed", data: { callId: "write-plan", name: "write", result: { path: "growth/next-experiment.md", bytes: 68 } } },
-  { seq: 12856, streamId: "wake:growth-8", streamSeq: 11, ts: "2026-08-20T14:18:16.000+08:00", actor: "growth", type: "message.assistant.completed", data: { message: { id: "growth-a3", role: "assistant", content: "Experiment plan recorded. The spend increase remains gated; no external action was replayed." } } },
+  { seq: 12856, streamId: "wake:growth-8", streamSeq: 11, ts: "2026-08-20T14:18:16.000+08:00", actor: "growth", type: "message.assistant.completed", data: { message: { id: "growth-a3", role: "assistant", content: "Experiment plan recorded. No external operation was performed." } } },
   { seq: 12857, streamId: "wake:growth-8", streamSeq: 12, ts: "2026-08-20T14:18:18.000+08:00", actor: "growth", type: "handoff.recorded", data: { observations: ["342 paid users", "30-day ROAS 2.8"], results: ["Prepared a guarded 12% Meta Ads scale experiment"], nextSteps: ["Request approval", "Re-observe after 48 hours"], material: true } },
 ]
 
@@ -49,10 +48,9 @@ export const demoSnapshot: ConsoleSnapshot = {
     { id: "growth-8", agent: "growth", triggerRef: "mail:decision-growth", status: "consumed", attempt:1,enqueuedSeq: 12846,claimedAt:"2026-08-20T14:18:02.000+08:00",consumedAt:"2026-08-20T14:18:02.000+08:00",turnId:"growth-8" },
     { id: "web-4", agent: "web", triggerRef: "goal:storefront", status: "queued", attempt:0,enqueuedSeq: 12844,claimedAt:null,consumedAt:null,turnId:null },
   ],
-  actions: [{ id: "publish-storefront", agent: "web", createdInTurn:"web-3",kind: "publish.storefront", connector: "web", reason: "Validated landing page is ready", status: "requested", gated: true, evidence: [12841, 12844] }],
   schedules: [
-    { id: "schedule:operations", agent: "operations", nextWakeAt: "2026-08-20T14:30:00.000+08:00", reason: "Check fulfillment window", setBy: "operations" },
-    { id: "schedule:web", agent: "web", nextWakeAt: "2026-08-20T14:30:00.000+08:00", reason: "Continue storefront launch", setBy: "ceo" },
+    { id: "schedule:operations", agent: "operations", nextWakeAt: "2026-08-20T14:30:00.000+08:00", reason: "Check fulfillment window", setBy: "operations", status: "pending", resolvedAt: null },
+    { id: "schedule:web", agent: "web", nextWakeAt: "2026-08-20T14:30:00.000+08:00", reason: "Continue storefront launch", setBy: "ceo", status: "pending", resolvedAt: null },
   ],
   mailbox: [{ id: "decision-growth", to: "growth", from: "ceo", level: "decision", body: { summary: "Increase paid acquisition carefully" }, readAt: "2026-08-20T14:17:30.000+08:00" }],
   events,

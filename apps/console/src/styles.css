@@ -248,17 +248,4 @@ button.primary { color: white; background: var(--blue); border-color: var(--blue
 .chat-input-bar > div { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .chat-input-bar span { color: var(--faint); font-size: 12px; }
 
-/* Approvals */
 .attention-link { cursor: pointer; font: inherit; text-align: left; }
-.approval-dialog { width: min(640px, calc(100vw - 40px)); max-height: min(760px, calc(100vh - 60px)); display: grid; gap: 14px; overflow-y: auto; }
-.approval-dialog > p { margin: 0; color: var(--muted); font-size: 14px; }
-.approval-card { display: grid; gap: 10px; padding: 15px 16px; border: 1px solid var(--line); border-radius: 10px; background: white; }
-.approval-card header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.approval-card header strong { font-size: 15px; }
-.approval-card dl { margin: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-.approval-card dt { color: var(--faint); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
-.approval-card dd { margin: 2px 0 0; font-size: 13px; }
-.approval-reason { margin: 0; padding: 10px 12px; border-left: 3px solid var(--blue-soft); background: rgba(238, 240, 255, .5); border-radius: 0 7px 7px 0; line-height: 1.5; font-size: 13px; }
-.approval-card textarea { min-height: 54px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; resize: vertical; font-size: 13px; }
-.approval-card footer { display: flex; justify-content: flex-end; gap: 10px; }
-.approval-card .reject { height: 44px; padding: 0 16px; border: 1px solid rgba(211, 63, 54, .4); border-radius: 8px; background: white; color: var(--red); font-weight: 560; cursor: pointer; }

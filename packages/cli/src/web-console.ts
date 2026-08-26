@@ -36,7 +36,6 @@ export function consoleSnapshot(ledger: Ledger, supervisor: Supervisor, now = ne
     threads: ledger.threads(),
     turns: ledger.turns().map((turn)=>({...turn,leaseToken:null})),
     wakes: ledger.wakes(),
-    actions: ledger.actions(),
     schedules: ledger.schedules(),
     mailbox: ledger.mailbox(),
     events,
@@ -147,17 +146,6 @@ async function route(request: IncomingMessage, response: ServerResponse, supervi
       response.end()
       return
     }
-    if (request.method === "POST" && url.pathname === "/api/action") {
-      const body = await readBody(request)
-      const id = typeof body.id === "string" ? body.id : ""
-      const reason = typeof body.reason === "string" ? body.reason.trim() : ""
-      const evidence = Array.isArray(body.evidence) && body.evidence.every((item) => typeof item === "number") ? body.evidence as number[] : []
-      if (!id || !reason || evidence.length === 0) { sendJson(response, 400, { error: "id, reason, and evidence are required" }); return }
-      if (body.decision === "approve") { sendJson(response, 200, await supervisor.approveAction(id, "human", reason, evidence)); return }
-      if (body.decision === "reject") { sendJson(response, 200, supervisor.rejectAction(id, "human", reason, evidence)); return }
-      sendJson(response, 400, { error: "decision must be approve or reject" })
-      return
-    }
     sendJson(response, 404, { error: "not found" }); return
   }
 
@@ -175,7 +163,7 @@ async function route(request: IncomingMessage, response: ServerResponse, supervi
 }
 
 function isTrajectoryEvent(type: string): boolean {
-  return ["goal.", "delegation.", "handoff.", "wake.", "mail.", "schedule.", "action.", "metric.", "observation.", "ceo.", "human."].some((prefix) => type.startsWith(prefix))
+  return ["goal.", "delegation.", "handoff.", "wake.", "mail.", "schedule.", "metric.", "observation.", "ceo.", "human."].some((prefix) => type.startsWith(prefix))
 }
 
 function positiveInteger(value: string | null): number | undefined { const parsed = Number(value); return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined }

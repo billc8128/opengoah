@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CONTRACT_VERSION } from "goah-ledger-contract";
 import { SqliteLedger } from "goah-ledger-sqlite";
 import { piWorkerPath, ProcessRunner } from "goah-runner-pi";
 import { renderDashboard, runSupervisorDaemon, Supervisor } from "goah-supervisor";
@@ -37,10 +36,6 @@ const supervisor = new Supervisor(ledger, runner, new class { now(): Date { retu
 if (!ledger.goal("repo-health")) supervisor.createGoal({ id: "repo-health", parentId: null, objective: "Keep the repository tests green", observationMethod: "Run the configured repository health metric and require a fresh passing result.", verificationMethod: "Run the configured repository health metric and require a fresh passing result.", owner: "guardian", phase: "active", revision: 0 });
 const workerDir = fileURLToPath(new URL(".", import.meta.url));
 supervisor.registerMetricCollector("repo-health", { source: "repo.tests", window: "latest", direction: "at_least", target: 1, freshnessMs: 172_800_000, onMissing: "wake_owner", onStale: "wake_owner" }, { command: process.execPath, args: [join(workerDir, "metric-worker.js")], env: { GOAH_GUARD_REPO: repo, ...(process.env.GOAH_GUARD_TEST_COMMAND ? { GOAH_GUARD_TEST_COMMAND: process.env.GOAH_GUARD_TEST_COMMAND } : {}) }, timeoutMs: 310_000 }, 86_400_000);
-supervisor.registerConnector({
-  manifest: { contractVersion: CONTRACT_VERSION, connector: "repo", dryRun: true, capabilities: [{ kind: "repo.run_check", nativeIdempotency: true, query: "by_idempotency_key", automaticRetry: true, risk: "reversible" }] },
-  command: process.execPath, args: [join(workerDir, "connector-worker.js")], env: { GOAH_GUARD_REPO: repo }, timeoutMs: 310_000,
-});
 supervisor.planWake("guardian", new Date().toISOString(), "initial repository health check", "supervisor");
 
 if (process.argv.includes("--daemon")) {

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Removed Action/Connector dispatch, added per-Agent Runner termination barriers, and made stale due Schedules terminal instead of daemon-blocking.
+- Human admission now rechecks the Thread after a termination barrier, and atomic verification results use bounded acknowledged Mail shared by Human and Wake Turns, with child findings escalated to CEO.
 - Goal mutations fence active older Turns, every Goal-bound RPC rechecks its binding, and definition staleness ignores phase-only events across the full ancestor chain.
 - Supplies reason, evidence, authority, source Turn/Wake, and idempotency provenance to the unified Goal change protocol.
 - Serialized Human admission, made multi-Goal scheduling target-safe, made Runner cleanup failure non-blocking, and restored kill-before-recovery through persisted Runner Profile routing.
