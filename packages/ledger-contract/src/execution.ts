@@ -42,7 +42,20 @@ export interface WorkRecordUpdateRequest {
 }
 export interface WorkRecordDiff { goalId: string; fromRevision: number; toRevision: number; text: string }
 export interface ScheduleSnapshot { id: string; agent: string; nextWakeAt: string; reason: string; setBy: string; status: ScheduleStatus; resolvedAt: string | null; goalId?: string; goalRevision?: number }
-export interface WakeSnapshot { id: string; agent: string; triggerRef: string; status: WakeStatus; attempt: number; enqueuedSeq: number; claimedAt: string | null; consumedAt: string | null; turnId: string | null; goalId?: string; goalRevision?: number }
+export interface WakeSnapshot {
+  id: string;
+  agent: string;
+  /** Initial trigger retained for display and provenance. Runtime decisions use WakeTriggerSnapshot. */
+  triggerRef: string;
+  status: WakeStatus;
+  attempt: number;
+  enqueuedSeq: number;
+  claimedAt: string | null;
+  consumedAt: string | null;
+  turnId: string | null;
+  goalId?: string;
+  goalRevision?: number;
+}
 export interface WakeTriggerSnapshot { wakeId: string; agent: string; triggerRef: string; source: TurnSourceKind; status: WakeTriggerStatus; addedAt: string; resolvedAt: string | null }
 export type MailLevel = "fyi" | "decision" | "emergency";
 export interface MailSnapshot { id: string; to: string; from: string; level: MailLevel; body: JsonValue; readAt: string | null }
@@ -116,7 +129,7 @@ export type TurnSource = { kind: "human" } | { kind: "goal"; round: number } | {
 export interface GoalBinding { goalId: string; goalRevision: number }
 export interface TurnContext { source: TurnSource; goalBinding?: GoalBinding }
 export interface AssistantResponse { content: string }
-export interface RunRequest { agent: string; execution: TurnSnapshot; sourceWake?: WakeSnapshot; turn: TurnContext; context: JsonValue; now(): string; emit(event: RunnerTraceEvent): void; rpc?(method: AgentCapability, params: JsonValue): Promise<JsonValue> }
+export interface RunRequest { agent: string; execution: TurnSnapshot; sourceWake?: WakeSnapshot; sourceWakeTriggers?: WakeTriggerSnapshot[]; turn: TurnContext; context: JsonValue; now(): string; emit(event: RunnerTraceEvent): void; rpc?(method: AgentCapability, params: JsonValue): Promise<JsonValue> }
 export type RunnerCandidateResult = { outcome: "response"; response: AssistantResponse } | { outcome: "handoff"; output: TurnOutput } | { outcome: "abnormal"; reason: string };
 export interface RunnerHandle { pid: number | null; begin(): void; result: Promise<RunnerCandidateResult>; steer?(message: string): Promise<void>; terminate(): Promise<void> }
 export interface Runner { readonly isolation: "process"; prepare(request: RunRequest): RunnerHandle; terminateProcess(pid: number, runnerProfileId?: string): Promise<void> }
@@ -166,6 +179,7 @@ export interface Ledger extends EventStore {
   wake(id: string): WakeSnapshot | null;
   wakeByTrigger(agent: string, triggerRef: string): WakeSnapshot | null;
   wakeTriggers(wakeId: string): WakeTriggerSnapshot[];
+  wakeTriggersForAgent(agent: string): WakeTriggerSnapshot[];
   queuedWakeForAgent(agent: string): WakeSnapshot | null;
   goalsForOwner(owner: string): GoalSnapshot[];
   goal(id: string): GoalSnapshot | null;

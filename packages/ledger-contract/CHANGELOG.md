@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Contract 0.11 adds durable sourced Wake triggers and transaction-safe trigger inspection.
+- Runner admission carries the authoritative Wake trigger snapshot, and Ledgers expose per-Agent trigger history for redelivery decisions.
 - Contract 0.10 removes Action/Connector types, adds the closed Schedule lifecycle, and separates Goal event data from private projection metadata.
 - Contract 0.9 defines the authoritative `GoalChangedData` envelope and Goal mutation provenance.
 - Replaced Wake-owned execution with Turn attempt/lease/PID/fencing, scheduling-only Wake states, `TurnOutput`, `RunnerCandidateResult`, and Action Turn provenance.

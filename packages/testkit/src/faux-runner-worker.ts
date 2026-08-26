@@ -18,7 +18,7 @@ await runProcessWorker(async (request, emit, rpc): Promise<RunnerCandidateResult
   if (process.env.GOAH_FAUX_CONTEXT_FILE) writeFileSync(process.env.GOAH_FAUX_CONTEXT_FILE, JSON.stringify(request.context));
   const byAgent = JSON.parse(process.env.GOAH_FAUX_STEPS_BY_AGENT ?? "{}") as Record<string, WorkerStep[]>;
   const byTrigger = JSON.parse(process.env.GOAH_FAUX_STEPS_BY_TRIGGER ?? "{}") as Record<string, WorkerStep[]>;
-  const triggerSteps = request.sourceWake ? Object.entries(byTrigger).find(([prefix]) => request.sourceWake!.triggerRef.startsWith(prefix))?.[1] : undefined;
+  const triggerSteps = Object.entries(byTrigger).find(([prefix]) => request.sourceWakeTriggers?.some((trigger) => trigger.triggerRef.startsWith(prefix)))?.[1];
   const steps = triggerSteps ?? byAgent[request.agent] ?? JSON.parse(process.env.GOAH_FAUX_STEPS ?? "[]") as WorkerStep[];
   let goalBinding = request.turn?.goalBinding;
   let recordUpdated = false;

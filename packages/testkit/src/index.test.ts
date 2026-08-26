@@ -236,6 +236,41 @@ test("crashed wake keeps emergency mail and local partial work for recovery", as
   ledger.close();
 });
 
+test("a coalesced recovery trigger preserves failure context and retry sequence",async()=>{
+  const clock=new SimulatedClock();
+  const ledger=createMemoryLedger({clock});
+  ledger.putGoal(goal(),"human");
+  const failed=testTurn(ledger,"worker","failed",{goalId:"root",goalRevision:0});
+  ledger.finishTurn(failed.id,"failed",{message:"original failure"},clock.now().toISOString(),"supervisor");
+  ledger.enqueueWake({...queuedWake("coalesced","worker","manual:continue"),goalId:"root",goalRevision:0},"supervisor");
+  ledger.addWakeTrigger("coalesced","recovery:failed:2","supervisor");
+  let request:RunRequest|undefined;
+  const runner:Runner={isolation:"process",prepare:(value)=>{request=value;return{pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"abnormal" as const,reason:"failed again"}),terminate:async()=>undefined}},terminateProcess:async()=>undefined};
+  const supervisor=new Supervisor(ledger,runner,clock,{turnRetryPolicy:{maxAttempts:1,baseDelayMs:0},retryPolicy:{maxAttempts:5,baseDelayMs:0}});
+  const wake=await supervisor.tick();
+  assert.match(JSON.stringify(request?.context),/original failure/);
+  assert.deepEqual(request?.sourceWakeTriggers?.map((trigger)=>trigger.triggerRef),["manual:continue","recovery:failed:2"]);
+  assert.equal(ledger.schedules().some((schedule)=>schedule.id===`recovery:${wake?.turnId}:3`),true);
+  ledger.close();
+});
+
+test("Mail redelivery advances past coalesced terminal trigger aliases",async()=>{
+  const clock=new SimulatedClock();
+  const ledger=createMemoryLedger({clock});
+  const terminal=(wakeId:string,primary:string,mailTrigger?:string)=>{ledger.enqueueWake(queuedWake(wakeId,"ceo",primary),"supervisor");if(mailTrigger)ledger.addWakeTrigger(wakeId,mailTrigger,"supervisor");ledger.cancelWake(wakeId,clock.now().toISOString());};
+  ledger.putMail({id:"decision",to:"ceo",from:"verifier",level:"decision",body:{},readAt:null},"verifier");
+  terminal("base","mail:decision");
+  terminal("alias-1","manual:1","mail:decision@redelivery:1");
+  terminal("alias-2","manual:2","mail:decision@redelivery:2");
+  let request:RunRequest|undefined;
+  const runner:Runner={isolation:"process",prepare:(value)=>{request=value;return{pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"response" as const,response:{content:"reviewed"}}),terminate:async()=>undefined}},terminateProcess:async()=>undefined};
+  const wake=await new Supervisor(ledger,runner,clock).tick();
+  assert.equal(wake?.status,"consumed");
+  assert.equal(ledger.unreadMail("ceo").length,0);
+  assert.equal(request?.sourceWakeTriggers?.some((trigger)=>trigger.triggerRef==="mail:decision@redelivery:3"),true);
+  ledger.close();
+});
+
 test("recovery kills the recorded runner before another wake can use its local root", async () => {
   const repo = repository();
   const clock = new SimulatedClock();

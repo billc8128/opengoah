@@ -77,6 +77,7 @@ test("Wake queue is FIFO, deduplicated, claimable, and linked to a Turn", () => 
   assert.equal(ledger.enqueueWake({ ...wake("duplicate", "a"), triggerRef: "trigger:zzz" }, "supervisor").created, false);
   ledger.addWakeTrigger("zzz","trigger:alias","supervisor");
   assert.equal(ledger.wakeByTrigger("a", "trigger:alias")?.id, "zzz");
+  assert.deepEqual(ledger.wakeTriggersForAgent("a").map((trigger)=>trigger.triggerRef),["trigger:zzz","trigger:alias"]);
   assert.equal(ledger.enqueueWake({ ...wake("alias", "a"), triggerRef: "trigger:alias" }, "supervisor").created, false);
   const first = ledger.claimNextWake("2030-01-01T00:00:00.000Z");
   assert.equal(first?.id, "zzz");

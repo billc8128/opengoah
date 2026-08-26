@@ -597,6 +597,7 @@ export class SqliteLedger implements Ledger {
     const row=this.db.prepare("SELECT w.* FROM wake_triggers t JOIN wakes w ON w.id=t.wake_id WHERE t.agent=? AND t.trigger_ref=?").get(agent,triggerRef) as Row|undefined;return row?mapWake(row):null;
   }
   wakeTriggers(wakeId:string):WakeTriggerSnapshot[]{return(this.db.prepare("SELECT * FROM wake_triggers WHERE wake_id=? ORDER BY rowid").all(wakeId) as Row[]).map(mapWakeTrigger);}
+  wakeTriggersForAgent(agent:string):WakeTriggerSnapshot[]{return(this.db.prepare("SELECT * FROM wake_triggers WHERE agent=? ORDER BY rowid").all(agent) as Row[]).map(mapWakeTrigger);}
   queuedWakeForAgent(agent: string): WakeSnapshot | null { const row = this.db.prepare("SELECT * FROM wakes WHERE agent=? AND status='queued' ORDER BY enqueued_seq LIMIT 1").get(agent) as Row | undefined; return row ? mapWake(row) : null; }
   goalsForOwner(owner: string): GoalSnapshot[] { return (this.db.prepare("SELECT * FROM goals WHERE owner=? ORDER BY id").all(owner) as Row[]).map(mapGoal); }
   goal(id: string): GoalSnapshot | null { return this.#getGoal(id); }
