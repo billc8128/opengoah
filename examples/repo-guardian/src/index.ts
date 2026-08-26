@@ -30,7 +30,8 @@ const supervisor = new Supervisor(ledger, runner, new class { now(): Date { retu
   }],
 });
 
-if (!ledger.goal("repo-health")) supervisor.createGoal({ id: "repo-health", parentId: null, objective: "Keep the repository tests green", observationMethod: "Run the configured repository test command with bash and inspect its fresh output.", verificationMethod: "Rerun the repository test command and cite the successful Tool Result.", owner: "guardian", phase: "active", revision: 0 });
+if (!ledger.goal("guardian-root")) supervisor.createRootGoal("Keep the repository healthy", "guardian-root");
+if (!ledger.goal("repo-health")) supervisor.createGoal({ id: "repo-health", parentId: "guardian-root", objective: "Keep the repository tests green", observationMethod: "Run the configured repository test command with bash and inspect its fresh output.", verificationMethod: "Rerun the repository test command and cite the successful Tool Result.", owner: "guardian", phase: "active", revision: 0 },"ceo");
 supervisor.planWake("guardian", new Date().toISOString(), "initial repository health check", "supervisor");
 
 if (process.argv.includes("--daemon")) {

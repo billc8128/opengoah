@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Inactive reassignment results may contain no Wake because paused/blocked Goals cannot schedule execution.
+
 - Contract 0.13 adds typed Mail Goal routing, removes all Handoff effect fields, and splits Team motion from lastOutcome.
 
 - Contract 0.12 makes Wake and Schedule revision-neutral while Turn admission owns the exact Goal revision fence.

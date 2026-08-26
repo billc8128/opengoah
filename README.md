@@ -101,7 +101,8 @@ The global CLI is the default product path: after installation, `goah` works fro
 The normal product flow is an ordinary CEO interaction. Greetings, questions, and bounded work do not create a Goal. Durable Human intent may be translated by CEO into `create_goal`, or created explicitly with `/goal`; from that point the Turn follows strict Goal, Work Record, observation, verification, and Handoff policy. Lower-level Goal controls remain available for inspection, extensions, and Human root authority:
 
 ```bash
-goah goal-create --id first-goal --owner worker --objective "Complete the first verified handoff" --observation-method "Inspect a fresh evidence-backed handoff" --wake-now
+goah goal-create --id root --owner ceo --objective "Coordinate the verified outcome"
+goah goal-create --id first-goal --parent root --owner worker --objective "Complete the first verified handoff" --observation-method "Inspect a fresh evidence-backed handoff" --wake-now
 goah goal-show first-goal
 goah goal-update first-goal --objective "Updated objective" --observation-method "Inspect evidence for the updated objective"
 goah goal-pause first-goal

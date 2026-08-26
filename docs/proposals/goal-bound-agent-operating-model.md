@@ -75,7 +75,7 @@ The change is not a move from a Goal-oriented system to a task-oriented Agent. I
 | Goal-driven organization | Every Child Agent still owns a Child Goal | Goah coordinates durable outcomes, not disposable task workers |
 | Observation method | Goal execution still defines how current reality is inspected | Separately reconstructed Turns must not silently change their source of truth |
 | Human root authority | Human still authorizes Root purpose and final completion | CEO may operationalize intent but cannot acquire authority by writing prose |
-| Atomic delegation and reassignment | Child Goal, ownership, communication, Work Record, and Wake commit together | A partially created organization is not recoverable or trustworthy |
+| Atomic delegation and reassignment | Child Goal, ownership, communication, and Work Record commit together; active Goals also commit the new owner's Wake, while inactive Goals remain dormant until resume | A partially created organization is not recoverable or trustworthy, and inactive Goals must not schedule impossible work |
 | Sliding lease, fencing, and kill-before-recovery | Turn owns Runner execution; Wake only schedules a future Goal Turn | Process failure and duplicate ownership remain control-plane problems without making Wake an execution identity |
 | Normalized Tool Call trace | Calls, results, and interrupted unknown outcomes remain Turn Items | Goah preserves inspectable execution without a duplicate Action aggregate |
 | Runner-owned execution and configuration | Provider/model registry, authentication, compaction, and local execution remain inside each Runner | Different Runners have different execution and provider semantics |
@@ -600,7 +600,7 @@ Normal completion requires:
 5. every cited evidence sequence exists;
 6. a valid Goal Handoff points to the resulting record revision.
 
-Failure produces a policy violation rather than a successful Goal Turn. Ordinary unbound Turns skip this gate.
+Failure produces a policy violation rather than a successful Goal Turn. CEO Human interactions and Verifier/Audit specialist Turns skip this gate; Child Agents have no unbound Turn class.
 
 ## 12. Goal Handoff
 
@@ -622,7 +622,7 @@ interface GoalHandoff {
 
 Agent supplies `outcome` and evidence. Supervisor injects Goal and record revisions, validates them, and commits the Handoff Item. Asynchronous Mail and future scheduling remain separate tool operations. A source Wake links to the Turn and is consumed; it is not the execution identity.
 
-Ordinary unbound Turns return a normal assistant response and do not create Goal Handoff.
+CEO Human interactions and Verifier/Audit specialist Turns return a normal assistant response and do not create Goal Handoff. Every Child Turn is Goal-bound.
 
 ## 13. Context construction
 
@@ -743,7 +743,7 @@ Hide by default:
 
 ## 18. Migration
 
-This development release has no external users, so schema v19 does not migrate earlier development schemas. Development workspaces are recreated. Mail has a typed optional Goal route, Wake and Schedule retain only `goalId`, and Turn admission binds the current active revision. Goal and Work Record semantics remain the target schema; authoritative Goal changes, private projection metadata, closed Schedule and Wake-trigger lifecycles, execution ownership, Goal-targeted scheduling, and conversation storage are replaced together.
+This development release has no external users, so schema v19 does not migrate earlier development schemas. Development workspaces are recreated. Mail has a typed optional Goal route, but Agent-to-Agent Mail requires it; only Human and specialist inbox facts may be unbound. Wake and Schedule retain only `goalId`, and Turn admission binds the current active revision. Goal and Work Record semantics remain the target schema; authoritative Goal changes, private projection metadata, closed Schedule and Wake-trigger lifecycles, execution ownership, Goal-targeted scheduling, and conversation storage are replaced together.
 
 ## 19. Implementation sequence
 

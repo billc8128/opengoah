@@ -26,11 +26,12 @@ const runner = new ProcessRunner({
   ]) },
 });
 const supervisor = new Supervisor(ledger, runner, clock);
+supervisor.createRootGoal("coordinate one durable artifact", "root");
 supervisor.createGoal({
-  id: "root", parentId: null, objective: "produce one durable artifact", observationMethod: "Inspect the runner output and handoff.", verificationMethod: "Confirm the handoff cites the created artifact.",
+  id: "artifact", parentId: "root", objective: "produce one durable artifact", observationMethod: "Inspect the runner output and handoff.", verificationMethod: "Confirm the handoff cites the created artifact.",
   owner: "worker", phase: "active", revision: 0,
-});
-supervisor.planWake("worker", clock.now().toISOString(), "initial plan");
+},"ceo");
+supervisor.planWake("worker", clock.now().toISOString(), "initial plan", "supervisor", { goalId:"artifact" });
 const wake = await supervisor.tick();
 console.log(JSON.stringify({ wake: wake?.status, runnerRoot: repo, events: ledger.events().length }, null, 2));
 ledger.close();

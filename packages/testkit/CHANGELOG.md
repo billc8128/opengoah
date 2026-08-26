@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Added Agent-owned decision tests for declarative outcomes, explicit Mail/Schedule effects, parent-targeted Mail, and admission-time Goal revision binding.
-- Added reachability tests for known unbound Agents, unknown recipient rejection, and inactive Schedule retirement.
+- Added execution-matrix coverage for Goal-only Child Turns, Root-only CEO ownership, specialist system Turns, Goal-routed Mail, scoped delivery, and inactive reassignment without motion.
 
 - Added conformance and regression coverage for scheduling-only Wakes, Turn-owned recovery, Human priority, Action provenance, reasoning Items, and canonical Transcript terminals.
 

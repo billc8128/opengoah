@@ -319,6 +319,7 @@ export class SqliteLedger implements Ledger {
       if (normalized.revision !== 0) throw new Error("new goal revision must be 0");
       this.#assertGoalAuthority(normalized.parentId, actor);
     }
+    this.#assertOwnerSeparation(normalized.id,normalized.parentId,normalized.owner);
     return this.#transaction(() => {
       const event = this.#recordGoalChange(normalized,current,actor,wakeId,change);
       if (!current) this.#createWorkRecord(normalized, actor, wakeId ?? `goal:create:${normalized.id}`, wakeId);
@@ -426,6 +427,7 @@ export class SqliteLedger implements Ledger {
     this.#assertGoalAuthority(current.parentId, actor);
     if (current.phase === "complete") throw new Error("completed goals cannot be reassigned");
     if (current.owner === request.newOwner) throw new Error("reassignment owner is unchanged");
+    this.#assertOwnerSeparation(current.id,current.parentId,request.newOwner);
 
     return this.#transaction(() => {
       const goal: GoalSnapshot = { ...current, owner: request.newOwner, revision: current.revision + 1 };
@@ -433,14 +435,12 @@ export class SqliteLedger implements Ledger {
         { id: `reassignment-old-mail:${request.id}`, to: current.owner, from: actor, level: "fyi", body: { type: "reassignment", reassignmentId: request.id, goalId: goal.id, role: "previous_owner", reason: request.reason, evidence: request.evidence }, readAt: null },
         { id: `reassignment-new-mail:${request.id}`, to: goal.owner, from: actor, level: "decision", goalId:goal.id, body: { type: "reassignment", reassignmentId: request.id, role: "new_owner", brief: request.brief, reason: request.reason, evidence: request.evidence }, readAt: null },
       ];
-      const wakeBase: WakeSnapshot = goal.phase === "active"
-        ? { id: `reassignment-wake:${request.id}`, agent: goal.owner, triggerRef: `reassignment:${request.id}`, status: "queued", attempt: 0, enqueuedSeq: 0, claimedAt: null, consumedAt: null, turnId: null, goalId: goal.id }
-        : { id: `reassignment-wake:${request.id}`, agent: goal.owner, triggerRef: `mail:${mail[1]!.id}`, status: "queued", attempt: 0, enqueuedSeq: 0, claimedAt: null, consumedAt: null, turnId: null };
-      this.#insertEvent({ streamId: wakeId ? wakeStream(wakeId) : controlStream("reassignments"), ts: this.#now(), actor, type: "goal.reassigned", data: { reassignmentId: request.id, goalId: goal.id, oldOwner: current.owner, newOwner: goal.owner, mailIds: mail.map((item) => item.id), wakeId: wakeBase.id, reason: request.reason, evidence: request.evidence,request:withoutSourceTurn(request) as unknown as JsonValue } });
+      const wakeBase: WakeSnapshot | null = goal.phase === "active" ? { id: `reassignment-wake:${request.id}`, agent: goal.owner, triggerRef: `reassignment:${request.id}`, status: "queued", attempt: 0, enqueuedSeq: 0, claimedAt: null, consumedAt: null, turnId: null, goalId: goal.id } : null;
+      this.#insertEvent({ streamId: wakeId ? wakeStream(wakeId) : controlStream("reassignments"), ts: this.#now(), actor, type: "goal.reassigned", data: { reassignmentId: request.id, goalId: goal.id, oldOwner: current.owner, newOwner: goal.owner, mailIds: mail.map((item) => item.id), wakeId: wakeBase?.id ?? null, reason: request.reason, evidence: request.evidence,request:withoutSourceTurn(request) as unknown as JsonValue } });
       this.#faultInjector?.("after_reassignment_event");
       this.#recordGoalChange(goal,current,actor,wakeId,{operation:"reassign",reason:request.reason,evidence:request.evidence,authority:{kind:"parent_goal",goalId:current.parentId!,goalRevision:this.#getGoal(current.parentId!)!.revision},...(request.sourceTurnId?{sourceTurnId:request.sourceTurnId}:{}),...(wakeId?{sourceWakeId:wakeId}:{}),idempotencyKey:request.id});
       for (const item of mail){this.#assertNewMail(item,actor);this.#recordProjection("mailbox", item, actor, "mail.put", wakeId);}
-      const wake=this.#admitWake(wakeBase,"supervisor",false).wake;
+      const wake=wakeBase?this.#admitWake(wakeBase,"supervisor",false).wake:null;
       return { reassignmentId: request.id, goal, mail, wake };
     });
   }
@@ -644,9 +644,9 @@ export class SqliteLedger implements Ledger {
   #reassignmentResult(id: string): ReassignmentResult | null {
     const row = this.db.prepare("SELECT data,actor FROM events WHERE type='goal.reassigned' AND json_extract(data,'$.reassignmentId')=? ORDER BY seq LIMIT 1").get(id) as { data: string;actor:string } | undefined;
     if (!row) return null;
-    const data = JSON.parse(row.data) as { goalId: string; mailIds: string[]; wakeId: string };
-    const goal=this.#goalChangeSnapshot(id,row.actor);const mail=data.mailIds.map((mailId)=>{const value=this.#eventSnapshot<MailSnapshot>("mail.put",mailId);if(!value)throw new Error("committed reassignment mail is missing");return value;});const wake=this.#eventSnapshot<WakeSnapshot>("wake.enqueued",data.wakeId);
-    if (!goal || !wake) throw new Error("committed reassignment facts are incomplete");
+    const data = JSON.parse(row.data) as { goalId: string; mailIds: string[]; wakeId: string | null };
+    const goal=this.#goalChangeSnapshot(id,row.actor);const mail=data.mailIds.map((mailId)=>{const value=this.#eventSnapshot<MailSnapshot>("mail.put",mailId);if(!value)throw new Error("committed reassignment mail is missing");return value;});const wake=data.wakeId?this.#eventSnapshot<WakeSnapshot>("wake.enqueued",data.wakeId):null;
+    if (!goal || data.wakeId&&!wake) throw new Error("committed reassignment facts are incomplete");
     return { reassignmentId: id, goal, mail, wake };
   }
 
@@ -696,6 +696,8 @@ export class SqliteLedger implements Ledger {
     if (!parent) throw new Error("parent goal does not exist");
     if (parent.owner !== actor) throw new Error("only the parent goal owner may modify a child goal");
   }
+
+  #assertOwnerSeparation(goalId:string,parentId:string|null,owner:string):void{if(parentId&&this.#getGoal(parentId)?.owner===owner)throw new Error("parent and child Goals require distinct owners");if(this.goals().some((goal)=>goal.parentId===goalId&&goal.owner===owner))throw new Error("parent and child Goals require distinct owners");}
 
   #hasNonCompleteDescendant(goalId: string): boolean {
     return Boolean(this.db.prepare(`WITH RECURSIVE descendants(id) AS (

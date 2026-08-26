@@ -78,7 +78,7 @@ export interface ReassignmentRequest {
   evidence: number[];
   sourceTurnId?:string;
 }
-export interface ReassignmentResult { reassignmentId: string; goal: GoalSnapshot; mail: MailSnapshot[]; wake: WakeSnapshot }
+export interface ReassignmentResult { reassignmentId: string; goal: GoalSnapshot; mail: MailSnapshot[]; wake: WakeSnapshot | null }
 export interface GoalCompletionRequest { goalId: string; revision: number; reason: string; evidence: number[];sourceTurnId?:string }
 export type TeamMemberMotion = "running" | "queued" | "scheduled" | "idle" | "retired";
 export interface TeamMemberView {

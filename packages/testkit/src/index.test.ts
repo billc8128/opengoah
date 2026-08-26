@@ -11,7 +11,8 @@ import { calibrateVerificationThreshold, evaluateVerification, ProcessVerifierMo
 import { assertLedgerConformance, createMemoryLedger, fauxRunnerWorkerPath, SimulatedClock } from "./index.js";
 
 function queuedWake(id: string, agent = "worker", triggerRef = `trigger:${id}`): WakeSnapshot { return { id, agent, triggerRef, status: "queued", attempt: 0, enqueuedSeq: 0, claimedAt:null,consumedAt:null,turnId:null }; }
-function goal(): GoalSnapshot { return { id: "root", parentId: null, objective: "produce a checked artifact", observationMethod: null, verificationMethod: null, owner: "worker", phase: "active", revision: 0 }; }
+function goal(): GoalSnapshot { return { id: "root", parentId: "parent", objective: "produce a checked artifact", observationMethod: "Inspect the produced artifact.", verificationMethod: "Verify the produced artifact.", owner: "worker", phase: "active", revision: 0 }; }
+function createWorkerGoal(ledger:ReturnType<typeof createMemoryLedger>):GoalSnapshot{if(!ledger.goal("parent"))ledger.putGoal({id:"parent",parentId:null,objective:"coordinate worker",observationMethod:null,verificationMethod:null,owner:"ceo",phase:"active",revision:0},"human");if(!ledger.goal("root"))ledger.putGoal(goal(),"ceo");return ledger.goal("root")!;}
 function event(actor: string, type: string, data: JsonValue = {}, turnId?: string): EventInput { return { streamId: turnId ? wakeStream(turnId) : controlStream(actor), ts: "2026-08-18T00:00:00.000Z", actor, type, data }; }
 function repository(): string {
   const path = mkdtempSync(join(tmpdir(), "goah-runner-root-"));
@@ -34,8 +35,8 @@ test("vertical slice commits handoff while the runner owns local files", async (
     { handoff: { handoff: { outcome:"progress", evidence:[1] } } },
   ], contextFile, repo);
   const supervisor = new Supervisor(ledger, runner, clock);
-  supervisor.createGoal(goal());
-  ledger.putMail({ id: "mail-1", to: "worker", from: "human", level: "decision", body: {}, readAt: null }, "human");
+  createWorkerGoal(ledger);
+  ledger.putMail({ id: "mail-1", to: "worker", from: "ceo", level: "decision", goalId:"root", body: {}, readAt: null }, "ceo");
   supervisor.planWake("worker", clock.now().toISOString(), "initial run");
   const completed = await supervisor.tick();
   assert.equal(completed?.status, "consumed");
@@ -174,7 +175,7 @@ test("a Goal-bound Turn cannot hand off without updating its Work Record", async
     terminateProcess: async () => undefined,
   };
   const supervisor = new Supervisor(ledger, runner, clock);
-  supervisor.createGoal(goal());
+  createWorkerGoal(ledger);
   supervisor.planWake("worker", clock.now().toISOString(), "missing record update");
   const wake = await supervisor.tick();
   assert.equal(wake?.status, "consumed");
@@ -199,7 +200,7 @@ test("automatic Goal rounds advance from the Work Record timeline", async () => 
   const clock = new SimulatedClock();
   const ledger = createMemoryLedger({ clock });
   const supervisor = new Supervisor(ledger, fauxRunner([{ handoff: { handoff: { outcome:"progress", evidence:[1] } } }]), clock);
-  supervisor.createGoal(goal());
+  createWorkerGoal(ledger);
   for (let round = 1; round <= 2; round += 1) {
     supervisor.planWake("worker", clock.now().toISOString(), `round-${round}`);
     assert.equal((await supervisor.tick())?.status, "consumed");
@@ -215,9 +216,9 @@ test("crashed wake keeps emergency mail and local partial work for recovery", as
   const clock = new SimulatedClock();
   const ledger = createMemoryLedger({ clock });
   const crashing = fauxRunner([{ write: { path: "partial.txt", content: "keep\n" } }, { crash: "boom" }], undefined, repo);
-  const first = new Supervisor(ledger, crashing, clock);
-  first.createGoal(goal());
-  ledger.putMail({ id: "urgent", to: "worker", from: "human", level: "emergency",goalId:"root", body: { alert: true }, readAt: null }, "human");
+  const first = new Supervisor(ledger, crashing, clock,{retryPolicy:{maxAttempts:2,baseDelayMs:60_000}});
+  createWorkerGoal(ledger);
+  ledger.putMail({ id: "urgent", to: "worker", from: "ceo", level: "emergency",goalId:"root", body: { alert: true }, readAt: null }, "ceo");
   first.planWake("worker", clock.now().toISOString(), "crash");
   const abnormal = await first.tick();
   assert.equal(abnormal?.status, "consumed");assert.equal(ledger.turn(abnormal!.turnId!)?.status,"failed");
@@ -240,7 +241,7 @@ test("crashed wake keeps emergency mail and local partial work for recovery", as
 test("a coalesced recovery trigger preserves failure context and retry sequence",async()=>{
   const clock=new SimulatedClock();
   const ledger=createMemoryLedger({clock});
-  ledger.putGoal(goal(),"human");
+  createWorkerGoal(ledger);
   const failed=testTurn(ledger,"worker","failed",{goalId:"root",goalRevision:0});
   ledger.finishTurn(failed.id,"failed",{message:"original failure"},clock.now().toISOString(),"supervisor");
   ledger.enqueueWake({...queuedWake("coalesced","worker","manual:continue"),goalId:"root"},"supervisor");
@@ -258,16 +259,17 @@ test("a coalesced recovery trigger preserves failure context and retry sequence"
 test("Mail redelivery advances past coalesced terminal trigger aliases",async()=>{
   const clock=new SimulatedClock();
   const ledger=createMemoryLedger({clock});
-  const terminal=(wakeId:string,primary:string,mailTrigger?:string)=>{ledger.enqueueWake(queuedWake(wakeId,"ceo",primary),"supervisor");if(mailTrigger)ledger.addWakeTrigger(wakeId,mailTrigger,"supervisor");ledger.cancelWake(wakeId,clock.now().toISOString());};
-  ledger.putMail({id:"decision",to:"ceo",from:"verifier",level:"decision",body:{},readAt:null},"verifier");
+  ledger.putGoal({id:"root",parentId:null,objective:"root",observationMethod:"observe",verificationMethod:"verify",owner:"ceo",phase:"active",revision:0},"human");
+  const terminal=(wakeId:string,primary:string,mailTrigger?:string)=>{ledger.enqueueWake({...queuedWake(wakeId,"ceo",primary),goalId:"root"},"supervisor");if(mailTrigger)ledger.addWakeTrigger(wakeId,mailTrigger,"supervisor");ledger.cancelWake(wakeId,clock.now().toISOString());};
+  ledger.putMail({id:"decision",to:"ceo",from:"verifier",level:"decision",goalId:"root",body:{},readAt:null},"verifier");
   terminal("base","mail:decision");
   terminal("alias-1","manual:1","mail:decision@redelivery:1");
   terminal("alias-2","manual:2","mail:decision@redelivery:2");
   let request:RunRequest|undefined;
-  const runner:Runner={isolation:"process",prepare:(value)=>{request=value;return{pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"response" as const,response:{content:"reviewed"}}),terminate:async()=>undefined}},terminateProcess:async()=>undefined};
-  const wake=await new Supervisor(ledger,runner,clock).tick();
+  const runner:Runner={isolation:"process",prepare:(value)=>{request=value;return{pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"abnormal" as const,reason:"captured"}),terminate:async()=>undefined}},terminateProcess:async()=>undefined};
+  const wake=await new Supervisor(ledger,runner,clock,{turnRetryPolicy:{maxAttempts:1,baseDelayMs:0}}).tick();
   assert.equal(wake?.status,"consumed");
-  assert.equal(ledger.unreadMail("ceo").length,0);
+  assert.equal(ledger.unreadMail("ceo").length,1);
   assert.equal(request?.sourceWakeTriggers?.some((trigger)=>trigger.triggerRef==="mail:decision@redelivery:3"),true);
   ledger.close();
 });
@@ -316,7 +318,7 @@ test("supervisor leaves Git history decisions to the runner", async () => {
   ], undefined, repo);
   const head = git(repo, ["rev-parse", "HEAD"]);
   const supervisor = new Supervisor(ledger, runner, clock);
-  supervisor.createGoal(goal()); supervisor.planWake("worker", clock.now().toISOString(), "local edit");
+  createWorkerGoal(ledger); supervisor.planWake("worker", clock.now().toISOString(), "local edit");
   assert.equal((await supervisor.tick())?.status, "consumed");
   assert.equal(readFileSync(join(repo, "README.md"), "utf8"), "worker change\n");
   assert.equal(git(repo, ["rev-parse", "HEAD"]), head);
@@ -328,11 +330,11 @@ test("schedule and mail triggers are durable and coalesced", async () => {
   const clock = new SimulatedClock();
   const ledger = createMemoryLedger({ clock });
   const supervisor = new Supervisor(ledger, fauxRunner([{ handoff: { handoff: { outcome:"progress", evidence:[1] } } }]), clock);
-  supervisor.createGoal(goal());
-  ledger.putMail({ id: "decision", to: "worker", from: "human", level: "decision", body: {}, readAt: null }, "human");
+  createWorkerGoal(ledger);
+  ledger.putMail({ id: "decision", to: "worker", from: "ceo", level: "decision", goalId:"root", body: {}, readAt: null }, "ceo");
   supervisor.planWake("worker", clock.now().toISOString(), "scheduled");
   await supervisor.tick();
-  assert.equal(ledger.wakes().filter((wake) => wake.agent === "worker").length, 2);
+  assert.equal(ledger.wakes().filter((wake) => wake.agent === "worker").length, 1);
   assert.equal(ledger.events().some((event) => event.type === "wake_trigger.added"), true);
   ledger.close();
 });
@@ -345,7 +347,7 @@ test("supervisor renews a live runner lease instead of treating duration as a ta
     { handoff: { handoff: { outcome:"progress", evidence:[1] } } },
   ]);
   const supervisor = new Supervisor(ledger, runner, clock, { leaseMs: 60 });
-  supervisor.createGoal(goal()); supervisor.planWake("worker", clock.now().toISOString(), "renew lease");
+  createWorkerGoal(ledger); supervisor.planWake("worker", clock.now().toISOString(), "renew lease");
   assert.equal((await supervisor.tick())?.status, "consumed");
   assert.equal(ledger.events().some((event) => event.type === "turn.in_progress"), true);
   ledger.close();
@@ -355,7 +357,7 @@ test("verification plane records findings and reports calibrated quality", async
   const clock = new SimulatedClock();
   const ledger = createMemoryLedger({ clock });
   const supervisor = new Supervisor(ledger, fauxRunner([]), clock);
-  supervisor.createGoal(goal());
+  createWorkerGoal(ledger);
   const evidence = ledger.appendEvent({ ...event("worker", "tool.fact", { value: 1 }, "w"), ts: clock.now().toISOString() });
   const verifyTurn=testTurn(ledger,"worker","w");ledger.finishTurn(verifyTurn.id,"completed",null,clock.now().toISOString(),"supervisor");
   ledger.appendEvent({ ...event("worker", "handoff.recorded", {goalId:"root",goalRevision:0,recordRevision:1,outcome:"progress",evidence:[evidence.seq]}, "w"), ts: clock.now().toISOString() });
@@ -390,7 +392,7 @@ test("Verification Mail reaches the next Human Turn and is acknowledged on succe
 
 test("Human context delivers Mail in bounded FIFO batches",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});let context:JsonValue=null;const runner:Runner={isolation:"process",prepare:(request)=>{context=request.context;return{pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"response" as const,response:{content:"ok"}}),terminate:async()=>undefined}},terminateProcess:async()=>undefined};const supervisor=new Supervisor(ledger,runner,clock);for(let index=0;index<25;index+=1)ledger.putMail({id:`m${index}`,to:"ceo",from:"human",level:"fyi",body:{message:`mail-${index}`},readAt:null},"human");const turn=await supervisor.startHumanTurn("review inbox");while(ledger.turn(turn.turnId)?.status==="in_progress")await new Promise((resolve)=>setImmediate(resolve));assert.match(JSON.stringify(context),/mail-0/);assert.doesNotMatch(JSON.stringify(context),/mail-24/);assert.equal(ledger.unreadMail("ceo").length,5);ledger.close();});
 
-test("a resolved Human trigger cannot authorize a Wake preserved for another source",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const sources:RunRequest["turn"][]=[];const contexts:JsonValue[]=[];const runner:Runner={isolation:"process",prepare:(request)=>{sources.push(request.turn);contexts.push(request.context);return{pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"response" as const,response:{content:"ok"}}),terminate:async()=>undefined}},terminateProcess:async()=>undefined};const supervisor=new Supervisor(ledger,runner,clock);ledger.putMail({id:"human-mail",to:"ceo",from:"human",level:"decision",body:{},readAt:null},"human");for(let index=0;index<19;index+=1)ledger.putMail({id:`fyi-${index}`,to:"ceo",from:"supervisor",level:"fyi",body:{index},readAt:null},"supervisor");ledger.putMail({id:"remaining",to:"ceo",from:"verifier",level:"decision",body:{},readAt:null},"verifier");ledger.enqueueWake({...queuedWake("mixed","ceo","mail:human-mail")},"supervisor");ledger.addWakeTrigger("mixed","mail:remaining","supervisor");const human=await supervisor.startHumanTurn("review first batch");while(ledger.turn(human.turnId)?.status==="in_progress")await new Promise((resolve)=>setImmediate(resolve));assert.deepEqual(ledger.wakeTriggers("mixed").map((trigger)=>[trigger.triggerRef,trigger.status]),[["mail:human-mail","resolved"],["mail:remaining","pending"]]);await supervisor.tick();assert.equal(sources[1]?.source.kind,"system");assert.match(JSON.stringify(contexts[1]),/mail:remaining/);assert.doesNotMatch(JSON.stringify(contexts[1]),/mail:human-mail/);ledger.close();});
+test("a remaining unbound system trigger cannot open a Primary Agent Turn",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const sources:RunRequest["turn"][]=[];const runner:Runner={isolation:"process",prepare:(request)=>{sources.push(request.turn);return{pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"response" as const,response:{content:"ok"}}),terminate:async()=>undefined}},terminateProcess:async()=>undefined};const supervisor=new Supervisor(ledger,runner,clock);ledger.putMail({id:"human-mail",to:"ceo",from:"human",level:"decision",body:{},readAt:null},"human");for(let index=0;index<19;index+=1)ledger.putMail({id:`fyi-${index}`,to:"ceo",from:"supervisor",level:"fyi",body:{index},readAt:null},"supervisor");ledger.putMail({id:"remaining",to:"ceo",from:"verifier",level:"decision",body:{},readAt:null},"verifier");ledger.enqueueWake({...queuedWake("mixed","ceo","mail:human-mail")},"supervisor");ledger.addWakeTrigger("mixed","mail:remaining","supervisor");const human=await supervisor.startHumanTurn("review first batch");while(ledger.turn(human.turnId)?.status==="in_progress")await new Promise((resolve)=>setImmediate(resolve));assert.deepEqual(ledger.wakeTriggers("mixed").map((trigger)=>[trigger.triggerRef,trigger.status]),[["mail:human-mail","resolved"],["mail:remaining","pending"]]);const wake=await supervisor.tick();assert.equal(wake?.status,"cancelled");assert.equal(sources.length,1);assert.equal(ledger.unreadMail("ceo").some((mail)=>mail.id==="remaining"),true);ledger.close();});
 
 test("two agents run concurrently while CEO context and dashboard see the organization", async () => {
   const clock = new SimulatedClock();
@@ -426,7 +428,7 @@ test("accelerated 30-day soak keeps wake context bounded and projections replaya
   const ledger = createMemoryLedger({ clock });
   const contextFile = join(mkdtempSync(join(tmpdir(), "goah-soak-")), "context.json");
   const supervisor = new Supervisor(ledger, fauxRunner([{ handoff: { handoff: { outcome:"progress", evidence:[1] } } }], contextFile), clock);
-  supervisor.createGoal(goal());
+  createWorkerGoal(ledger);
   for (let day = 0; day < 30; day += 1) {
     supervisor.planWake("worker", clock.now().toISOString(), `day-${day}`);
     assert.equal((await supervisor.tick())?.status, "consumed");
@@ -451,7 +453,7 @@ test("official Pi agent core worker completes a structured handoff through the p
     GOAH_PI_FAUX_HANDOFF: JSON.stringify({ outcome:"progress" }),
   } });
   const supervisor = new Supervisor(ledger, runner, clock);
-  supervisor.createGoal(goal()); supervisor.planWake("worker", clock.now().toISOString(), "pi integration");
+  createWorkerGoal(ledger); supervisor.planWake("worker", clock.now().toISOString(), "pi integration");
   assert.equal((await supervisor.tick())?.status, "consumed");
   const started = ledger.events().find((event) => event.type === "transcript.started");
   assert.equal((started?.data as { formatVersion?: number }).formatVersion, 1);
@@ -462,7 +464,7 @@ test("official Pi agent core worker completes a structured handoff through the p
   assert.equal(prepared.tools?.some((tool) => tool.name === "ledger_search"), true);
   for (const name of ["read", "write", "edit", "bash", "handoff", "work_record_update"]) assert.equal(prepared.tools?.some((tool) => tool.name === name), true, name);
   assert.equal(prepared.tools?.some((tool) => tool.name === "memory_append"), false);
-  assert.deepEqual(ledger.lastEvent("worker", "handoff.recorded")?.data, { goalId: "root", goalRevision: 0, recordRevision: 1, outcome: "progress", evidence: [2] });
+  const handoff=ledger.lastEvent("worker","handoff.recorded")?.data as {goalId?:unknown;goalRevision?:unknown;recordRevision?:unknown;outcome?:unknown;evidence?:unknown[]};assert.deepEqual({goalId:handoff.goalId,goalRevision:handoff.goalRevision,recordRevision:handoff.recordRevision,outcome:handoff.outcome},{goalId:"root",goalRevision:0,recordRevision:1,outcome:"progress"});assert.equal((handoff.evidence??[]).length,1);
   ledger.close();
 });
 
@@ -494,12 +496,12 @@ test("bidirectional runner RPC applies child capabilities and rejects parent-onl
   const seed = ledger.appendEvent({ ...event("worker", "fact", { text: "rpcseed" }), ts: clock.now().toISOString() });
   const runner = fauxRunner([
     { rpc: { method: "ledger.search", params: { query: "rpcseed" } } },
-    { rpc: { method: "mail.send", params: { to: "ceo", level: "fyi", body: { message: "working" } } } },
+    { rpc: { method: "mail.send", params: { to: "ceo", goalId:"parent", level: "fyi", body: { message: "working" } } } },
     { rpc: { method: "schedule.set", params: { at: "2026-08-20T00:00:00.000Z", reason: "continue" } } },
     { handoff: { handoff: { outcome:"progress", evidence:[1] } } },
   ]);
   const supervisor = new Supervisor(ledger, runner, clock, { profiles: [{ agent: "worker", role: "child" }] });
-  supervisor.createGoal(goal()); supervisor.planWake("worker", clock.now().toISOString(), "rpc");
+  createWorkerGoal(ledger); supervisor.planWake("worker", clock.now().toISOString(), "rpc");
   assert.equal((await supervisor.tick())?.status, "consumed");
   assert.equal(ledger.mailbox().some((mail) => mail.to === "ceo"), true);
   assert.equal(ledger.schedules().find((schedule)=>schedule.reason==="continue")?.nextWakeAt, "2026-08-20T00:00:00.000Z");
@@ -518,7 +520,7 @@ test("legacy Goal memory remains readable while Goal Agents write Work Records i
   const ledger = createMemoryLedger({ clock });
   const staleNote = `legacy survey: ${"x".repeat(500)}`;
   const supervisor = new Supervisor(ledger, fauxRunner([]), clock, { memoryTailChars: 200 });
-  supervisor.createGoal(goal());
+  createWorkerGoal(ledger);
   ledger.appendEvent({ streamId: "memory:worker", ts: clock.now().toISOString(), actor: "worker", type: "memory.appended", data: { note: staleNote, turnId: "legacy-1" } });
   ledger.appendEvent({ streamId: "memory:worker", ts: clock.now().toISOString(), actor: "worker", type: "memory.appended", data: { note: "integration tests fake-fail when the clock is mocked; approach A rejected: metric freshness window", turnId: "legacy-2" } });
   const memoryEvents = ledger.readStream(`memory:worker`).filter((item) => item.type === "memory.appended");
@@ -587,27 +589,33 @@ test("Supervisor accepts a valid declarative CEO Handoff without inventing organ
   ledger.close();
 });
 
-test("all Goal Handoff outcomes are declarative and have no implicit effects",async()=>{for(const outcome of ["progress","waiting","blocked","completion_proposed"] as const){const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const supervisor=new Supervisor(ledger,fauxRunner([{handoff:{handoff:{outcome,evidence:[1]}}}]),clock);supervisor.createGoal(goal());supervisor.planWake("worker",clock.now().toISOString(),outcome);const wake=await supervisor.tick();assert.equal(ledger.turn(wake!.turnId!)?.status,"completed");assert.equal(ledger.goal("root")?.phase,"active");assert.equal(ledger.mailbox().length,0);assert.equal(ledger.schedules().filter((schedule)=>schedule.status==="pending").length,0);assert.equal(ledger.wakes().length,1);assert.deepEqual(supervisor.teamList().map((member)=>[member.motion,member.lastOutcome]),[["idle",outcome]]);ledger.close();}});
+test("all Goal Handoff outcomes are declarative and have no implicit effects",async()=>{for(const outcome of ["progress","waiting","blocked","completion_proposed"] as const){const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const supervisor=new Supervisor(ledger,fauxRunner([{handoff:{handoff:{outcome,evidence:[1]}}}]),clock);createWorkerGoal(ledger);supervisor.planWake("worker",clock.now().toISOString(),outcome);const wake=await supervisor.tick();assert.equal(ledger.turn(wake!.turnId!)?.status,"completed");assert.equal(ledger.goal("root")?.phase,"active");assert.equal(ledger.mailbox().length,0);assert.equal(ledger.schedules().filter((schedule)=>schedule.status==="pending").length,0);assert.equal(ledger.wakes().length,1);assert.equal(supervisor.teamList().find((member)=>member.agent==="worker")?.lastOutcome,outcome);ledger.close();}});
 
-test("ordinary Mail body fields cannot create a Goal route and an unbound recipient can reply",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});ledger.putGoal({id:"root",parentId:null,objective:"root",observationMethod:"o",verificationMethod:"v",owner:"ceo",phase:"active",revision:0},"human");ledger.putMail({id:"body-route",to:"ceo",from:"worker",level:"decision",body:{goalId:"root"},readAt:null},"worker");let binding:unknown="unset";const runner:Runner={isolation:"process",prepare:(request)=>{binding=request.turn.goalBinding;return{pid:null,begin:()=>undefined,result:(async()=>{await request.rpc!("mail.send",{to:"worker",level:"fyi",body:{reply:"seen"}});return{outcome:"response" as const,response:{content:"not routed"}}})(),terminate:async()=>undefined}},terminateProcess:async()=>undefined};await new Supervisor(ledger,runner,clock,{profiles:[{agent:"worker",role:"child"}]}).tick();assert.equal(binding,undefined);assert.equal(ledger.unreadMail("worker").some((mail)=>(mail.body as {reply?:string}).reply==="seen"),true);ledger.close();});
+test("unrouted Agent Mail remains in the inbox and never opens an Agent Turn",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});createWorkerGoal(ledger);ledger.putMail({id:"to-child",to:"worker",from:"ceo",level:"decision",body:{message:"not routed"},readAt:null},"ceo");ledger.putMail({id:"to-ceo",to:"ceo",from:"worker",level:"decision",body:{message:"not routed"},readAt:null},"worker");let prepared=false;const runner:Runner={isolation:"process",prepare:()=>{prepared=true;return{pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"response" as const,response:{content:"unexpected"}}),terminate:async()=>undefined}},terminateProcess:async()=>undefined};assert.equal(await new Supervisor(ledger,runner,clock,{profiles:[{agent:"worker",role:"child"}]}).tick(),null);assert.equal(prepared,false);assert.equal(ledger.turns().length,0);assert.equal(ledger.unreadMail("worker").length,1);assert.equal(ledger.unreadMail("ceo").length,1);ledger.close();});
 
-test("ordinary decision Mail wakes a known non-CEO Agent without an active Goal",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const now=clock.now().toISOString();ledger.putThread({id:"ceo-thread",agent:"ceo",parentThreadId:null,createdAt:now,updatedAt:now},"supervisor");ledger.putThread({id:"worker-thread",agent:"worker",parentThreadId:"ceo-thread",createdAt:now,updatedAt:now},"supervisor");ledger.putMail({id:"general",to:"worker",from:"ceo",level:"decision",body:{message:"inspect"},readAt:null},"ceo");let binding:unknown="unset";const runner:Runner={isolation:"process",prepare:(request)=>{binding=request.turn.goalBinding;return{pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"response" as const,response:{content:"seen"}}),terminate:async()=>undefined}},terminateProcess:async()=>undefined};const wake=await new Supervisor(ledger,runner,clock,{profiles:[{agent:"worker",role:"child"}]}).tick();assert.equal(wake?.status,"consumed");assert.equal(binding,undefined);assert.equal(ledger.unreadMail("worker").length,0);ledger.close();});
+test("a forged unbound Child Wake is cancelled before Runner admission",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});createWorkerGoal(ledger);ledger.enqueueWake(queuedWake("unbound-child","worker","manual:invalid"),"supervisor");let prepared=false;const runner:Runner={isolation:"process",prepare:()=>{prepared=true;throw new Error("must not run")},terminateProcess:async()=>undefined};const wake=await new Supervisor(ledger,runner,clock,{profiles:[{agent:"worker",role:"child"}]}).tick();assert.equal(wake?.status,"cancelled");assert.equal(prepared,false);assert.equal(ledger.turns().length,0);ledger.close();});
 
-test("official Pi gives the default unbound system Mail Turn one non-Goal prompt",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const now=clock.now().toISOString();ledger.putThread({id:"ceo-thread",agent:"ceo",parentThreadId:null,createdAt:now,updatedAt:now},"supervisor");ledger.putThread({id:"worker-thread",agent:"worker",parentThreadId:"ceo-thread",createdAt:now,updatedAt:now},"supervisor");ledger.putMail({id:"general-pi",to:"worker",from:"ceo",level:"decision",body:{message:"inspect"},readAt:null},"ceo");const runner=new ProcessRunner({command:process.execPath,args:[piWorkerPath()],env:{GOAH_PI_PROVIDER:"faux",GOAH_PI_MODEL:"faux-goah",GOAH_PI_FAUX_RESPONSE:"seen"}});const wake=await new Supervisor(ledger,runner,clock,{profiles:[{agent:"worker",role:"child"}]}).tick();const prepared=ledger.readStream(`turn:${wake!.turnId}`).find((event)=>event.type==="request.prepared")?.data as {systemPrompt?:unknown};const prompt=String(prepared.systemPrompt??"");assert.match(prompt,/durable Mail or system trigger/);assert.match(prompt,/has no Goal binding/);assert.match(prompt,/do not call handoff/);assert.doesNotMatch(prompt,/Own the assigned Child Goal|Respond normally to the Human|after a binding is established/);ledger.close();});
+test("Verifier retains the explicit unbound specialist execution path",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});ledger.enqueueWake(queuedWake("verify","verifier","verification:turn"),"supervisor");let source="";const runner:Runner={isolation:"process",prepare:(request)=>{source=request.turn.source.kind;return{pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"response" as const,response:{content:"verified"}}),terminate:async()=>undefined}},terminateProcess:async()=>undefined};const wake=await new Supervisor(ledger,runner,clock,{profiles:[{agent:"verifier",role:"verifier"}]}).tick();assert.equal(wake?.status,"consumed");assert.equal(source,"system");assert.equal(ledger.turn(wake!.turnId!)?.goalId,null);ledger.close();});
 
-test("official Pi preserves a custom Agent prompt while enforcing the unbound output protocol",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const now=clock.now().toISOString();ledger.putThread({id:"ceo-thread",agent:"ceo",parentThreadId:null,createdAt:now,updatedAt:now},"supervisor");ledger.putThread({id:"worker-thread",agent:"worker",parentThreadId:"ceo-thread",createdAt:now,updatedAt:now},"supervisor");ledger.putMail({id:"custom-pi",to:"worker",from:"ceo",level:"decision",body:{message:"inspect"},readAt:null},"ceo");const runner=new ProcessRunner({command:process.execPath,args:[piWorkerPath()],env:{GOAH_PI_PROVIDER:"faux",GOAH_PI_MODEL:"faux-goah",GOAH_PI_FAUX_RESPONSE:"seen"}});const wake=await new Supervisor(ledger,runner,clock,{profiles:[{agent:"worker",role:"child",systemPrompt:"Keep the configured worker identity."}]}).tick();const prepared=ledger.readStream(`turn:${wake!.turnId}`).find((event)=>event.type==="request.prepared")?.data as {systemPrompt?:unknown};const prompt=String(prepared.systemPrompt??"");assert.match(prompt,/Keep the configured worker identity/);assert.match(prompt,/has no Goal binding/);assert.match(prompt,/do not call handoff/);assert.doesNotMatch(prompt,/Own the assigned Child Goal/);ledger.close();});
+test("official Pi applies a custom Child prompt only inside its Goal Turn",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});createWorkerGoal(ledger);const runner=new ProcessRunner({command:process.execPath,args:[piWorkerPath()],env:{GOAH_PI_PROVIDER:"faux",GOAH_PI_MODEL:"faux-goah"}});const supervisor=new Supervisor(ledger,runner,clock,{profiles:[{agent:"worker",role:"child",systemPrompt:"Keep the configured worker identity."}],turnRetryPolicy:{maxAttempts:1,baseDelayMs:0}});supervisor.planWake("worker",clock.now().toISOString(),"inspect");const wake=await supervisor.tick();const prepared=ledger.readStream(`turn:${wake!.turnId}`).find((event)=>event.type==="request.prepared")?.data as {systemPrompt?:unknown};const prompt=String(prepared.systemPrompt??"");assert.match(prompt,/Keep the configured worker identity/);assert.match(prompt,/This Turn is Goal-bound/);assert.doesNotMatch(prompt,/starts without a Goal binding|has no Goal binding/);ledger.close();});
 
 test("Child mail.send cannot bypass the CEO-only Human request path",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});ledger.putGoal({id:"root",parentId:null,objective:"root",observationMethod:"o",verificationMethod:"v",owner:"ceo",phase:"active",revision:0},"human");ledger.putGoal({id:"child",parentId:"root",objective:"child",observationMethod:"o",verificationMethod:"v",owner:"worker",phase:"active",revision:0},"ceo");const runner=fauxRunner([{rpc:{method:"mail.send",params:{to:"human",level:"decision",body:{message:"bypass"}}}},{handoff:{handoff:{outcome:"progress",evidence:[1]}}}]);const supervisor=new Supervisor(ledger,runner,clock,{turnRetryPolicy:{maxAttempts:1,baseDelayMs:0}});ledger.enqueueWake({...queuedWake("child","worker"),goalId:"child"},"supervisor");const wake=await supervisor.tick();assert.equal(ledger.turn(wake!.turnId!)?.status,"failed");assert.equal(ledger.unreadMail("human").length,0);ledger.close();});
 
-test("mail.send rejects an unknown Agent recipient before writing Mail",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});ledger.putGoal(goal(),"human");const runner=fauxRunner([{rpc:{method:"mail.send",params:{to:"wroker",level:"decision",body:{message:"typo"}}}},{handoff:{handoff:{outcome:"progress",evidence:[1]}}}]);const supervisor=new Supervisor(ledger,runner,clock,{turnRetryPolicy:{maxAttempts:1,baseDelayMs:0}});ledger.enqueueWake({...queuedWake("child","worker"),goalId:"root"},"supervisor");const wake=await supervisor.tick();assert.equal(ledger.turn(wake!.turnId!)?.status,"failed");assert.equal(ledger.mailbox().length,0);ledger.close();});
+test("mail.send rejects an unknown Agent recipient before writing Mail",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});createWorkerGoal(ledger);const runner=fauxRunner([{rpc:{method:"mail.send",params:{to:"wroker",level:"decision",body:{message:"typo"}}}},{handoff:{handoff:{outcome:"progress",evidence:[1]}}}]);const supervisor=new Supervisor(ledger,runner,clock,{turnRetryPolicy:{maxAttempts:1,baseDelayMs:0}});ledger.enqueueWake({...queuedWake("child","worker"),goalId:"root"},"supervisor");const wake=await supervisor.tick();assert.equal(ledger.turn(wake!.turnId!)?.status,"failed");assert.equal(ledger.mailbox().length,0);ledger.close();});
 
-test("pausing a Goal retires its future Schedule and clears Team motion",()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const supervisor=new Supervisor(ledger,fauxRunner([]),clock);ledger.putGoal(goal(),"human");supervisor.planWake("worker",new Date(clock.now().getTime()+60_000).toISOString(),"later");supervisor.transitionGoal("root","paused","human");assert.equal(ledger.schedules()[0]?.status,"superseded");assert.deepEqual(supervisor.teamList().map((member)=>[member.motion,member.nextWakeAt]),[["idle",null]]);ledger.close();});
+test("mail.send requires an explicit recipient Goal route",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});createWorkerGoal(ledger);const runner=fauxRunner([{rpc:{method:"mail.send",params:{to:"ceo",level:"decision",body:{message:"missing route"}}}},{handoff:{handoff:{outcome:"progress",evidence:[1]}}}]);const supervisor=new Supervisor(ledger,runner,clock,{turnRetryPolicy:{maxAttempts:1,baseDelayMs:0}});ledger.enqueueWake({...queuedWake("child-mail","worker"),goalId:"root"},"supervisor");const wake=await supervisor.tick();assert.equal(ledger.turn(wake!.turnId!)?.status,"failed");assert.match(String((ledger.turn(wake!.turnId!)?.error as {message?:unknown})?.message),/requires a Goal route/);assert.equal(ledger.mailbox().length,0);ledger.close();});
 
-test("blocking a Goal cancels its queued Wake and clears Team motion",()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const supervisor=new Supervisor(ledger,fauxRunner([]),clock);ledger.putGoal(goal(),"human");ledger.enqueueWake({...queuedWake("blocked-wake","worker"),goalId:"root"},"supervisor");supervisor.transitionGoal("root","blocked","human");assert.equal(ledger.wake("blocked-wake")?.status,"cancelled");assert.deepEqual(supervisor.teamList().map((member)=>member.motion),["idle"]);ledger.close();});
+test("a Goal Turn receives only Mail routed to that Goal",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});ledger.putGoal({id:"parent",parentId:null,objective:"parent",observationMethod:"observe",verificationMethod:"verify",owner:"ceo",phase:"active",revision:0},"human");for(const id of ["a","z"])ledger.putGoal({id,parentId:"parent",objective:id,observationMethod:"observe",verificationMethod:"verify",owner:"worker",phase:"active",revision:0},"ceo");ledger.putMail({id:"mail-a",to:"worker",from:"ceo",level:"decision",goalId:"a",body:{secret:"only-a"},readAt:null},"ceo");ledger.enqueueWake({...queuedWake("wake-z","worker","goal:z"),goalId:"z"},"supervisor");let context="";const runner:Runner={isolation:"process",prepare:(request)=>{context=JSON.stringify(request.context);return{pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"abnormal" as const,reason:"captured"}),terminate:async()=>undefined}},terminateProcess:async()=>undefined};await new Supervisor(ledger,runner,clock,{turnRetryPolicy:{maxAttempts:1,baseDelayMs:0}}).tick();assert.doesNotMatch(context,/only-a/);assert.equal(ledger.unreadMail("worker").some((mail)=>mail.id==="mail-a"),true);ledger.close();});
+
+test("pausing a Goal retires its future Schedule and clears Team motion",()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const supervisor=new Supervisor(ledger,fauxRunner([]),clock);createWorkerGoal(ledger);supervisor.planWake("worker",new Date(clock.now().getTime()+60_000).toISOString(),"later");supervisor.transitionGoal("root","paused","ceo");assert.equal(ledger.schedules()[0]?.status,"superseded");assert.equal(supervisor.teamList().find((member)=>member.agent==="worker")?.nextWakeAt,null);ledger.close();});
+
+test("blocking a Goal cancels its queued Wake and clears Team motion",()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const supervisor=new Supervisor(ledger,fauxRunner([]),clock);createWorkerGoal(ledger);ledger.enqueueWake({...queuedWake("blocked-wake","worker"),goalId:"root"},"supervisor");supervisor.transitionGoal("root","blocked","ceo");assert.equal(ledger.wake("blocked-wake")?.status,"cancelled");assert.equal(supervisor.teamList().find((member)=>member.agent==="worker")?.motion,"idle");ledger.close();});
+
+test("inactive reassignment stays dormant until resume creates the new owner's Goal Turn",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});createWorkerGoal(ledger);const evidence=ledger.appendEvent({streamId:"control:test",ts:clock.now().toISOString(),actor:"ceo",type:"observed",data:{}});const contexts:JsonValue[]=[];const bindings:unknown[]=[];const runner:Runner={isolation:"process",prepare:(request)=>{contexts.push(request.context);bindings.push(request.turn.goalBinding);return{pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"abnormal" as const,reason:"captured"}),terminate:async()=>undefined}},terminateProcess:async()=>undefined};const supervisor=new Supervisor(ledger,runner,clock,{profiles:[{agent:"new-worker",role:"child"}],turnRetryPolicy:{maxAttempts:1,baseDelayMs:0}});supervisor.transitionGoal("root","paused","ceo");const moved=await supervisor.reassignGoal({id:"move-paused",goalId:"root",expectedGoalRevision:1,newOwner:"new-worker",brief:{},reason:"replace owner",evidence:[evidence.seq]},"ceo");assert.equal(moved.wake,null);assert.equal(await supervisor.tick(),null);supervisor.transitionGoal("root","active","ceo");const wake=await supervisor.tick();assert.equal(wake?.agent,"new-worker");assert.deepEqual(bindings[0],{goalId:"root",goalRevision:3});assert.match(JSON.stringify(contexts[0]),/move-paused/);ledger.close();});
 
 test("Goal context scopes Last outcome to the bound Goal",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});ledger.putGoal({id:"root",parentId:null,objective:"root",observationMethod:"o",verificationMethod:"v",owner:"ceo",phase:"active",revision:0},"human");for(const id of ["a","z"])ledger.putGoal({id,parentId:"root",objective:id,observationMethod:"o",verificationMethod:"v",owner:"worker",phase:"active",revision:0},"ceo");ledger.appendEvent({streamId:"turn:old-a",ts:clock.now().toISOString(),actor:"worker",type:"handoff.recorded",data:{goalId:"a",goalRevision:0,recordRevision:1,outcome:"blocked",evidence:[1]}});ledger.enqueueWake({...queuedWake("wake-z","worker","goal:z"),goalId:"z"},"supervisor");let context="";const runner:Runner={isolation:"process",prepare:(request)=>{context=String((request.context as {text?:unknown}).text??"");return{pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"abnormal" as const,reason:"captured"}),terminate:async()=>undefined}},terminateProcess:async()=>undefined};await new Supervisor(ledger,runner,clock,{turnRetryPolicy:{maxAttempts:1,baseDelayMs:0}}).tick();assert.doesNotMatch(context,/# Last outcome[\s\S]*blocked/);ledger.close();});
 
-test("Mail and Schedule effects occur only when the Agent requests them explicitly",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const nextWakeAt=new Date(clock.now().getTime()+60_000).toISOString();const supervisor=new Supervisor(ledger,fauxRunner([{rpc:{method:"mail.send",params:{to:"ceo",level:"decision",body:{type:"explicit_notice"}}}},{rpc:{method:"schedule.set",params:{at:nextWakeAt,reason:"explicit follow-up"}}},{handoff:{handoff:{outcome:"waiting",evidence:[1]}}}]),clock);supervisor.createGoal(goal());supervisor.planWake("worker",clock.now().toISOString(),"work");await supervisor.tick();assert.equal(ledger.unreadMail("ceo").some((mail)=>(mail.body as {type?:string}).type==="explicit_notice"),true);assert.equal(ledger.schedules().some((schedule)=>schedule.status==="pending"&&schedule.nextWakeAt===nextWakeAt),true);ledger.close();});
+test("Mail and Schedule effects occur only when the Agent requests them explicitly",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const nextWakeAt=new Date(clock.now().getTime()+60_000).toISOString();const supervisor=new Supervisor(ledger,fauxRunner([{rpc:{method:"mail.send",params:{to:"ceo",goalId:"parent",level:"decision",body:{type:"explicit_notice"}}}},{rpc:{method:"schedule.set",params:{at:nextWakeAt,reason:"explicit follow-up"}}},{handoff:{handoff:{outcome:"waiting",evidence:[1]}}}]),clock);createWorkerGoal(ledger);supervisor.planWake("worker",clock.now().toISOString(),"work");await supervisor.tick();assert.equal(ledger.unreadMail("ceo").some((mail)=>(mail.body as {type?:string}).type==="explicit_notice"&&mail.goalId==="parent"),true);assert.equal(ledger.schedules().some((schedule)=>schedule.status==="pending"&&schedule.nextWakeAt===nextWakeAt),true);ledger.close();});
 
 test("one root goal forms a two-agent organization and returns completion control to the human", async () => {
   const clock = new SimulatedClock();
@@ -653,7 +661,7 @@ test("process verifier model runs on official Pi core and records findings", asy
   const clock = new SimulatedClock();
   const ledger = createMemoryLedger({ clock });
   const supervisor = new Supervisor(ledger, fauxRunner([]), clock);
-  supervisor.createGoal(goal());
+  createWorkerGoal(ledger);
   const evidence = ledger.appendEvent({ ...event("worker", "fact", {}, "verify-wake"), ts: clock.now().toISOString() });
   const verifyTurn=testTurn(ledger,"worker","verify-wake");ledger.finishTurn(verifyTurn.id,"completed",null,clock.now().toISOString(),"supervisor");
   const model = new ProcessVerifierModel({ command: process.execPath, args: [verificationWorkerPath()], env: { GOAH_PI_PROVIDER: "faux", GOAH_PI_MODEL: "faux-verifier", GOAH_VERIFIER_FAUX_FINDINGS: JSON.stringify([{ id: "verify-finding", body: { issue: "found" }, evidence: [evidence.seq], riskWeight: 3 }]) } });

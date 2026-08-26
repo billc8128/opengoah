@@ -62,13 +62,13 @@ The only Ledger writer in the resident process. It validates Turn ownership and 
 
 Supervisor is a control plane, not the organization's decision maker. It may record facts, enforce ownership/fencing, deliver Mail, admit current Goal context, and recover failed execution. Goal observation and verification run inside Agents with ordinary tools; Core has no metric schema, collector, evaluator, or threshold policy. Supervisor must not decide whether a Goal needs decomposition, whether an Agent's plan remains useful after a Goal revision, or whether a Handoff contains enough organizational motion. Those decisions belong to Agents through context and tools; configurable prompts may advise them without turning that advice into Supervisor rejection logic.
 
-Supervisor selects exactly one default Agent prompt from the admitted Turn facts: a Goal-bound Turn receives its role prompt, an unbound Human Turn receives the normal Human-facing prompt, and an unbound system/Mail Turn receives a reply-oriented non-Goal prompt. A configured Agent prompt replaces that default. Runners may append only their output-protocol constraint (ordinary response versus Handoff); they do not independently select a second organizational role prompt.
+Supervisor admits only three execution classes: CEO Human interaction, an owner executing its own Goal, and an unbound Verifier/Audit specialist run. Exactly the `ceo` Agent has the CEO role. CEO owns Root Goals and never Child Goals; every Child owner is distinct from its parent owner and every Child Turn is Goal-bound. Invalid combinations such as Child+Human, Child+unbound system, CEO+Child Goal, or specialist+Goal are cancelled before a Runner starts. A configured Agent prompt replaces the default for its legal class. Runners append only their output-protocol constraint; they do not select a second organizational role.
 
 Wake status is scheduling-only: `queued → claimed → consumed`, with `cancelled` as the pending terminal path. Each Wake owns a durable trigger set; every trigger records source (`human|goal|system`) and `pending|resolved` state. Goal motion carries only `goalId`; queued motion survives Goal revisions, and Turn admission reads the current active Goal and freezes its current `goalRevision`. Coalescing never crosses Goal ids. Turn source and authority are derived only from pending triggers. Claiming is blocked while any Human Turn is active. Once the Turn is durably created, Wake records its `turnId` and resolves its triggers.
 
 Schedule has its own durable lifecycle: `pending → consumed|cancelled|superseded`. Creating the Wake and consuming the Schedule is one transaction. Goal revisions do not invalidate future motion: a due Schedule targets the current Goal. Moving a Goal out of active phase or changing its owner mechanically cancels its queued/claimed Wakes and supersedes its pending Schedules in the same Goal-change transaction.
 
-Mail routing is envelope metadata, never business JSON. Optional `goalId` opens a Goal-bound Turn only for the current owner; unrouted Mail opens an ordinary system Turn for any known Agent, even without a live Goal. It inspects Mail, replies through the Runner's Mail tool when needed, and finishes with an ordinary transcript response rather than a Goal Handoff. Unknown recipients are rejected, and Agent Mail cannot address Human. Handoff contains only declarative outcome/evidence, while Mail and Schedule effects are explicit tools with independent Ledger facts. A successful effect Tool call is committed immediately and remains durable even if a later Handoff fails. Reassigning an inactive Goal uses this unbound Mail-Wake path to notify the new owner without scheduling work that cannot run before an explicit resume.
+Mail routing is envelope metadata, never business JSON. Agent-to-Agent Mail requires `goalId`; the route must name a Goal currently owned by the recipient, and a Goal Turn receives only Mail routed to that Goal. Active routed Mail may trigger that owner's Goal Turn. Routed Mail for a paused/blocked Goal remains unread without motion until the parent explicitly resumes the Goal. Unrouted Human Mail may open a CEO Human interaction; unrouted Verification/Audit results remain in the CEO inbox for the next legal interaction and do not create a CEO system Turn. Unknown recipients are rejected, and Agent Mail cannot address Human. Handoff contains only declarative outcome/evidence, while Mail and Schedule effects are explicit Ledger facts. Reassigning an inactive Goal changes ownership and records routed decision Mail atomically, but returns no Wake.
 
 Team read models keep mechanical `motion` separate from declarative `lastOutcome`; neither field drives Supervisor policy.
 
@@ -85,13 +85,15 @@ Receives a `RunRequest` containing Turn identity, source, optional Goal binding,
 1. Ledger is the only durable fact authority; projections are disposable.
 2. Every Goal-bound Turn updates its Goal Work Record under the current Goal revision.
 3. Every Child Agent owns a Child Goal with observation and verification methods.
-4. Every Goal Agent can read every Work Record; write authority follows Goal ownership and parent authority.
-5. Human authorizes Root purpose and final completion.
-6. CEO controls Child Goal decomposition, ownership, verification, and completion.
-7. Goal Handoff points to Work Record revision instead of duplicating semantic prose.
-8. An in-progress Human Turn prevents new automatic Goal Turns from starting.
-9. A single Agent never has overlapping Runner processes, including during preemption.
-10. Provider/model/auth and ordinary tool permission semantics stay inside each Runner.
+4. CEO owns Root Goals only; parent and Child Goals always have distinct owners.
+5. Every Child Turn is Goal-bound to a Child Goal currently owned by that Agent.
+6. Every Goal Agent can read every Work Record; write authority follows Goal ownership and parent authority.
+7. Human authorizes Root purpose and final completion.
+8. CEO controls Child Goal decomposition, ownership, verification, and completion through parent authority, not Child ownership.
+9. Goal Handoff points to Work Record revision instead of duplicating semantic prose.
+10. An in-progress Human Turn prevents new automatic Goal Turns from starting.
+11. A single Agent never has overlapping Runner processes, including during preemption.
+12. Provider/model/auth and ordinary tool permission semantics stay inside each Runner.
 
 ## State and continuity
 

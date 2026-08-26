@@ -3,7 +3,9 @@
 ## Unreleased
 
 - Uses typed Mail routes, reserves Human requests for CEO, commits effect-free Handoffs, scopes outcome context by Goal, and separates Team motion/outcome.
-- Ordinary Mail can wake any known Agent without a Goal, unknown Agent recipients are rejected, and Team motion ignores non-executable Schedules.
+- Child Agents now admit only owned Child Goal Turns, CEO admits only Human/owned Root Goal Turns, and unbound system execution is reserved for Verifier/Audit specialists.
+- Profile validation enforces one primary identity: exactly the `ceo` Agent has the CEO role.
+- Agent Mail requires an owned Goal route, delivery is scoped to the bound Goal, and inactive routed Mail remains dormant until resume.
 - Goal lifecycle invalidation is centralized in the Ledger; Supervisor no longer carries separate pause/completion Wake suppression paths, and Team motion ignores stale Goal Wakes.
 - Added one Turn prompt decision table and one canonical recovery reducer alongside Supervisor retry/escalation conventions; CLI no longer reconstructs either policy.
 

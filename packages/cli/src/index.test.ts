@@ -157,14 +157,15 @@ test("CLI runs the install-to-first-handoff path with the faux provider", () => 
   const doctor = JSON.parse(invoke(directory, "doctor", "--json"));
   assert.equal(doctor.ok, true);
   assert.match(doctor.checks.find((item: { name: string }) => item.name === "runner").detail, /default:pi/);
-  const created = JSON.parse(invoke(directory, "goal-create", "--id", "first", "--owner", "worker", "--objective", "Complete the first handoff", "--wake-now"));
+  invoke(directory,"goal-create","--id","first-root","--owner","ceo","--objective","Coordinate the first handoff");
+  const created = JSON.parse(invoke(directory, "goal-create", "--id", "first", "--parent","first-root","--owner", "worker", "--objective", "Complete the first handoff", "--observation-method","Inspect the fresh handoff.","--wake-now"));
   assert.equal(created.goal.id, "first");
   assert.equal(created.wake.status, "queued");
   const run = JSON.parse(invoke(directory, "run-once"));
   assert.equal(run.wake.status, "consumed");
   const wakeId = run.wake.id;const turnId=run.wake.turnId;
   const status = JSON.parse(invoke(directory, "status"));
-  assert.equal(status.goals[0].id, "first");
+  assert.equal(status.goals.some((goal:{id:string})=>goal.id==="first"),true);
   assert.equal(status.wakes.length, 1);
   assert.equal(status.wakes[0].status, "consumed");
   assert.equal(status.modelCapabilities.provider, "faux");
@@ -211,7 +212,8 @@ test("status reports model capabilities per Agent and keeps CEO as the primary s
 test("CLI exposes the complete goal lifecycle with revisioned transitions", () => {
   const directory = repository();
   invoke(directory, "init", "--provider", "faux", "--agent", "worker");
-  invoke(directory, "goal-create", "--id", "lifecycle", "--owner", "worker", "--objective", "Initial objective", "--observation-method", "Accept a fresh evidence-backed handoff.");
+  invoke(directory,"goal-create","--id","lifecycle-root","--owner","ceo","--objective","Coordinate lifecycle work");
+  invoke(directory, "goal-create", "--id", "lifecycle", "--parent","lifecycle-root","--owner", "worker", "--objective", "Initial objective", "--observation-method", "Accept a fresh evidence-backed handoff.");
   assert.equal(JSON.parse(invoke(directory, "goal-show", "lifecycle")).goal.revision, 0);
   const updated = JSON.parse(invoke(directory, "goal-update", "lifecycle", "--objective", "Updated objective", "--observation-method", "Inspect a fresh handoff for the updated objective.", "--verification-method", "Accept the fresh evidence-backed handoff."));
   assert.equal(updated.goal.objective, "Updated objective");
@@ -235,7 +237,8 @@ test("CLI runs a local operations goal without Git", () => {
   const doctor = JSON.parse(invoke(directory, "doctor", "--json"));
   assert.equal(doctor.ok, true);
   assert.match(doctor.checks.find((item: { name: string }) => item.name === "root").detail, /runner-owned local execution/);
-  invoke(directory, "goal-create", "--id", "store", "--owner", "operator", "--objective", "Open a storefront", "--wake-now");
+  invoke(directory,"goal-create","--id","store-root","--owner","ceo","--objective","Coordinate storefront operations");
+  invoke(directory, "goal-create", "--id", "store", "--parent","store-root","--owner", "operator", "--objective", "Open a storefront", "--observation-method","Inspect the storefront result.","--wake-now");
   assert.equal(JSON.parse(invoke(directory, "run-once")).wake.status, "consumed");
   assert.equal(JSON.parse(invoke(directory, "status")).wakes.length, 1);
 });

@@ -11,8 +11,7 @@
 - Pi now returns normal responses for unbound Turns and exposes Goal/Work Record tools; Goal Turns update their record before compact Handoff.
 - Pi workers accept legacy daemon requests without Turn metadata during an in-place update.
 - Empty assistant failures preserve the provider error instead of collapsing to a missing-response error.
-- Unbound Mail/system Turns preserve the configured Agent role while using a dedicated reply-oriented prompt instead of Human or Goal instructions.
-- Pi now appends only source-aware output protocol constraints to the Supervisor-selected prompt, keeping Goal, Human, and Mail defaults mutually exclusive.
+- Pi requires `goalId` for Agent Mail and appends output protocol only after Supervisor admits a legal Human, Goal, or specialist execution class.
 
 ## 0.5.0
 

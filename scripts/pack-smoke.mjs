@@ -37,7 +37,8 @@ if (!updateDryRun.includes("npm install --prefix") || !updateDryRun.includes("@g
 run("init", "--provider", "faux", "--agent", "worker");
 const doctor = JSON.parse(run("doctor", "--json"));
 if (!doctor.ok) throw new Error(`packed CLI doctor failed: ${JSON.stringify(doctor)}`);
-run("goal-create", "--id", "pack-smoke", "--owner", "worker", "--objective", "Prove the installed CLI works", "--observation-method", "Accept a fresh evidence-backed handoff from the installed CLI");
+run("goal-create", "--id", "pack-root", "--owner", "ceo", "--objective", "Coordinate the installed CLI smoke test");
+run("goal-create", "--id", "pack-smoke", "--parent", "pack-root", "--owner", "worker", "--objective", "Prove the installed CLI works", "--observation-method", "Accept a fresh evidence-backed handoff from the installed CLI");
 run("goal-pause", "pack-smoke");
 run("goal-resume", "pack-smoke");
 const wake = JSON.parse(run("run-once")).wake;

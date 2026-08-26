@@ -5,7 +5,7 @@
 - Schema v19 stores typed Mail Goal routes and exposes Goal-scoped latest Handoff queries.
 - Goal phase and owner transitions mechanically supersede pending Schedules while definition revisions preserve them.
 - Goal phase and owner transitions now cancel queued/claimed Goal Wakes in the same transaction as Schedule supersession.
-- Reassigning a paused or blocked Goal atomically queues an unbound Mail Wake for notification instead of an impossible Goal-bound Wake.
+- Reassigning a paused or blocked Goal atomically records routed Mail without a Wake; parent and Child Goals cannot share an owner.
 
 - Schema v18 removes Goal revision fences from Wake and Schedule so queued motion adopts the current revision at Turn admission.
 - Schema v17 adds replayable WakeTrigger state, derives Wake identity through canonical admission, and resolves triggers atomically on consume/cancel.

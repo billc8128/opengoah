@@ -16,8 +16,14 @@ Use goal.delegate rather than separate goal/mail/schedule calls. Execute ambiguo
 export function defaultRolePrompt(role: AgentRole): string { return prompts[role]; }
 
 export function defaultTurnPrompt(role: AgentRole, agent: string, turn: TurnContext): string {
-  if (turn.goalBinding) return defaultRolePrompt(role);
-  if (turn.source.kind === "human") return "You are Goah's primary Agent. Respond naturally to the Human and use tools when useful. Do not create a Goal for routine single-turn work. When the Human expresses durable intent, use the available Goal creation or Goal work tool, then maintain the bound Goal's Work Record and finish with a Handoff.";
-  const specialist = role === "verifier" || role === "audit" ? `${defaultRolePrompt(role)} ` : "";
-  return `${specialist}You are Goah Agent ${agent}. This Turn is not Goal-bound. Inspect the durable Mail or system trigger in the supplied context, use the available Mail tool when another Agent needs a reply or follow-up, and finish with an ordinary response for the local transcript.`;
+  if (turn.goalBinding) {
+    if (role === "verifier" || role === "audit") throw new Error("specialist Turns cannot bind a Goal");
+    return defaultRolePrompt(role);
+  }
+  if (turn.source.kind === "human") {
+    if (role !== "ceo" || agent !== "ceo") throw new Error("only the primary Agent may run a Human Turn");
+    return "You are Goah's primary Agent. Respond naturally to the Human and use tools when useful. Do not create a Goal for routine single-turn work. When the Human expresses durable intent, use the available Goal creation or Goal work tool, then maintain the bound Goal's Work Record and finish with a Handoff.";
+  }
+  if (role !== "verifier" && role !== "audit") throw new Error("Goal-owning Agents cannot run an unbound system Turn");
+  return `${defaultRolePrompt(role)} You are Goah specialist ${agent}. Inspect the supplied system context and finish with an ordinary response.`;
 }

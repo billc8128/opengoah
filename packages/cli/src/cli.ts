@@ -181,18 +181,22 @@ async function main(): Promise<void> {
       const parentId = option("--parent");
       const observationMethod = option("--observation-method"); const verificationMethod = option("--verification-method") ?? observationMethod;
       const goal = { id, parentId, objective, observationMethod, verificationMethod, owner, phase: "active" as const, revision: 0 };
-      supervisor.createGoal(goal, option("--actor") ?? "human");
-      const wake = flag("--wake-now") ? supervisor.planWake(owner, new Date().toISOString(), `goal:${id}`, "supervisor") : null;
+      if (!parentId && owner !== "ceo") throw new Error("Root Goal owner must be ceo; non-CEO Goals require --parent");
+      const parent = parentId ? ledger.goal(parentId) : null;if(parentId&&!parent)throw new Error("parent goal not found");
+      supervisor.createGoal(goal, option("--actor") ?? parent?.owner ?? "human");
+      const wake = flag("--wake-now") ? supervisor.planWake(owner, new Date().toISOString(), `goal:${id}`, "supervisor", { goalId:id }) : null;
       console.log(JSON.stringify({ goal, wake }, null, 2));
     } else if (command === "goal-update") {
       const objective = option("--objective"); const observationMethod = option("--observation-method"); const verificationMethod = option("--verification-method");if(option("--owner"))throw new Error("Goal ownership changes require atomic CEO reassignment, not goal-update");
-      const goal = supervisor.updateGoal(requiredPositional(1, "goal id"), { ...(objective ? { objective } : {}), ...(observationMethod ? { observationMethod } : {}), ...(verificationMethod ? { verificationMethod } : {}) }, option("--actor") ?? "human");
+      const id=requiredPositional(1,"goal id");const current=ledger.goal(id);if(!current)throw new Error("goal not found");const actor=option("--actor")??(current.parentId?ledger.goal(current.parentId)?.owner:"human")??"human";
+      const goal = supervisor.updateGoal(id, { ...(objective ? { objective } : {}), ...(observationMethod ? { observationMethod } : {}), ...(verificationMethod ? { verificationMethod } : {}) }, actor);
       console.log(JSON.stringify({ goal }, null, 2));
     } else if (["goal-pause", "goal-resume", "goal-complete"].includes(command)) {
       const id = requiredPositional(1, "goal id");
+      const current=ledger.goal(id);if(!current)throw new Error("goal not found");const actor=option("--actor")??(current.parentId?ledger.goal(current.parentId)?.owner:"human")??"human";
       const goal = command === "goal-complete"
-        ? supervisor.completeGoal({ goalId: id, revision: ledger.goal(id)?.revision ?? -1, reason: required("--reason"), evidence: evidence() }, option("--actor") ?? "human")
-        : supervisor.transitionGoal(id, command === "goal-pause" ? "paused" : "active", option("--actor") ?? "human");
+        ? supervisor.completeGoal({ goalId: id, revision: current.revision, reason: required("--reason"), evidence: evidence() }, actor)
+        : supervisor.transitionGoal(id, command === "goal-pause" ? "paused" : "active", actor);
       console.log(JSON.stringify({ goal }, null, 2));
     } else if (command === "dashboard") { const path = option("--output") ?? join(config.stateDir, "status.html"); writeFileSync(path, (await import("goah-supervisor")).renderDashboard(ledger)); console.log(path); }
     else throw new Error(`unknown command: ${command}`);
@@ -276,7 +280,8 @@ goah web [--open]
 goah goal start --objective TEXT [--id ID]
 goah ceo send --message TEXT
 goah ceo status | ceo inbox
-goah goal-create --id ID --owner AGENT --objective TEXT [--observation-method TEXT] [--wake-now]
+goah goal-create --id ID --owner ceo --objective TEXT
+goah goal-create --id ID --parent ROOT --owner AGENT --objective TEXT --observation-method TEXT [--wake-now]
 goah goal-show ID | goal-list
 goah goal-update ID [--objective TEXT] [--observation-method TEXT] [--actor ACTOR]
 goah goal-pause|goal-resume ID [--actor ACTOR]
