@@ -92,7 +92,7 @@ Ledger events     exact facts and global history
 Goal projection   current objective, methods, owner, phase, revision
 Work Record FS    current semantic understanding plus version timeline
 Thread/Turn Items exact model conversation and tool trace
-Handoff           Goal/record revision, outcome, evidence, next motion
+Handoff           Explicit Agent outcome/evidence plus injected Goal/record revision
 ```
 
 Legacy narrative Handoffs and `memory.appended` facts remain readable. Schema v9 deterministically seeds Work Records from them. CEO and Child Goal Agents then use Work Record as their sole semantic continuity mechanism.

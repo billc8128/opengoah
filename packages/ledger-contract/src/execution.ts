@@ -89,11 +89,13 @@ export interface TeamMemberView {
   lastWakeStatus: WakeStatus | null;
   nextWakeAt: string | null;
 }
-export interface LegacyHandoff { observations: string[]; results: string[]; nextSteps: string[]; blocker?: string; material?: boolean }
-export interface GoalHandoff { goalId: string; goalRevision: number; recordRevision: number; outcome: "progress" | "waiting" | "blocked" | "completion_proposed"; evidence: number[] }
-export type Handoff = LegacyHandoff | GoalHandoff;
+export type GoalOutcome = "progress" | "waiting" | "blocked" | "completion_proposed";
+export interface AgentHandoff { outcome: GoalOutcome; evidence: number[] }
+export interface GoalHandoff extends AgentHandoff { goalId: string; goalRevision: number; recordRevision: number }
+export type Handoff = GoalHandoff;
 export interface MailDraft { to: string; level: MailLevel; body: JsonValue }
-export interface TurnOutput { handoff: Handoff; mail: MailDraft[]; nextWakeAt: string | null }
+export interface TurnOutput { handoff: AgentHandoff; mail: MailDraft[]; nextWakeAt: string | null }
+export interface CommittedTurnOutput { handoff: GoalHandoff; mail: MailDraft[]; nextWakeAt: string | null }
 export interface RunnerTraceEvent { type: string; data: JsonValue }
 
 export type AgentRole = "child" | "ceo" | "verifier" | "audit";
@@ -132,7 +134,7 @@ export type RunnerCandidateResult = { outcome: "response"; response: AssistantRe
 export interface RunnerHandle { pid: number | null; begin(): void; result: Promise<RunnerCandidateResult>; steer?(message: string): Promise<void>; terminate(): Promise<void> }
 export interface Runner { readonly isolation: "process"; prepare(request: RunRequest): RunnerHandle; terminateProcess(pid: number, runnerProfileId?: string): Promise<void> }
 
-export interface HandoffCommit { agent: string; turnId: string; sourceWakeId: string | null; mailIds: string[]; ts: string; output: TurnOutput; outgoingMail: MailSnapshot[]; schedule: ScheduleSnapshot | null; item: TurnItemSnapshot }
+export interface HandoffCommit { agent: string; turnId: string; sourceWakeId: string | null; mailIds: string[]; ts: string; output: CommittedTurnOutput; outgoingMail: MailSnapshot[]; schedule: ScheduleSnapshot | null; item: TurnItemSnapshot }
 
 /** Standard execution modules composed on top of the generic event store. */
 export interface Ledger extends EventStore {
@@ -201,12 +203,10 @@ const goalTransitions: Record<GoalPhase, readonly GoalPhase[]> = { active: ["pau
 export function assertWakeTransition(from: WakeStatus, to: WakeStatus): void { if (!wakeTransitions[from].includes(to)) throw new Error(`invalid wake transition: ${from} -> ${to}`); }
 export function assertGoalTransition(from: GoalPhase, to: GoalPhase): void { if (from !== to && !goalTransitions[from].includes(to)) throw new Error(`invalid goal transition: ${from} -> ${to}`); }
 export function assertHandoff(value: Handoff): void {
-  if ("goalId" in value) {
-    if (!value.goalId.trim() || !Number.isInteger(value.goalRevision) || value.goalRevision<0 || !Number.isInteger(value.recordRevision) || value.recordRevision<1 || !["progress", "waiting", "blocked", "completion_proposed"].includes(value.outcome) || !Array.isArray(value.evidence) || value.evidence.length===0) throw new Error("invalid Goal handoff");
-    return;
-  }
-  if (!Array.isArray(value.observations) || !Array.isArray(value.results) || !Array.isArray(value.nextSteps)) throw new Error("invalid handoff: observations, results and nextSteps are required arrays");
+  assertAgentHandoff(value);
+  if (!value.goalId.trim() || !Number.isInteger(value.goalRevision) || value.goalRevision<0 || !Number.isInteger(value.recordRevision) || value.recordRevision<1) throw new Error("invalid Goal handoff");
 }
+export function assertAgentHandoff(value:AgentHandoff):void{if(!["progress", "waiting", "blocked", "completion_proposed"].includes(value.outcome)||!Array.isArray(value.evidence)||value.evidence.length===0)throw new Error("invalid Agent handoff");}
 export function assertGoalSnapshot(value: GoalSnapshot): void {
   if (!value.objective.trim() || !value.owner.trim()) throw new Error("goal objective and owner are required");
   if (value.observationMethod !== null && !value.observationMethod.trim()) throw new Error("goal observation method cannot be blank");

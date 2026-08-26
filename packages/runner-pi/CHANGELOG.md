@@ -4,6 +4,7 @@
 
 - Bounded Runner protocol line size and converted in-process session initialization failures into abnormal terminal results.
 - Process workers receive the admitted Wake trigger snapshot instead of inferring execution cause from the Wake's display trigger.
+- Handoff tool now requires explicit outcome and evidence; Goal and Work Record identity are injected by Supervisor.
 - Runner results are candidate outcomes; Supervisor alone commits Transcript terminal state. Thinking deltas now materialize as durable reasoning Items, and stderr capture is bounded.
 - Pi now returns normal responses for unbound Turns and exposes Goal/Work Record tools; Goal Turns update their record before compact Handoff.
 - Pi workers accept legacy daemon requests without Turn metadata during an in-place update.

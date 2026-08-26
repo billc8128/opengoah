@@ -10,6 +10,7 @@
 - Moved Goal revision fencing out of Wake/Schedule and into Turn admission so Agents receive the latest Goal context and decide how earlier plans apply.
 - Defined Supervisor as a mechanical control plane: it supplies durable context and tools while organizational and metric interpretation remains Agent policy.
 - Removed Core Metric contracts, collectors, evaluators, samples, and automatic Metric Wakes; Agents now execute arbitrary observation methods with their tools and cite the resulting evidence.
+- Replaced legacy Handoff inference with an explicit Agent `outcome + evidence` draft; Supervisor injects trusted Goal and Work Record identity without rewriting intent.
 - Rechecked Human admission after Runner barriers, coalesced scheduled motion with queued Goal Wakes, normalized Schedule timestamps, enforced immutable Wake/Mail identity, and delivered atomic verification results through bounded acknowledged Mail.
 - Made `commitHandoff` the only successful Goal-Turn terminal path, validated every duplicated Handoff representation against canonical TurnOutput, and preserved non-Mail triggers when acknowledging Mail.
 - Closed the remaining fail-closed boundaries for projection replay, Goal provenance/idempotency, stale Goal Turns, ancestor definition fences, and loopback Console Host authorization.

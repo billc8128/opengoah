@@ -319,7 +319,7 @@ export function piConfig(value: JsonValue): PiRunnerConfig {
 }
 export function piEnvironment(config: PiRunnerConfig): Record<string, string> {
   const env: Record<string, string> = { GOAH_PI_PROVIDER: config.provider, GOAH_PI_MODEL: config.model, GOAH_PI_AUTH_FILE: config.authFile ?? defaultAuthFile() };
-  if (config.provider === "faux") env.GOAH_PI_FAUX_HANDOFF = JSON.stringify(config.fauxHandoff ?? { observations: ["faux runner completed"], results: [], nextSteps: [] });
+  if (config.provider === "faux") env.GOAH_PI_FAUX_HANDOFF = JSON.stringify(config.fauxHandoff ?? { outcome: "progress" });
   if (config.provider !== "faux" && !["ollama", "lm-studio", "llama.cpp"].includes(config.provider)) {
     const key = config.api ? "GOAH_PI_API_KEY" : defaultApiKeyEnv(config.provider);
     env[key] = `env?:${config.apiKeyEnv ?? defaultApiKeyEnv(config.provider)}`;

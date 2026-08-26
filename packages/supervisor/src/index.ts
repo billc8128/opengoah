@@ -7,6 +7,7 @@ import {
   type AgentProfile,
   type AgentRole,
   type Clock,
+  type CommittedTurnOutput,
   type DelegationRequest,
   type DelegationResult,
   type EventRecord,
@@ -366,7 +367,7 @@ export class Supervisor {
 
   #commitGoalTurn(turnId:string,agent:string,turn:TurnContext,raw:TurnOutput,sourceWakeId:string|null,mailIds:string[],revisionAtStart:number):void{const binding=turn.goalBinding!;const goal=this.#goal(binding.goalId);if(goal.revision!==binding.goalRevision)throw new Error("Goal revision changed during the Turn");const record=this.ledger.workRecord(goal.id);if(!record||record.recordRevision<=revisionAtStart||record.updatedInTurn!==turnId||record.goalRevision!==goal.revision)throw new Error("Goal-bound Turn must update its Work Record before handoff");const output=this.#goalTurnOutput(raw,binding);assertHandoff(output.handoff);this.#validateCeoHandoff(agent,turnId,output);const outgoingMail=output.mail.map((draft)=>({id:randomUUID(),to:draft.to,from:agent,level:draft.level,body:draft.body,readAt:null}));const next=output.nextWakeAt?this.#futureTime(output.nextWakeAt,this.ledger.turn(turnId)!.startedAt):null;const schedule:ScheduleSnapshot|null=next?{id:`schedule:${agent}:${goal.id}:${randomUUID()}`,agent,nextWakeAt:next,reason:"handoff.next_steps",setBy:agent,status:"pending",resolvedAt:null,goalId:goal.id}:null;const now=this.#now();const item:TurnItemSnapshot={id:randomUUID(),turnId,ordinal:this.ledger.turnItems(turnId).length+1,type:"handoff",status:"completed",data:output.handoff as unknown as JsonValue,createdAt:now,completedAt:now};const handoffEvent=this.ledger.commitHandoff({agent,turnId,sourceWakeId,mailIds,ts:now,output:{...output,nextWakeAt:next},outgoingMail,schedule,item});if(this.#role(agent)!=="ceo"&&handoffTriggersCeo(output.handoff)){const root=this.#activeRoot();if(root)this.#enqueueTrigger("ceo",`child-handoff:${handoffEvent.seq}`,{goalId:root.id});}}
 
-  #validateCeoHandoff(agent:string, turnId:string, output: TurnOutput): void {
+  #validateCeoHandoff(agent:string, turnId:string, output: CommittedTurnOutput): void {
     if (this.#role(agent) !== "ceo") return;
     const idle = this.teamList().filter((member) => member.agent !== "ceo" && member.status === "idle_unplanned");
     const missingObservationGoalIds = this.ledger.goals().filter((goal) => goal.parentId !== null && goal.phase !== "complete" && goal.observationMethod === null).map((goal) => goal.id);
@@ -386,16 +387,15 @@ export class Supervisor {
     throw new Error(`CEO motion invalid: ${violation.reason}${violation.idleAgents.length ? ` (${violation.idleAgents.join(", ")})` : ""}`);
   }
 
-  #goalTurnOutput(output: TurnOutput, binding: NonNullable<TurnContext["goalBinding"]>): TurnOutput {
+  #goalTurnOutput(output: TurnOutput, binding: NonNullable<TurnContext["goalBinding"]>): CommittedTurnOutput {
     const record = this.ledger.workRecord(binding.goalId);
     if (!record) throw new Error("Goal Work Record is missing");
-    const legacy = "goalId" in output.handoff ? null : output.handoff;
     const handoff: GoalHandoff = {
       goalId: binding.goalId,
       goalRevision: binding.goalRevision,
       recordRevision: record.recordRevision,
-      outcome: "goalId" in output.handoff ? output.handoff.outcome : legacy?.blocker ? "blocked" : legacy?.material ? "completion_proposed" : "progress",
-      evidence: "goalId" in output.handoff && output.handoff.evidence.length ? output.handoff.evidence : record.evidence,
+      outcome: output.handoff.outcome,
+      evidence: output.handoff.evidence,
     };
     return { ...output, handoff };
   }
@@ -516,7 +516,7 @@ export function deriveTeam(ledger: Ledger, now = new Date().toISOString()): Team
     const nextWakeAt = schedules.filter((schedule) => schedule.agent === agent && schedule.status === "pending" && schedule.nextWakeAt > now).map((schedule) => schedule.nextWakeAt).sort()[0] ?? null;
     const lastHandoff = [...handoffs].reverse().find((event) => event.actor === agent) ?? null;
     const blocker = lastHandoff && typeof lastHandoff.data === "object" && lastHandoff.data !== null && !Array.isArray(lastHandoff.data)
-      ? ((lastHandoff.data as Record<string, JsonValue>).blocker ?? ((lastHandoff.data as Record<string, JsonValue>).outcome === "blocked" ? "blocked" : null))
+      ? ((lastHandoff.data as Record<string, JsonValue>).outcome === "blocked" ? "blocked" : null)
       : null;
     let status: TeamMemberView["status"];
     if (live.length === 0) status = "retired";
@@ -537,8 +537,8 @@ export function renderDashboard(ledger: Ledger): string {
 
 function escapeHtml(value: string): string { return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"); }
 function messageTextContent(content: unknown): string { if (typeof content === "string") return content; if (!Array.isArray(content)) return ""; return content.map((part) => part && typeof part === "object" && !Array.isArray(part) && (part as { type?: unknown }).type === "text" ? String((part as { text?: unknown }).text ?? "") : "").filter(Boolean).join("\n"); }
-function handoffBlocked(handoff: Handoff): boolean { return "goalId" in handoff ? handoff.outcome === "blocked" : Boolean(handoff.blocker); }
-function handoffTriggersCeo(handoff: Handoff): boolean { return "goalId" in handoff ? handoff.outcome === "blocked" || handoff.outcome === "completion_proposed" : Boolean(handoff.material || handoff.blocker); }
+function handoffBlocked(handoff: Handoff): boolean { return handoff.outcome === "blocked"; }
+function handoffTriggersCeo(handoff: Handoff): boolean { return handoff.outcome === "blocked" || handoff.outcome === "completion_proposed"; }
 function goalBoundCapability(method: AgentCapability): boolean { return ["goal.delegate", "goal.reassign", "goal.revise", "goal.put", "work_record.update", "mail.send", "schedule.set", "human.request"].includes(method); }
 function asRecord(value: JsonValue): Record<string, JsonValue> { if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("RPC params must be an object"); return value; }
 function boundedJson(value:JsonValue,maxChars=2_000):string{const text=typeof value==="string"?value:JSON.stringify(value);return text.length<=maxChars?text:`${text.slice(0,maxChars)}…`;}

@@ -44,7 +44,7 @@ test("runner policy is external and a multi-step driver can hand off", async () 
   const now = "2026-08-18T00:00:00.000Z";
   const faux = driver([
     {},
-    { handoff: { handoff: { observations: [], results: ["done"], nextSteps: [] }, mail: [], nextWakeAt: null } },
+    { handoff: { handoff: { outcome:"progress",evidence:[1] }, mail: [], nextWakeAt: null } },
   ]);
   const request: RunRequest = {
     ...requestBase, turn: goalTurn, context: {},
@@ -179,7 +179,7 @@ test("ProcessRunner bounds steering acknowledgement waits", async () => {
 test("ProcessRunner kills an oversized protocol line",async()=>{const runner=new ProcessRunner({command:process.execPath,args:["-e","process.stdout.write('x'.repeat(1100000));setInterval(()=>{},1000)"],killGraceMs:10});const handle=runner.prepare({...requestBase,turn:{source:{kind:"human"}},context:{},now:()=>execution.startedAt,emit:()=>undefined});handle.begin();const result=await handle.result;assert.equal(result.outcome,"abnormal");if(result.outcome==="abnormal")assert.match(result.reason,/protocol line exceeded 1 MB/);});
 
 test("the Pi worker accepts a pre-0.11 daemon request without Turn metadata", async () => {
-  const runner = new ProcessRunner({ command: process.execPath, args: [piWorkerPath()], env: { GOAH_PI_PROVIDER: "faux", GOAH_PI_MODEL: "faux-goah", GOAH_PI_FAUX_HANDOFF: JSON.stringify({ observations: ["legacy"], results: [], nextSteps: [] }) } });
+  const runner = new ProcessRunner({ command: process.execPath, args: [piWorkerPath()], env: { GOAH_PI_PROVIDER: "faux", GOAH_PI_MODEL: "faux-goah", GOAH_PI_FAUX_HANDOFF: JSON.stringify({ outcome:"progress",evidence:[1] }) } });
   const legacy = { ...requestBase, context: {}, now: () => "2026-08-18T00:00:00.000Z", emit: () => undefined } as unknown as RunRequest;
   const handle = runner.prepare(legacy);
   handle.begin();

@@ -4,6 +4,7 @@
 
 - Contract 0.12 makes Wake and Schedule revision-neutral while Turn admission owns the exact Goal revision fence.
 - Removed the framework Metric vocabulary; arbitrary observations are Agent Tool Results and ordinary Ledger evidence.
+- Split Agent Handoff drafts from committed Goal Handoffs and require explicit outcome/evidence.
 - Contract 0.11 adds durable sourced Wake triggers and transaction-safe trigger inspection.
 - Runner admission carries the authoritative Wake trigger snapshot, and Ledgers expose per-Agent trigger history for redelivery decisions.
 - Contract 0.10 removes Action/Connector types, adds the closed Schedule lifecycle, and separates Goal event data from private projection metadata.

@@ -53,7 +53,7 @@ export function selectWorkingMemory(events: readonly EventRecord[], charBudget: 
 
 /** Deterministically render structured projections into the model's short working set. */
 export function composeActiveContext(input: ActiveContextInput): ActiveContextView {
-  const handoff = input.lastHandoff?.data as { observations?: unknown; results?: unknown; nextSteps?: unknown; blocker?: unknown } | undefined;
+  const handoff = input.lastHandoff?.data as { outcome?: unknown } | undefined;
   const sourceSeqs = new Set<number>();
   if (input.lastHandoff) sourceSeqs.add(input.lastHandoff.seq);
   for (const event of input.teamHandoffs) sourceSeqs.add(event.seq);
@@ -67,12 +67,7 @@ export function composeActiveContext(input: ActiveContextInput): ActiveContextVi
     ["Revision barriers", input.revisionWarnings.map((warning) => `- ${warning}`)],
     ["Wake", [...input.wakeTriggers.filter((trigger)=>trigger.status==="pending").map((trigger)=>`- [${trigger.source}] ${trigger.triggerRef}`), `- Attempt: ${input.wake.attempt}`]],
     ["Working memory", (input.workingMemory ?? []).map((event) => `- ${String(field(event.data, "note") ?? "")} [event:${event.seq}]`)],
-    ["Current state", lines(handoff?.observations)],
-    ["Verified", lines(handoff?.results).map((line) => `${line}${input.lastHandoff ? ` [event:${input.lastHandoff.seq}]` : ""}`)],
-    ["Open", [
-      ...(typeof handoff?.blocker === "string" && handoff.blocker ? [`- ${handoff.blocker}`] : []),
-    ]],
-    ["Next", lines(handoff?.nextSteps)],
+    ["Last outcome", typeof handoff?.outcome === "string" ? [`- ${handoff.outcome}${input.lastHandoff ? ` [event:${input.lastHandoff.seq}]` : ""}`] : []],
     ["Incoming", input.mail.map((mail) => `- [${mail.level}] ${mail.id} from ${mail.from}: ${render(mail.body,2_000)}`)],
     ["Team motion", input.team.map((member) => `- ${member.agent}: ${member.status}; goals=${member.goalIds.join(",") || "none"}; next=${member.nextWakeAt ?? "none"}; handoff=${member.lastHandoffSeq ?? "none"}`)],
     ["Team handoffs", input.teamHandoffs.map((event) => `- ${event.actor}: ${render(event.data)} [event:${event.seq}]`)],
@@ -82,6 +77,5 @@ export function composeActiveContext(input: ActiveContextInput): ActiveContextVi
   return { role: input.role, capabilities: input.capabilities, systemPrompt: input.systemPrompt, text, sourceSeqs: [...sourceSeqs].sort((a, b) => a - b) };
 }
 
-function lines(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").map((item) => `- ${item}`) : []; }
 function render(value: JsonValue,maxChars=Number.POSITIVE_INFINITY): string { const text=typeof value === "string" ? value : JSON.stringify(value);return text.length<=maxChars?text:`${text.slice(0,maxChars)}…`; }
 function field(value: unknown, key: string): unknown { return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>)[key] : undefined; }

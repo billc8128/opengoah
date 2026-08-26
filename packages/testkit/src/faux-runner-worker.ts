@@ -70,7 +70,5 @@ function bindingFrom(value: JsonValue): { goalId: string; goalRevision: number }
   return typeof binding.goalId === "string" && typeof binding.goalRevision === "number" ? { goalId: binding.goalId, goalRevision: binding.goalRevision } : undefined;
 }
 function handoffRecord(output: TurnOutput, turnId: string): string {
-  if ("goalId" in output.handoff) return `# Current State\n\nGoal outcome: ${output.handoff.outcome}.\n\n# Observations\n\nSee Ledger evidence ${output.handoff.evidence.join(", ") || "none"}.\n\n# Work Completed\n\nRecorded Goal progress.\n\n# Decisions\n\nRecorded by the faux Goal runner in ${turnId}.\n\n# Blockers\n\n${output.handoff.outcome === "blocked" ? "Blocked." : "None."}\n\n# Next Steps\n\nContinue from the current Goal state.\n`;
-  const list = (values: string[]) => values.length ? values.map((value) => `- ${value}`).join("\n") : "None.";
-  return `# Current State\n\n${output.handoff.blocker ?? "Work progressed."}\n\n# Observations\n\n${list(output.handoff.observations)}\n\n# Work Completed\n\n${list(output.handoff.results)}\n\n# Decisions\n\nRecorded by the faux Goal runner in ${turnId}.\n\n# Blockers\n\n${output.handoff.blocker ?? "None."}\n\n# Next Steps\n\n${list(output.handoff.nextSteps)}\n`;
+  return `# Current State\n\nGoal outcome: ${output.handoff.outcome}.\n\n# Observations\n\nSee Ledger evidence ${output.handoff.evidence.join(", ") || "none"}.\n\n# Work Completed\n\nRecorded Goal progress.\n\n# Decisions\n\nRecorded by the faux Goal runner in ${turnId}.\n\n# Blockers\n\n${output.handoff.outcome === "blocked" ? "Blocked." : "None."}\n\n# Next Steps\n\nContinue from the current Goal state.\n`;
 }

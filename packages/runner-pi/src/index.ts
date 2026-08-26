@@ -3,7 +3,7 @@ import { createInterface } from "node:readline";
 import { resolveEnvSpec } from "./env-spec.js";
 import { fileURLToPath } from "node:url";
 import {
-  assertHandoff,
+  assertAgentHandoff,
   type JsonValue,
   type AgentCapability,
   type AssistantResponse,
@@ -59,7 +59,7 @@ export class PiRunnerAdapter {
         for (const trace of step.trace ?? []) request.emit(trace);
         if (step.response) return { outcome: "response", response: step.response };
         if (step.handoff) {
-          assertHandoff(step.handoff.handoff);
+          assertAgentHandoff(step.handoff.handoff);
           return { outcome: "handoff", output: step.handoff };
         }
         if (step.stopped) return { outcome: "abnormal", reason: request.turn.goalBinding ? "runner stopped without a valid handoff" : "runner stopped without a response" };

@@ -6,6 +6,7 @@
 - Recovery context/retry sequencing and Mail redelivery now use admitted trigger snapshots, including triggers coalesced under another Wake.
 - Goal revisions no longer invalidate queued Wake/Schedule motion; Supervisor binds the current active revision only when creating the Turn.
 - Removed Metric registration, collection, evaluation, and automatic owner wakes from Supervisor.
+- Removed legacy blocker/material Handoff inference; Supervisor commits the Agent's explicit outcome and evidence.
 - Removed Action/Connector dispatch, added per-Agent Runner termination barriers, and made stale due Schedules terminal instead of daemon-blocking.
 - Human admission now rechecks the Thread after a termination barrier, and atomic verification results use bounded acknowledged Mail shared by Human and Wake Turns, with child findings escalated to CEO.
 - Goal mutations fence active older Turns, every Goal-bound RPC rechecks its binding, and definition staleness ignores phase-only events across the full ancestor chain.

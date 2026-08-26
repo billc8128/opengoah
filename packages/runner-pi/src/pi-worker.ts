@@ -46,10 +46,11 @@ export async function runPiWorker(): Promise<void> {
         const handoff = JSON.parse(process.env.GOAH_PI_FAUX_HANDOFF ?? "{}") as Record<string, unknown>;
         const current = contextRecord.workRecord && typeof contextRecord.workRecord === "object" && !Array.isArray(contextRecord.workRecord) ? contextRecord.workRecord as Record<string, unknown> : {};
         const evidence = Array.isArray(contextRecord.sourceSeqs) ? contextRecord.sourceSeqs.filter((value): value is number => typeof value === "number") : [];
-        const record = `# Current State\n\nFaux Goal work completed.\n\n# Observations\n\n${JSON.stringify(handoff.observations ?? [])}\n\n# Work Completed\n\n${JSON.stringify(handoff.results ?? [])}\n\n# Decisions\n\nRecord the scripted result from ${request.execution.id}.\n\n# Blockers\n\n${String(handoff.blocker ?? "None.")}\n\n# Next Steps\n\n${JSON.stringify(handoff.nextSteps ?? [])}\n`;
+        const outcome=["progress","waiting","blocked","completion_proposed"].includes(String(handoff.outcome))?String(handoff.outcome):"progress";const handoffEvidence=Array.isArray(handoff.evidence)&&handoff.evidence.every((value)=>typeof value==="number")?handoff.evidence:evidence.length?[Math.max(...evidence)]:[];
+        const record = `# Current State\n\nFaux Goal outcome: ${outcome}.\n\n# Observations\n\nSee the cited Ledger evidence.\n\n# Work Completed\n\nExecuted the scripted faux Goal turn.\n\n# Decisions\n\nRecord the scripted result from ${request.execution.id}.\n\n# Blockers\n\n${outcome==="blocked"?"Blocked.":"None."}\n\n# Next Steps\n\nFollow the current Goal and explicit tools.\n`;
         faux.setResponses([
           fauxAssistantMessage(fauxToolCall("work_record_update", { expectedRevision: Number(current.recordRevision ?? 0), content: record, reason: "record faux Goal progress", evidence: evidence.length ? [Math.max(...evidence)] : [] }), { stopReason: "toolUse" }),
-          fauxAssistantMessage(fauxToolCall("handoff", handoff), { stopReason: "toolUse" }),
+          fauxAssistantMessage(fauxToolCall("handoff", {outcome,evidence:handoffEvidence}), { stopReason: "toolUse" }),
         ]);
       } else if (!goalState.bound) {
         faux.setResponses([fauxAssistantMessage([fauxText(process.env.GOAH_PI_FAUX_RESPONSE ?? "Hello from Goah.")])]);
@@ -193,21 +194,13 @@ function createTools(root: string, handoff: (output: TurnOutput) => void, rpc: W
     label: "Handoff",
     description: "Record a structured handoff and end the Goal-bound Turn.",
     parameters: Type.Object({
-      observations: Type.Optional(Type.Array(Type.String())),
-      results: Type.Optional(Type.Array(Type.String())),
-      nextSteps: Type.Optional(Type.Array(Type.String())),
-      blocker: Type.Optional(Type.String()),
-      material: Type.Optional(Type.Boolean()),
-      outcome: Type.Optional(Type.Union([Type.Literal("progress"), Type.Literal("waiting"), Type.Literal("blocked"), Type.Literal("completion_proposed")])),
-      evidence: Type.Optional(Type.Array(Type.Number())),
+      outcome: Type.Union([Type.Literal("progress"), Type.Literal("waiting"), Type.Literal("blocked"), Type.Literal("completion_proposed")]),
+      evidence: Type.Array(Type.Number()),
       nextWakeAt: Type.Optional(Type.String()),
     }),
     execute: async (_id, params) => {
-      const input = params as { observations?: string[]; results?: string[]; nextSteps?: string[]; blocker?: string; material?: boolean; outcome?: "progress" | "waiting" | "blocked" | "completion_proposed"; evidence?: number[]; nextWakeAt?: string };
-      const compact = goalState.binding && goalState.recordRevision !== undefined
-        ? { goalId: goalState.binding.goalId, goalRevision: goalState.binding.goalRevision, recordRevision: goalState.recordRevision, outcome: input.outcome ?? (input.blocker ? "blocked" : input.material ? "completion_proposed" : "progress"), evidence: input.evidence ?? [] }
-        : null;
-      const value: TurnOutput = { handoff: compact ?? { observations: input.observations ?? [], results: input.results ?? [], nextSteps: input.nextSteps ?? [], ...(input.blocker ? { blocker: input.blocker } : {}), ...(input.material === true ? { material: true } : {}) }, mail: [], nextWakeAt: validateNextWakeAt(input.nextWakeAt, wakeStartedAt) };
+      const input = params as { outcome: "progress" | "waiting" | "blocked" | "completion_proposed"; evidence: number[]; nextWakeAt?: string };
+      const value: TurnOutput = { handoff: {outcome:input.outcome,evidence:input.evidence}, mail: [], nextWakeAt: validateNextWakeAt(input.nextWakeAt, wakeStartedAt) };
       handoff(value);
       return { content: [{ type: "text", text: "handoff recorded" }], details: value, terminate: true };
     },
