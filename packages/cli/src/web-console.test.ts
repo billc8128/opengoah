@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { request } from "node:http"
 import test from "node:test"
 import { createRuntime, defaultConfig, loadConfig } from "./index.js"
-import { consoleMetadataPath, readConsoleMetadata, runWebConsole } from "./web-console.js"
+import { consoleMetadataPath, readConsoleMetadata, recoveryViews, runWebConsole } from "./web-console.js"
 
 test("local Console serves assets, redacted snapshots, and CEO control through Supervisor", async () => {
   const root = mkdtempSync(join(tmpdir(), "goah-console-"))
@@ -121,4 +121,48 @@ test("Console chat streams a CEO interaction and survives client disconnects", a
     for(const turn of runtime.ledger.turns().filter((candidate)=>candidate.status==="in_progress"))await runtime.supervisor.interruptTurn(turn.id)
     runtime.ledger.close()
   }
+})
+
+test("Console recovery state follows the current Goal lifecycle", () => {
+  const root = mkdtempSync(join(tmpdir(), "goah-console-recovery-"))
+  const configPath = join(root, "goah.config.json")
+  const config = { ...defaultConfig(root, { provider: "faux" }), stateDir: join(root, "state") }
+  writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`)
+  const runtime = createRuntime(loadConfig(configPath))
+  const started = runtime.supervisor.startGoal("recover failed work", "recovery-root")
+  const now = new Date().toISOString()
+  assert.equal(runtime.ledger.claimNextWake(now)?.id, started.wake.id)
+  const thread = runtime.supervisor.threadFor("ceo")
+  runtime.ledger.startTurnFromWake(started.wake.id, {
+    id: "failed-turn",
+    threadId: thread.id,
+    source: "goal",
+    goalId: started.goal.id,
+    goalRevision: started.goal.revision,
+    status: "in_progress",
+    attempt: 1,
+    error: null,
+    startedAt: now,
+    endedAt: null,
+    leaseUntil: new Date(Date.parse(now) + 60_000).toISOString(),
+    leaseToken: "test-lease",
+    runnerPid: null,
+  }, now)
+  runtime.ledger.finishTurn("failed-turn", "failed", { message: "failed" }, now, "supervisor")
+  runtime.ledger.putSchedule({
+    id: "recovery:failed-turn:1",
+    agent: "ceo",
+    nextWakeAt: new Date(Date.parse(now) + 60_000).toISOString(),
+    reason: "recovery:failed-turn",
+    setBy: "supervisor",
+    status: "pending",
+    resolvedAt: null,
+    goalId: started.goal.id,
+  }, "supervisor")
+
+  assert.deepEqual(recoveryViews(runtime.ledger), [{ turnId: "failed-turn", agent: "ceo", state: "scheduled", actionable: false }])
+  runtime.supervisor.transitionGoal(started.goal.id, "paused", "human")
+  assert.deepEqual(recoveryViews(runtime.ledger), [])
+  assert.equal(runtime.ledger.schedules()[0]?.status, "superseded")
+  runtime.ledger.close()
 })

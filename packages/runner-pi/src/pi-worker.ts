@@ -88,7 +88,9 @@ export async function runPiWorker(): Promise<void> {
     const sourceSeqs = Array.isArray(contextRecord.sourceSeqs) ? contextRecord.sourceSeqs.filter((value): value is number => Number.isInteger(value)) : [];
     const systemPrompt = goalState.bound
       ? `${process.env.GOAH_PI_SYSTEM_PROMPT ?? suppliedPrompt ?? "You are a goal-oriented worker."}\nYou must finish by calling handoff exactly once. Treat the supplied context as authoritative.`
-      : `${process.env.GOAH_PI_SYSTEM_PROMPT ?? suppliedPrompt ?? "You are Goah's primary Agent."}\nRespond normally to the Human. Do not create a Goal for routine single-turn work. When the Human expresses a durable Goal, call create_goal; after create_goal, work_on_goal, or a Root resume succeeds with a Goal binding, update the Goal Work Record and finish by calling handoff. Treat the supplied context as authoritative.`;
+      : request.turn?.source.kind==="human"
+        ? `${process.env.GOAH_PI_SYSTEM_PROMPT ?? suppliedPrompt ?? "You are Goah's primary Agent."}\nRespond normally to the Human. Do not create a Goal for routine single-turn work. When the Human expresses a durable Goal, call create_goal; after create_goal, work_on_goal, or a Root resume succeeds with a Goal binding, update the Goal Work Record and finish by calling handoff. Treat the supplied context as authoritative.`
+        : `${process.env.GOAH_PI_SYSTEM_PROMPT ?? suppliedPrompt ?? `You are Goah Agent ${request.agent}.`}\nYou received durable Mail or a system trigger without a Goal binding. Inspect the incoming context, use send_mail when another Agent needs a reply or follow-up, and finish with an ordinary response for the local transcript. Do not update a Goal Work Record or call handoff unless a future Turn is explicitly Goal-bound. Treat the supplied context as authoritative.`;
     const agent = new Agent({
       initialState: {
         systemPrompt,

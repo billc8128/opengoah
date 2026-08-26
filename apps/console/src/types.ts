@@ -83,6 +83,7 @@ export interface ConsoleSnapshot {
   wakes: WakeView[]
   wakeTriggers:WakeTriggerView[]
   schedules: ScheduleView[]
+  recoveries:Array<{turnId:string;agent:string;state:"scheduled"|"queued"|"running"|"recovered"|"needed";actionable:boolean}>
   mailbox: MailView[]
   events: EventView[]
 }

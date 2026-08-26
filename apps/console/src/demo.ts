@@ -52,6 +52,7 @@ export const demoSnapshot: ConsoleSnapshot = {
     { id: "schedule:operations", agent: "operations", nextWakeAt: "2026-08-20T14:30:00.000+08:00", reason: "Check fulfillment window", setBy: "operations", status: "pending", resolvedAt: null },
     { id: "schedule:web", agent: "web", nextWakeAt: "2026-08-20T14:30:00.000+08:00", reason: "Continue storefront launch", setBy: "ceo", status: "pending", resolvedAt: null },
   ],
+  recoveries:[],
   mailbox: [{ id: "decision-growth", to: "growth", from: "ceo", level: "decision", body: { summary: "Increase paid acquisition carefully" }, readAt: "2026-08-20T14:17:30.000+08:00" }],
   events,
 }

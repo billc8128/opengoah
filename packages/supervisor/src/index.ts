@@ -248,7 +248,6 @@ export class Supervisor {
   completeGoal(request: GoalCompletionRequest, actor = "human", wakeId?: string): GoalSnapshot {
     const goal = this.ledger.completeGoal(request, actor, wakeId);
     this.#preemptGoalTurn(goal.id,"Goal completed");
-    this.#suppressQueuedWake(goal.owner, `goal:${goal.id}:complete`,goal.id);
     return goal;
   }
   transitionGoal(id: string, phase: GoalPhase, actor = "human",scheduleMotion=true,sourceTurnId?:string): GoalSnapshot {
@@ -258,7 +257,6 @@ export class Supervisor {
     if (phase === "complete") throw new Error("goal completion requires reason and evidence");
     const next = { ...current, phase, revision: current.revision + 1 };
     const operation=phase==="paused"?"pause":phase==="blocked"?"block":"resume";this.#preemptGoalTurn(current.id,`Goal ${operation}`);this.ledger.putGoal(next,actor,undefined,{operation,reason:`Goal ${operation} requested by ${actor}`,evidence:[],...(sourceTurnId?{sourceTurnId}:{})});
-    if (phase === "paused") this.#suppressQueuedWake(next.owner, `goal:${id}:${phase}`,next.id);
     if (phase === "active"&&scheduleMotion) this.#enqueueTrigger(next.owner, `${next.parentId ? "goal" : "root"}:${id}:resumed:${next.revision}`,{goalId:next.id});
     return next;
   }
@@ -345,10 +343,6 @@ export class Supervisor {
     const existing = this.ledger.wakeByTrigger(agent, triggerRef);
     if (!existing) throw new Error("deduplicated wake is missing");
     return existing;
-  }
-
-  #suppressQueuedWake(agent: string, reason: string,goalId?:string): void {
-    for(const wake of this.ledger.wakes().filter((candidate)=>candidate.agent===agent&&(candidate.status==="queued"||candidate.status==="claimed")&&(goalId===undefined||candidate.goalId===goalId))){this.ledger.appendEvent({ streamId: wakeStream(wake.id), ts: this.#now(), actor: "supervisor", type: "wake.suppressed", data: { reason } });this.ledger.cancelWake(wake.id,this.#now());}
   }
 
   #hasActiveRoot(): boolean { return this.ledger.goals().some((goal) => goal.parentId === null && goal.owner === "ceo" && goal.phase === "active"); }
@@ -465,7 +459,7 @@ export function deriveTeam(ledger: Ledger, now = new Date().toISOString()): Team
     const owned = goals.filter((goal) => goal.owner === agent);
     const live = owned.filter((goal) => goal.phase !== "complete");
     const agentWakes = wakes.filter((wake) => wake.agent === agent).sort((a, b) => b.enqueuedSeq - a.enqueuedSeq);
-    const activeWake = agentWakes.find((wake) => wake.status==="claimed"||wake.status==="queued");
+    const activeWake = agentWakes.find((wake) => {if(wake.status!=="claimed"&&wake.status!=="queued")return false;if(!wake.goalId)return true;const goal=ledger.goal(wake.goalId);return goal?.phase==="active"&&goal.owner===agent;});
     const threadIds=new Set(threads.filter((thread)=>thread.agent===agent).map((thread)=>thread.id));const activeTurn=turns.find((turn)=>threadIds.has(turn.threadId)&&turn.status==="in_progress");
     const nextWakeAt = schedules.filter((schedule) => {if(schedule.agent!==agent||schedule.status!=="pending"||schedule.nextWakeAt<=now)return false;if(!schedule.goalId)return true;const goal=ledger.goal(schedule.goalId);return goal?.phase==="active"&&goal.owner===agent;}).map((schedule) => schedule.nextWakeAt).sort()[0] ?? null;
     const lastHandoff = [...handoffs].reverse().find((event) => event.actor === agent) ?? null;

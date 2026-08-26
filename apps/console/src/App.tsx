@@ -107,7 +107,7 @@ function Sidebar({ view, onView }: { view: View; onView(view: View): void }) {
 function Overview({ snapshot, root, onView, onTalk }: { snapshot: ConsoleSnapshot; root: GoalView | null; onView(view: View): void; onTalk(): void }) {
   const children = snapshot.goals.filter((goal) => goal.parentId === root?.id)
   const ceo = snapshot.team.find((member) => member.agent === "ceo")
-  const coveredTurnIds=new Set([...snapshot.wakeTriggers.flatMap((trigger)=>{const turnId=recoveryTurnId(trigger.triggerRef);return turnId?[turnId]:[]}),...snapshot.schedules.flatMap((schedule)=>{const turnId=schedule.status==="pending"||schedule.status==="consumed"?recoveryTurnId(schedule.id):null;return turnId?[turnId]:[]})]);const recovery=snapshot.turns.filter((turn)=>turn.status==="failed"&&!coveredTurnIds.has(turn.id)).map((turn)=>({turn,agent:snapshot.threads.find((thread)=>thread.id===turn.threadId)?.agent??"unknown"}));
+  const recovery=snapshot.recoveries.filter((item)=>item.actionable)
   const trajectory = trajectoryEvents(snapshot.events).slice(-3).reverse()
   return (
     <div className="overview-layout">
@@ -495,7 +495,6 @@ function capitalize(value: string): string { return value ? value[0]!.toUpperCas
 function formatTime(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? "—" : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }) }
 function formatDateTime(value: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) }
 function relativeTime(value: string, from = new Date().toISOString()): string { const minutes = Math.round((new Date(value).getTime() - new Date(from).getTime()) / 60_000); return minutes > 0 ? `in ${minutes}m` : minutes === 0 ? "now" : `${Math.abs(minutes)}m ago` }
-function recoveryTurnId(triggerRef:string):string|null{if(!triggerRef.startsWith("recovery:"))return null;return triggerRef.slice("recovery:".length).split(":")[0]||null}
 function record(value: unknown): Record<string, unknown> { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {} }
 
 function handoffOf(value: unknown): NonNullable<ChatExchange["handoff"]> {
