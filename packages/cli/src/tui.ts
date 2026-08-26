@@ -421,7 +421,7 @@ async function printStatus(stateDir: string, push: (line: string) => void): Prom
     const roots = Array.isArray(value.roots) ? value.roots as Array<Record<string, unknown>> : [];
     const team = Array.isArray(value.team) ? value.team as Array<Record<string, unknown>> : [];
     const pending = Array.isArray(value.pendingHuman) ? value.pendingHuman.length : 0;
-    push([tuiTheme.strong("Status"), roots[0] ? `  ${tuiTheme.active(" GOAL ")}  ${String(roots[0].objective)}  ${tuiTheme.muted(String(roots[0].phase))}` : `  ${tuiTheme.muted("No active Goal")}`, `  ${tuiTheme.muted(team.length ? team.map((member) => `${String(member.agent)} ${String(member.status)}`).join(" · ") : "No Goal Agents")}`, ...(pending ? [`  ${tuiTheme.warning(`${pending} decision${pending === 1 ? "" : "s"} need you`)}`] : []), ""].join("\n"));
+    push([tuiTheme.strong("Status"), roots[0] ? `  ${tuiTheme.active(" GOAL ")}  ${String(roots[0].objective)}  ${tuiTheme.muted(String(roots[0].phase))}` : `  ${tuiTheme.muted("No active Goal")}`, `  ${tuiTheme.muted(team.length ? team.map((member) => `${String(member.agent)} ${String(member.motion)}${member.lastOutcome?`/${String(member.lastOutcome)}`:""}`).join(" · ") : "No Goal Agents")}`, ...(pending ? [`  ${tuiTheme.warning(`${pending} decision${pending === 1 ? "" : "s"} need you`)}`] : []), ""].join("\n"));
   } catch (error) { push(errorLine(error)); }
 }
 

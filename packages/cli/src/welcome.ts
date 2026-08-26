@@ -12,7 +12,7 @@ import { tuiTheme } from "./tui-theme.js";
 
 export interface WelcomeSnapshot {
   root: { id: string; objective: string; phase: string } | null;
-  team: Array<{ agent: string; status: string }>;
+  team: Array<{ agent: string }>;
   handoffs: Array<{ agent: string; result: string }>;
   conversation: Array<{ speaker: string; text: string }>;
   runner: string;
@@ -42,11 +42,9 @@ export function welcomeSnapshot(stateDir: string, runner: RunnerDisplay): Welcom
   try {
     const goals = db.prepare("SELECT id, objective, phase, parent_id, owner FROM goals").all() as unknown as GoalRow[];
     const root = goals.find((goal) => goal.parent_id === null && goal.owner === "ceo" && goal.phase !== "complete") ?? goals.find((goal) => goal.parent_id === null) ?? null;
-    const wakeRows = db.prepare("SELECT agent, status FROM wakes ORDER BY enqueued_seq DESC").all() as unknown as Array<{ agent: string; status: string }>;
-    const turnRows=db.prepare("SELECT th.agent,t.status FROM turns t JOIN threads th ON th.id=t.thread_id ORDER BY t.started_at DESC").all() as unknown as Array<{agent:string;status:string}>;
     const childGoals = goals.filter((goal) => goal.parent_id !== null);
     const owners = [...new Set(childGoals.map((goal) => goal.owner))];
-    const team = owners.map((agent) => ({ agent, status: turnRows.some((turn)=>turn.agent===agent&&turn.status==="in_progress")?"running":wakeRows.some((wake)=>wake.agent===agent&&(wake.status==="queued"||wake.status==="claimed"))?"queued":childGoals.find((goal) => goal.owner === agent)?.phase ?? "idle" })).slice(0, WELCOME_TEAM_SLOTS);
+    const team = owners.map((agent) => ({ agent })).slice(0, WELCOME_TEAM_SLOTS);
     const handoffRows = (db.prepare("SELECT actor, data FROM events WHERE type='handoff.recorded' ORDER BY seq DESC LIMIT ?").all(WELCOME_HANDOFF_SLOTS) as unknown as HandoffRow[]).reverse();
     const handoffs = handoffRows.flatMap((row) => {
       try {

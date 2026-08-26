@@ -52,7 +52,7 @@ export class VerificationPlane {
     const result = await this.model.verifyTurn({ turnId, handoff, trace });
     this.#validate(result);
     const thread=this.ledger.thread(turn.threadId);if(!thread)throw new Error("verified Turn has no Thread");
-    const level=result.findings.length?"decision" as const:"fyi" as const;const body={type:"verification_result",turnId,agent:thread.agent,...(turn.goalId?{goalId:turn.goalId}:{}),findings:result.findings,tokensUsed:result.tokensUsed} as unknown as JsonValue;const mail:MailSnapshot={id:this.#mailId("verification",turnId,thread.agent,result),to:thread.agent,from:"verifier",level,body,readAt:null};this.ledger.putMail(mail,"verifier");
+    const level=result.findings.length?"decision" as const:"fyi" as const;const body={type:"verification_result",turnId,agent:thread.agent,findings:result.findings,tokensUsed:result.tokensUsed} as unknown as JsonValue;const goal=turn.goalId?this.ledger.goal(turn.goalId):null;const mail:MailSnapshot={id:this.#mailId("verification",turnId,thread.agent,result),to:thread.agent,from:"verifier",level,...(goal?.owner===thread.agent?{goalId:goal.id}:{}),body,readAt:null};this.ledger.putMail(mail,"verifier");
     return result;
   }
 

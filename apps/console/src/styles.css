@@ -69,7 +69,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px
 .status-queued i { background: #7151df; }
 .status-scheduled i { background: var(--green); }
 .status-blocked i, .status-abnormal i { background: var(--red); }
-.status-waiting i, .status-paused i, .status-idle-unplanned i { background: #aaa9a4; }
+.status-waiting i, .status-paused i, .status-idle i, .status-retired i { background: #aaa9a4; }
 
 .organization { padding: 22px 40px 26px; }
 .org-tree { max-width: 980px; }

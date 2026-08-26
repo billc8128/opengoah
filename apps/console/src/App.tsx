@@ -107,7 +107,7 @@ function Sidebar({ view, onView }: { view: View; onView(view: View): void }) {
 function Overview({ snapshot, root, onView, onTalk }: { snapshot: ConsoleSnapshot; root: GoalView | null; onView(view: View): void; onTalk(): void }) {
   const children = snapshot.goals.filter((goal) => goal.parentId === root?.id)
   const ceo = snapshot.team.find((member) => member.agent === "ceo")
-  const recoveredTurnIds=new Set(snapshot.wakeTriggers.flatMap((trigger)=>{const turnId=recoveryTurnId(trigger.triggerRef);return turnId?[turnId]:[]}));const recovery=snapshot.turns.filter((turn)=>turn.status==="failed"&&!recoveredTurnIds.has(turn.id)).map((turn)=>({turn,agent:snapshot.threads.find((thread)=>thread.id===turn.threadId)?.agent??"unknown"}));
+  const coveredTurnIds=new Set([...snapshot.wakeTriggers.flatMap((trigger)=>{const turnId=recoveryTurnId(trigger.triggerRef);return turnId?[turnId]:[]}),...snapshot.schedules.flatMap((schedule)=>{const turnId=schedule.status==="pending"||schedule.status==="consumed"?recoveryTurnId(schedule.id):null;return turnId?[turnId]:[]})]);const recovery=snapshot.turns.filter((turn)=>turn.status==="failed"&&!coveredTurnIds.has(turn.id)).map((turn)=>({turn,agent:snapshot.threads.find((thread)=>thread.id===turn.threadId)?.agent??"unknown"}));
   const trajectory = trajectoryEvents(snapshot.events).slice(-3).reverse()
   return (
     <div className="overview-layout">
@@ -131,7 +131,7 @@ function Overview({ snapshot, root, onView, onTalk }: { snapshot: ConsoleSnapsho
             <article className="tree-root">
               <img src="/goah-orbital-mark.png" alt="" />
               <div><strong>CEO</strong><span>{root?.objective ?? "Waiting for a root goal"}</span></div>
-              <Status status={ceo?.status ?? "waiting"} />
+              <Status status={ceo?.motion ?? "idle"} />
             </article>
             <div className="tree-children">
               {children.map((goal) => <AgentTreeRow key={goal.id} goal={goal} member={snapshot.team.find((item) => item.agent === goal.owner)} now={snapshot.now} />)}
@@ -160,7 +160,7 @@ function AgentTreeRow({ goal, member, now }: { goal: GoalView; member?: TeamView
     <article className="tree-agent">
       <Bot />
       <div><strong>{displayAgent(goal.owner)}</strong><span>{goal.objective}</span></div>
-      <Status status={member?.status ?? goal.phase} />
+      <Status status={member?.motion ?? goal.phase} />
       <small>{member?.nextWakeAt ? `Next ${formatTime(member.nextWakeAt)} · ${relativeTime(member.nextWakeAt, now)}` : ""}</small>
     </article>
   )
@@ -295,8 +295,8 @@ function Agents({ snapshot, selected, onSelect, onOpenThread }: { snapshot: Cons
   return (
     <Page title="Agents">
       <div className="agents-workbench">
-        <div className="agent-roster">{snapshot.team.map((item) => <button key={item.agent} className={item.agent === member?.agent ? "selected" : ""} onClick={() => onSelect(item.agent)}><Bot /><span><strong>{displayAgent(item.agent)}</strong><small>{snapshot.goals.find((goal) => goal.owner === item.agent)?.objective ?? "No owned goal"}</small></span><Status status={item.status} /></button>)}</div>
-        {member && <div className="agent-detail"><div className="agent-detail-head"><Bot /><div><h2>{displayAgent(member.agent)}</h2><Status status={member.status} /></div></div><section><h3>Owned goals</h3>{goals.map((goal) => <div className="owned-goal" key={goal.id}><strong>{goal.objective}</strong><span>{goal.observationMethod ?? "Observation method pending"}</span></div>)}</section><section><h3>Threads</h3><div className="thread-list">{threads.map((thread) => <button key={thread.id} onClick={() => onOpenThread(thread.id)}><span><strong>{thread.id}</strong><small>{formatDateTime(thread.updatedAt)}</small></span><ChevronRight /></button>)}{!threads.length && <Empty text="No threads for this agent yet." />}</div></section><section><h3>Work records</h3>{workRecords.map((event) => { const thread = event.streamId.startsWith("wake:") ? threadForWake(snapshot, event.streamId.slice("wake:".length)) : undefined; return <WorkRecord key={event.seq} event={event} compact onOpen={thread ? () => onOpenThread(thread.id) : undefined} /> })}{!workRecords.length && <Empty text="No agent-authored work records yet." />}</section></div>}
+        <div className="agent-roster">{snapshot.team.map((item) => <button key={item.agent} className={item.agent === member?.agent ? "selected" : ""} onClick={() => onSelect(item.agent)}><Bot /><span><strong>{displayAgent(item.agent)}</strong><small>{snapshot.goals.find((goal) => goal.owner === item.agent)?.objective ?? "No owned goal"}</small></span><Status status={item.motion} /></button>)}</div>
+        {member && <div className="agent-detail"><div className="agent-detail-head"><Bot /><div><h2>{displayAgent(member.agent)}</h2><Status status={member.motion} /><small>{member.lastOutcome?`Last outcome: ${member.lastOutcome.replaceAll("_"," ")}`:"No outcome yet"}</small></div></div><section><h3>Owned goals</h3>{goals.map((goal) => <div className="owned-goal" key={goal.id}><strong>{goal.objective}</strong><span>{goal.observationMethod ?? "Observation method pending"}</span></div>)}</section><section><h3>Threads</h3><div className="thread-list">{threads.map((thread) => <button key={thread.id} onClick={() => onOpenThread(thread.id)}><span><strong>{thread.id}</strong><small>{formatDateTime(thread.updatedAt)}</small></span><ChevronRight /></button>)}{!threads.length && <Empty text="No threads for this agent yet." />}</div></section><section><h3>Work records</h3>{workRecords.map((event) => { const thread = event.streamId.startsWith("wake:") ? threadForWake(snapshot, event.streamId.slice("wake:".length)) : undefined; return <WorkRecord key={event.seq} event={event} compact onOpen={thread ? () => onOpenThread(thread.id) : undefined} /> })}{!workRecords.length && <Empty text="No agent-authored work records yet." />}</section></div>}
       </div>
     </Page>
   )

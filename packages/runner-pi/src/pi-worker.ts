@@ -80,7 +80,7 @@ export async function runPiWorker(): Promise<void> {
       ? new Set(contextRecord.capabilities.filter((value): value is AgentCapability => typeof value === "string"))
       : undefined;
     if (contextRecord.workRecord && typeof contextRecord.workRecord === "object" && !Array.isArray(contextRecord.workRecord) && typeof contextRecord.workRecord.recordRevision === "number") goalState.recordRevision = contextRecord.workRecord.recordRevision;
-    const tools = createTools(root, (value) => { output = value; }, rpc, request.execution.startedAt, capabilities, goalState, protectedPaths);
+    const tools = createTools(root, (value) => { output = value; }, rpc, capabilities, goalState, protectedPaths);
     const contextPolicy = resolveContextPolicy(model.contextWindow, process.env);
     emit({ type: "transcript.started", data: { formatVersion: TRANSCRIPT_FORMAT_VERSION, provider, model: modelId, runner: "pi", contextWindowTokens: model.contextWindow, maxOutputTokensPerTurn: model.maxTokens } });
     const suppliedPrompt = typeof contextRecord.systemPrompt === "string" ? contextRecord.systemPrompt : undefined;
@@ -188,7 +188,7 @@ function transcriptMessage(message: AgentMessage, id: string): TranscriptMessage
   return { id, role, content: (value.content ?? value) as JsonValue, ...(value.usage !== undefined ? { usage: value.usage as JsonValue } : {}), ...(typeof value.stopReason === "string" ? { stopReason: value.stopReason } : {}), ...(typeof value.errorMessage === "string" ? { errorMessage: value.errorMessage } : {}) };
 }
 
-function createTools(root: string, handoff: (output: TurnOutput) => void, rpc: WorkerRpc, wakeStartedAt: string | null, capabilities: ReadonlySet<AgentCapability> | undefined, goalState: { bound: boolean; binding?: { goalId: string; goalRevision: number }; recordRevision?: number }, protectedPaths: string[] = []): AgentTool<any>[] {
+function createTools(root: string, handoff: (output: TurnOutput) => void, rpc: WorkerRpc, capabilities: ReadonlySet<AgentCapability> | undefined, goalState: { bound: boolean; binding?: { goalId: string; goalRevision: number }; recordRevision?: number }, protectedPaths: string[] = []): AgentTool<any>[] {
   const handoffTool: AgentTool<any> = {
     name: "handoff",
     label: "Handoff",
@@ -196,11 +196,10 @@ function createTools(root: string, handoff: (output: TurnOutput) => void, rpc: W
     parameters: Type.Object({
       outcome: Type.Union([Type.Literal("progress"), Type.Literal("waiting"), Type.Literal("blocked"), Type.Literal("completion_proposed")]),
       evidence: Type.Array(Type.Number()),
-      nextWakeAt: Type.Optional(Type.String()),
     }),
     execute: async (_id, params) => {
-      const input = params as { outcome: "progress" | "waiting" | "blocked" | "completion_proposed"; evidence: number[]; nextWakeAt?: string };
-      const value: TurnOutput = { handoff: {outcome:input.outcome,evidence:input.evidence}, mail: [], nextWakeAt: validateNextWakeAt(input.nextWakeAt, wakeStartedAt) };
+      const input = params as { outcome: "progress" | "waiting" | "blocked" | "completion_proposed"; evidence: number[] };
+      const value: TurnOutput = { handoff: {outcome:input.outcome,evidence:input.evidence} };
       handoff(value);
       return { content: [{ type: "text", text: "handoff recorded" }], details: value, terminate: true };
     },
@@ -294,13 +293,6 @@ export async function runBashCommand(root: string, input: { command: string; tim
   }
 }
 
-export function validateNextWakeAt(value: string | undefined, wakeStartedAt: string | null): string | null {
-  if (value === undefined) return null;
-  const next = Date.parse(value);
-  const started = wakeStartedAt === null ? Number.NaN : Date.parse(wakeStartedAt);
-  if (!Number.isFinite(next) || !Number.isFinite(started) || next <= started) throw new Error("nextWakeAt must be a valid time later than the current wake start");
-  return new Date(next).toISOString();
-}
 
 export interface ContextPolicy {
   compactAtTokens: number;
@@ -346,7 +338,7 @@ function createRpcTools(rpc: WorkerRpc, allowed?: ReadonlySet<AgentCapability>, 
   const definitions: Array<[AgentCapability, AgentTool<any>]> = [
     ["ledger.search", tool("ledger_search", "Search durable ledger facts.", "ledger.search", Type.Object({ query: Type.String(), limit: Type.Optional(Type.Number()) }))],
     ["memory.append", tool("memory_append", "Append a durable working-memory note that is injected into your future wakes. Record procedural knowledge, active hypotheses, and abandoned approaches with the reason; keep notes concise.", "memory.append", Type.Object({ note: Type.String() }))],
-    ["mail.send", tool("send_mail", "Send a durable message to another agent or human.", "mail.send", Type.Object({ to: Type.String(), level: Type.Union([Type.Literal("fyi"), Type.Literal("decision"), Type.Literal("emergency")]), body: Type.Any() }))],
+    ["mail.send", tool("send_mail", "Send durable Mail to another Agent. Set goalId when the Mail should open a Goal-bound Turn for that Goal. Human communication must use request_human.", "mail.send", Type.Object({ to: Type.String(), goalId: Type.Optional(Type.String()), level: Type.Union([Type.Literal("fyi"), Type.Literal("decision"), Type.Literal("emergency")]), body: Type.Any() }))],
     ["schedule.set", tool("schedule_wake", "Schedule this agent's next wake.", "schedule.set", Type.Object({ at: Type.String(), reason: Type.String() }))],
     ["team.list", tool("team_list", "Read the ledger-derived team roster and liveness state.", "team.list", Type.Object({}))],
     ["goal.get", tool("get_goal", "Read the Goal bound to this Turn, or null when the Turn is unbound.", "goal.get", Type.Object({}))],

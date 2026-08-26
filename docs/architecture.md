@@ -66,6 +66,10 @@ Wake status is scheduling-only: `queued → claimed → consumed`, with `cancell
 
 Schedule has its own durable lifecycle: `pending → consumed|cancelled|superseded`. Creating the Wake and consuming the Schedule is one transaction. Goal revisions do not invalidate future motion: a due Schedule targets the current Goal. Inactive or differently owned Goals cannot start a Turn, and reassignment retires the old owner's route.
 
+Mail routing is envelope metadata, never business JSON. Optional `goalId` opens a Goal-bound Turn only for the current owner; unrouted Mail opens an ordinary system Turn. Agent Mail cannot address Human. Handoff contains only declarative outcome/evidence, while Mail and Schedule effects are explicit tools with independent Ledger facts.
+
+Team read models keep mechanical `motion` separate from declarative `lastOutcome`; neither field drives Supervisor policy.
+
 Each Agent has one execution lane. A terminal Turn revokes Ledger authority immediately, but the lane remains occupied until its Runner process actually exits. No replacement Turn starts before that termination barrier clears.
 
 ### Runner

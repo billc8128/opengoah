@@ -251,7 +251,7 @@ test("CLI exposes one-objective CEO entry and coalesces human corrections", () =
   assert.notEqual(sent.wake.id, started.wake.id);
   const status = JSON.parse(invoke(directory, "ceo", "status"));
   assert.equal(status.roots[0].id, "company");
-  assert.equal(status.team.find((member: { agent: string }) => member.agent === "ceo").status, "queued");
+  assert.equal(status.team.find((member: { agent: string }) => member.agent === "ceo").motion, "queued");
   assert.deepEqual(JSON.parse(invoke(directory, "ceo", "inbox")), []);
 });
 

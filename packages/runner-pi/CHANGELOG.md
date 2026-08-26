@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Removed next-wake effects from Handoff and added typed Agent-only Mail routing; future motion uses schedule_wake.
+
 - Bounded Runner protocol line size and converted in-process session initialization failures into abnormal terminal results.
 - Process workers receive the admitted Wake trigger snapshot instead of inferring execution cause from the Wake's display trigger.
 - Handoff tool now requires explicit outcome and evidence; Goal and Work Record identity are injected by Supervisor.

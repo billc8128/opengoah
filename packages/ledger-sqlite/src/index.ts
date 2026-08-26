@@ -40,7 +40,7 @@ type FaultInjector = (point: FaultPoint) => void;
 type Row = Record<string, unknown>;
 type ProjectionName = "threads" | "turns" | "turn_items" | "goals" | "schedule" | "wakes" | "wake_triggers" | "mailbox" | "work_records";
 
-export const SQLITE_SCHEMA_VERSION = 18;
+export const SQLITE_SCHEMA_VERSION = 19;
 
 const createThreads = `CREATE TABLE IF NOT EXISTS threads (
   id TEXT PRIMARY KEY,
@@ -218,6 +218,7 @@ CREATE TABLE IF NOT EXISTS mailbox (
   to_agent TEXT NOT NULL,
   from_agent TEXT NOT NULL,
   level TEXT NOT NULL CHECK(level IN ('fyi','decision','emergency')),
+  goal_id TEXT REFERENCES goals(id),
   body TEXT NOT NULL CHECK(json_valid(body)),
   read_at TEXT
 ) STRICT;
@@ -376,6 +377,7 @@ export class SqliteLedger implements Ledger {
         to: goal.owner,
         from: actor,
         level: "decision",
+        goalId:goal.id,
         body: { type: "delegation", delegationId: request.id, goalId: goal.id, parentGoalId: request.parentGoalId, objective: goal.objective, observationMethod: goal.observationMethod, verificationMethod: goal.verificationMethod ?? null, brief: request.brief, reason: request.reason, evidence: request.evidence },
         readAt: null,
       };
@@ -429,7 +431,7 @@ export class SqliteLedger implements Ledger {
       const goal: GoalSnapshot = { ...current, owner: request.newOwner, revision: current.revision + 1 };
       const mail: MailSnapshot[] = [
         { id: `reassignment-old-mail:${request.id}`, to: current.owner, from: actor, level: "fyi", body: { type: "reassignment", reassignmentId: request.id, goalId: goal.id, role: "previous_owner", reason: request.reason, evidence: request.evidence }, readAt: null },
-        { id: `reassignment-new-mail:${request.id}`, to: goal.owner, from: actor, level: "decision", body: { type: "reassignment", reassignmentId: request.id, goalId: goal.id, role: "new_owner", brief: request.brief, reason: request.reason, evidence: request.evidence }, readAt: null },
+        { id: `reassignment-new-mail:${request.id}`, to: goal.owner, from: actor, level: "decision", goalId:goal.id, body: { type: "reassignment", reassignmentId: request.id, role: "new_owner", brief: request.brief, reason: request.reason, evidence: request.evidence }, readAt: null },
       ];
       const wakeBase: WakeSnapshot = { id: `reassignment-wake:${request.id}`, agent: goal.owner, triggerRef: `reassignment:${request.id}`, status: "queued", attempt: 0, enqueuedSeq: 0, claimedAt: null, consumedAt: null, turnId: null,goalId:goal.id };
       this.#insertEvent({ streamId: wakeId ? wakeStream(wakeId) : controlStream("reassignments"), ts: this.#now(), actor, type: "goal.reassigned", data: { reassignmentId: request.id, goalId: goal.id, oldOwner: current.owner, newOwner: goal.owner, mailIds: mail.map((item) => item.id), wakeId: wakeBase.id, reason: request.reason, evidence: request.evidence,request:withoutSourceTurn(request) as unknown as JsonValue } });
@@ -552,7 +554,7 @@ export class SqliteLedger implements Ledger {
 
   putMail(mail: MailSnapshot, actor: string, wakeId?: string): EventRecord { return this.putMails([mail],actor,wakeId)[0]!; }
 
-  putMails(mails:MailSnapshot[],actor:string,wakeId?:string):EventRecord[]{const ids=new Set<string>();const prior=new Map<string,EventRecord>();for(const mail of mails){this.#assertMailRequest(mail,actor);if(ids.has(mail.id))throw new Error("mail batch contains a duplicate id");ids.add(mail.id);const row=this.db.prepare("SELECT * FROM mailbox WHERE id=?").get(mail.id) as Row|undefined;if(!row)continue;const current=mapMail(row);if(current.to!==mail.to||current.from!==mail.from||current.level!==mail.level||!isDeepStrictEqual(current.body,mail.body))throw new Error("mail id was reused with different content");const event=this.db.prepare("SELECT * FROM events WHERE type='mail.put' AND json_extract(data,'$.snapshot.id')=? ORDER BY seq LIMIT 1").get(mail.id) as Row|undefined;if(!event)throw new Error("mail projection has no source event");prior.set(mail.id,mapEvent(event));}return this.#transaction(()=>mails.map((mail)=>prior.get(mail.id)??this.#recordProjection("mailbox",mail,actor,"mail.put",wakeId)));}
+  putMails(mails:MailSnapshot[],actor:string,wakeId?:string):EventRecord[]{const ids=new Set<string>();const prior=new Map<string,EventRecord>();for(const mail of mails){this.#assertMailRequest(mail,actor);if(ids.has(mail.id))throw new Error("mail batch contains a duplicate id");ids.add(mail.id);const row=this.db.prepare("SELECT * FROM mailbox WHERE id=?").get(mail.id) as Row|undefined;if(!row)continue;const current=mapMail(row);if(current.to!==mail.to||current.from!==mail.from||current.level!==mail.level||(current.goalId??null)!==(mail.goalId??null)||!isDeepStrictEqual(current.body,mail.body))throw new Error("mail id was reused with different content");const event=this.db.prepare("SELECT * FROM events WHERE type='mail.put' AND json_extract(data,'$.snapshot.id')=? ORDER BY seq LIMIT 1").get(mail.id) as Row|undefined;if(!event)throw new Error("mail projection has no source event");prior.set(mail.id,mapEvent(event));}return this.#transaction(()=>mails.map((mail)=>prior.get(mail.id)??this.#recordProjection("mailbox",mail,actor,"mail.put",wakeId)));}
 
   commitHandoff(commit: HandoffCommit): EventRecord {
     return this.#transaction(() => {
@@ -562,19 +564,11 @@ export class SqliteLedger implements Ledger {
       if(turn.goalId===null||turn.goalRevision===null)throw new Error("only a Goal-bound Turn may commit Handoff");const goal=this.#getGoal(turn.goalId);if(!goal||goal.owner!==commit.agent||goal.phase!=="active"||goal.revision!==turn.goalRevision)throw new Error("Handoff Turn Goal binding is stale");const record=this.workRecord(goal.id);if(!record||record.updatedInTurn!==turn.id||record.goalRevision!==goal.revision||record.recordRevision<1)throw new Error("Goal-bound Turn must update its Work Record before Handoff");assertHandoff(commit.output.handoff);if(!("goalId" in commit.output.handoff)||commit.output.handoff.goalId!==goal.id||commit.output.handoff.goalRevision!==goal.revision||commit.output.handoff.recordRevision!==record.recordRevision)throw new Error("Goal Handoff does not match the current Goal and Work Record");this.#assertEvidenceExists(commit.output.handoff.evidence);
       if(commit.item.turnId!==turn.id||commit.item.type!=="handoff"||commit.item.status!=="completed"||commit.item.completedAt!==commit.ts||commit.item.createdAt!==commit.ts||commit.item.ordinal!==this.turnItems(turn.id).length+1||!isDeepStrictEqual(commit.item.data,commit.output.handoff))throw new Error("handoff Item does not match active TurnOutput");
       if (commit.sourceWakeId) { const wake = this.#requiredWake(commit.sourceWakeId); if (wake.status !== "consumed" || wake.turnId !== turn.id) throw new Error("handoff source Wake does not match Turn"); }
-      if(commit.output.mail.length!==commit.outgoingMail.length||commit.output.mail.some((draft,index)=>{const mail=commit.outgoingMail[index];return!mail||mail.to!==draft.to||mail.level!==draft.level||!isDeepStrictEqual(mail.body,draft.body);} ))throw new Error("outgoing Mail does not match TurnOutput");const parsedNext=commit.output.nextWakeAt===null?null:Date.parse(commit.output.nextWakeAt);if(parsedNext!==null&&(!Number.isFinite(parsedNext)||parsedNext<=Date.parse(turn.startedAt)))throw new Error("Handoff next wake must be later than the Turn start");const nextWakeAt=parsedNext===null?null:new Date(parsedNext).toISOString();if((nextWakeAt===null)!==(commit.schedule===null))throw new Error("Handoff Schedule presence does not match TurnOutput");const normalizedSchedule=commit.schedule?this.#normalizeSchedule(commit.schedule,commit.agent,{goalId:turn.goalId}):null;if(normalizedSchedule&&normalizedSchedule.nextWakeAt!==nextWakeAt)throw new Error("Handoff Schedule time does not match TurnOutput");
       const streamId = `turn:${commit.turnId}`;
       const event = this.#insertEvent({ streamId, ts: commit.ts, actor: commit.agent, type: "handoff.recorded", data: commit.output.handoff as unknown as JsonValue });
       this.#admitTurnItem(commit.item,commit.agent,streamId);
       const delivered = new Set(commit.mailIds);
       this.#recordMailReads(this.unreadMail(commit.agent).filter((candidate) => delivered.has(candidate.id)),commit.ts,streamId);
-      for (const mail of commit.outgoingMail) {
-        this.#assertNewMail(mail,commit.agent);
-        this.#recordProjection("mailbox", mail, commit.agent, "mail.put", undefined, commit.ts, undefined, streamId);
-      }
-      if (normalizedSchedule) {
-        this.#admitSchedule(normalizedSchedule,commit.agent,undefined,commit.ts,streamId,{goalId:turn.goalId},false);
-      }
       if(this.turnItems(turn.id).some((item)=>item.status==="in_progress"))throw new Error("successful Turn cannot retain in-progress Items");
       this.#insertEvent({streamId,ts:commit.ts,actor:"supervisor",type:"transcript.completed",data:{}});this.#recordProjection("turns",{...turn,status:"completed",error:null,endedAt:commit.ts,leaseUntil:null,leaseToken:null,runnerPid:null},"supervisor","turn.completed",undefined,commit.ts,undefined,streamId);
       return event;
@@ -585,6 +579,7 @@ export class SqliteLedger implements Ledger {
   dueSchedules(now: string): ScheduleSnapshot[] { return (this.db.prepare("SELECT * FROM schedule WHERE status='pending' AND next_wake_at <= ? ORDER BY next_wake_at,id").all(now) as Row[]).map(mapSchedule); }
   unreadMail(agent: string): MailSnapshot[] { return (this.db.prepare("SELECT * FROM mailbox WHERE to_agent=? AND read_at IS NULL ORDER BY rowid").all(agent) as Row[]).map(mapMail); }
   lastEvent(actor: string, type: string): EventRecord | null { const row = this.db.prepare("SELECT * FROM events WHERE actor=? AND type=? ORDER BY seq DESC LIMIT 1").get(actor, type) as Row | undefined; return row ? mapEvent(row) : null; }
+  lastGoalHandoff(goalId:string):EventRecord|null{const row=this.db.prepare("SELECT * FROM events WHERE type='handoff.recorded' AND json_extract(data,'$.goalId')=? ORDER BY seq DESC LIMIT 1").get(goalId) as Row|undefined;return row?mapEvent(row):null;}
   latestEvent(): EventRecord | null { const row = this.db.prepare("SELECT * FROM events ORDER BY seq DESC LIMIT 1").get() as Row | undefined; return row ? mapEvent(row) : null; }
   eventsForWake(wakeId: string): EventRecord[] { return this.readStream(wakeStream(wakeId)); }
   wake(id: string): WakeSnapshot | null { const row = this.db.prepare("SELECT * FROM wakes WHERE id=?").get(id) as Row | undefined; return row ? mapWake(row) : null; }
@@ -727,7 +722,7 @@ export class SqliteLedger implements Ledger {
   #cancelWakeProjection(wake:WakeSnapshot,now:string):WakeSnapshot{if(wake.status!=="queued"&&wake.status!=="claimed")throw new Error("only a pending Wake may be cancelled");this.#resolveWakeTriggers(wake.id,now);const next={...wake,status:"cancelled" as const,consumedAt:now};this.#recordProjection("wakes",next,"supervisor","wake.cancelled",wake.id,now);return next;}
   #requiredSchedule(id:string):ScheduleSnapshot{const row=this.db.prepare("SELECT * FROM schedule WHERE id=?").get(id) as Row|undefined;if(!row)throw new Error(`schedule not found: ${id}`);return mapSchedule(row);}
   #admitTurnItem(item:TurnItemSnapshot,actor:string,streamId=`turn:${item.turnId}`):EventRecord{if(!item.id.trim()||!item.turnId.trim())throw new Error("turn item id and turn are required");const turn=this.turn(item.turnId);if(!turn)throw new Error("turn item turn does not exist");if(turn.status!=="in_progress")throw new Error("terminal turn cannot accept items");if(item.status==="in_progress"&&item.completedAt!==null||item.status!=="in_progress"&&item.completedAt===null)throw new Error("turn item terminal time does not match status");const current=this.db.prepare("SELECT * FROM turn_items WHERE id=?").get(item.id) as Row|undefined;if(current&&(String(current.turn_id)!==item.turnId||String(current.type)!==item.type||String(current.status)!=="in_progress"))throw new Error("turn item identity or terminal state cannot change");return this.#recordProjection("turn_items",item,actor,current?`item.${item.type}.${item.status}`:`item.${item.type}.started`,undefined,item.completedAt??item.createdAt,undefined,streamId);}
-  #assertMailRequest(mail:MailSnapshot,actor:string):void{if(!mail.id.trim()||!mail.to.trim()||!mail.from.trim())throw new Error("mail id, sender, and recipient are required");if(mail.from!==actor&&actor!=="supervisor")throw new Error("mail sender does not match actor");if(mail.readAt!==null)throw new Error("new mail must be unread");}
+  #assertMailRequest(mail:MailSnapshot,actor:string):void{if(!mail.id.trim()||!mail.to.trim()||!mail.from.trim())throw new Error("mail id, sender, and recipient are required");if(mail.from!==actor&&actor!=="supervisor")throw new Error("mail sender does not match actor");if(mail.readAt!==null)throw new Error("new mail must be unread");if(mail.goalId){const goal=this.#getGoal(mail.goalId);if(!goal||goal.owner!==mail.to)throw new Error("Mail Goal route is not owned by its recipient");}}
   #assertNewMail(mail:MailSnapshot,actor:string):void{this.#assertMailRequest(mail,actor);if(this.db.prepare("SELECT 1 FROM mailbox WHERE id=?").get(mail.id))throw new Error("mail id is already in use");}
   #recordMailReads(mails:MailSnapshot[],now:string,streamId:string):void{for(const mail of mails)this.#recordProjection("mailbox",{...mail,readAt:now},"supervisor","mail.read",undefined,now,undefined,streamId);const recipients=new Set(mails.map((mail)=>mail.to));const ids=new Set(mails.map((mail)=>mail.id));for(const wake of this.wakes().filter((candidate)=>recipients.has(candidate.agent)&&(candidate.status==="queued"||candidate.status==="claimed"))){for(const trigger of this.wakeTriggers(wake.id).filter((candidate)=>candidate.status==="pending")){const mailId=mailIdFromTrigger(trigger.triggerRef);if(mailId&&ids.has(mailId)){const next={...trigger,status:"resolved" as const,resolvedAt:now};this.#recordProjection("wake_triggers",next,"supervisor","wake_trigger.resolved",wake.id,now);}}if(this.wakeTriggers(wake.id).every((trigger)=>trigger.status==="resolved"))this.#cancelWakeProjection(wake,now);}}
   #normalizeSchedule(value:ScheduleSnapshot,actor:string,binding?:{goalId:string|null}):ScheduleSnapshot{if(actor!=="supervisor"&&actor!==value.agent)throw new Error("schedule may only be set by its agent or supervisor");if(value.setBy!==actor)throw new Error("schedule setBy does not match actor");const parsed=Date.parse(value.nextWakeAt);if(!value.id.trim()||!value.agent.trim()||!value.reason.trim()||!Number.isFinite(parsed))throw new Error("schedule requires an id, agent, valid time, and reason");const normalized={...value,nextWakeAt:new Date(parsed).toISOString()};if(normalized.status!=="pending"||normalized.resolvedAt!==null)throw new Error("new schedule must be pending");if(binding&&(normalized.goalId??null)!==binding.goalId)throw new Error("handoff schedule does not match the Turn Goal binding");if(normalized.goalId){const goal=this.#getGoal(normalized.goalId);if(!goal||goal.owner!==normalized.agent||goal.phase!=="active")throw new Error("schedule Goal target is inactive or owned by another Agent");}return normalized;}
@@ -788,7 +783,7 @@ export class SqliteLedger implements Ledger {
       const v=raw as WakeTriggerSnapshot;this.db.prepare(`INSERT INTO wake_triggers VALUES (?,?,?,?,?,?,?) ON CONFLICT(wake_id,trigger_ref) DO UPDATE SET status=excluded.status,resolved_at=excluded.resolved_at`).run(v.wakeId,v.agent,v.triggerRef,v.source,v.status,v.addedAt,v.resolvedAt);
     } else if (projection === "mailbox") {
       const v = raw as MailSnapshot;
-      this.db.prepare(`INSERT INTO mailbox VALUES (?,?,?,?,json(?),?) ON CONFLICT(id) DO UPDATE SET to_agent=excluded.to_agent,from_agent=excluded.from_agent,level=excluded.level,body=excluded.body,read_at=excluded.read_at`).run(v.id,v.to,v.from,v.level,JSON.stringify(v.body),v.readAt);
+      this.db.prepare(`INSERT INTO mailbox VALUES (?,?,?,?,?,json(?),?) ON CONFLICT(id) DO UPDATE SET to_agent=excluded.to_agent,from_agent=excluded.from_agent,level=excluded.level,goal_id=excluded.goal_id,body=excluded.body,read_at=excluded.read_at`).run(v.id,v.to,v.from,v.level,v.goalId??null,JSON.stringify(v.body),v.readAt);
     }
   }
 
@@ -825,5 +820,5 @@ function lineDiff(from: string, to: string): string {
 function mapSchedule(r: Row): ScheduleSnapshot { return {id:String(r.id),agent:String(r.agent),nextWakeAt:String(r.next_wake_at),reason:String(r.reason),setBy:String(r.set_by),status:String(r.status) as ScheduleSnapshot["status"],resolvedAt:r.resolved_at===null?null:String(r.resolved_at),...(r.goal_id===null||r.goal_id===undefined?{}:{goalId:String(r.goal_id)})}; }
 function mapWake(r: Row): WakeSnapshot { return {id:String(r.id),agent:String(r.agent),triggerRef:String(r.trigger_ref),status:String(r.status) as WakeSnapshot["status"],attempt:Number(r.attempt),enqueuedSeq:Number(r.enqueued_seq),claimedAt:r.claimed_at===null?null:String(r.claimed_at),consumedAt:r.consumed_at===null?null:String(r.consumed_at),turnId:r.turn_id===null?null:String(r.turn_id),...(r.goal_id===null||r.goal_id===undefined?{}:{goalId:String(r.goal_id)})}; }
 function mapWakeTrigger(r:Row):WakeTriggerSnapshot{return{wakeId:String(r.wake_id),agent:String(r.agent),triggerRef:String(r.trigger_ref),source:String(r.source) as WakeTriggerSnapshot["source"],status:String(r.status) as WakeTriggerSnapshot["status"],addedAt:String(r.added_at),resolvedAt:r.resolved_at===null?null:String(r.resolved_at)};}
-function mapMail(r: Row): MailSnapshot { return {id:String(r.id),to:String(r.to_agent),from:String(r.from_agent),level:String(r.level) as MailSnapshot["level"],body:JSON.parse(String(r.body)),readAt:r.read_at===null?null:String(r.read_at)}; }
+function mapMail(r: Row): MailSnapshot { return {id:String(r.id),to:String(r.to_agent),from:String(r.from_agent),level:String(r.level) as MailSnapshot["level"],...(r.goal_id===null||r.goal_id===undefined?{}:{goalId:String(r.goal_id)}),body:JSON.parse(String(r.body)),readAt:r.read_at===null?null:String(r.read_at)}; }
 function mailIdFromTrigger(trigger:string):string|null{if(!trigger.startsWith("mail:"))return null;return trigger.slice("mail:".length).split("@redelivery:")[0]||null;}

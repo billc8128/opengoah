@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Uses typed Mail routes, reserves Human requests for CEO, commits effect-free Handoffs, scopes outcome context by Goal, and separates Team motion/outcome.
+
 - Turn source and Human authority now derive from pending durable Wake triggers rather than the Wake's original display trigger.
 - Recovery context/retry sequencing and Mail redelivery now use admitted trigger snapshots, including triggers coalesced under another Wake.
 - Goal revisions no longer invalidate queued Wake/Schedule motion; Supervisor binds the current active revision only when creating the Turn.

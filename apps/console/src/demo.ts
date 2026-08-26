@@ -30,10 +30,10 @@ export const demoSnapshot: ConsoleSnapshot = {
     { id: "storefront", parentId: "company", objective: "Launch storefront", observationMethod: "Run storefront checks and require a successful production smoke test.", verificationMethod: "Run storefront checks and require a successful production smoke test.", owner: "web", phase: "active", revision: 1 },
   ],
   team: [
-    { agent: "ceo", goalIds: ["company"], status: "running", lastHandoffSeq: 12841, lastWakeStatus: "consumed", nextWakeAt: null },
-    { agent: "growth", goalIds: ["growth"], status: "running", lastHandoffSeq: 12857, lastWakeStatus: "consumed", nextWakeAt: null },
-    { agent: "operations", goalIds: ["orders"], status: "scheduled", lastHandoffSeq: 12835, lastWakeStatus: "consumed", nextWakeAt: "2026-08-20T14:30:00.000+08:00" },
-    { agent: "web", goalIds: ["storefront"], status: "queued", lastHandoffSeq: 12836, lastWakeStatus: "queued", nextWakeAt: "2026-08-20T14:30:00.000+08:00" },
+    { agent: "ceo", goalIds: ["company"], motion: "running",lastOutcome:"progress", lastHandoffSeq: 12841, lastWakeStatus: "consumed", nextWakeAt: null },
+    { agent: "growth", goalIds: ["growth"], motion: "running",lastOutcome:"completion_proposed", lastHandoffSeq: 12857, lastWakeStatus: "consumed", nextWakeAt: null },
+    { agent: "operations", goalIds: ["orders"], motion: "scheduled",lastOutcome:"progress", lastHandoffSeq: 12835, lastWakeStatus: "consumed", nextWakeAt: "2026-08-20T14:30:00.000+08:00" },
+    { agent: "web", goalIds: ["storefront"], motion: "queued",lastOutcome:"completion_proposed", lastHandoffSeq: 12836, lastWakeStatus: "queued", nextWakeAt: "2026-08-20T14:30:00.000+08:00" },
   ],
   threads: [
     { id: "thread:growth", agent: "growth", parentThreadId: null, createdAt: "2026-08-20T14:11:00.000+08:00", updatedAt: "2026-08-20T14:18:18.000+08:00" },

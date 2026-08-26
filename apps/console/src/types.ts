@@ -14,7 +14,8 @@ export interface GoalView {
 export interface TeamView {
   agent: string
   goalIds: string[]
-  status: "running" | "queued" | "scheduled" | "waiting" | "blocked" | "idle_unplanned" | "retired"
+  motion: "running" | "queued" | "scheduled" | "idle" | "retired"
+  lastOutcome: "progress" | "waiting" | "blocked" | "completion_proposed" | null
   lastHandoffSeq: number | null
   lastWakeStatus: string | null
   nextWakeAt: string | null
@@ -34,7 +35,7 @@ export interface WakeView {
 export interface WakeTriggerView { wakeId:string;agent:string;triggerRef:string;source:"human"|"goal"|"system";status:"pending"|"resolved";addedAt:string;resolvedAt:string|null }
 
 export interface ScheduleView { id: string; agent: string; nextWakeAt: string; reason: string; setBy: string; status: "pending" | "consumed" | "cancelled" | "superseded"; resolvedAt: string | null }
-export interface MailView { id: string; to: string; from: string; level: string; body: JsonValue; readAt: string | null }
+export interface MailView { id: string; to: string; from: string; level: string; goalId?:string; body: JsonValue; readAt: string | null }
 export interface EventView { seq: number; streamId: string; streamSeq: number; ts: string; actor: string; type: string; data: JsonValue }
 export interface TrajectoryItemView { event: EventView; agent: string; wakeId: string | null }
 export interface TrajectoryPageView { items: TrajectoryItemView[]; nextBeforeSeq: number | null }

@@ -66,8 +66,8 @@ export function composeActiveContext(input: ActiveContextInput): ActiveContextVi
     ["Wake", [...input.wakeTriggers.filter((trigger)=>trigger.status==="pending").map((trigger)=>`- [${trigger.source}] ${trigger.triggerRef}`), `- Attempt: ${input.wake.attempt}`]],
     ["Working memory", (input.workingMemory ?? []).map((event) => `- ${String(field(event.data, "note") ?? "")} [event:${event.seq}]`)],
     ["Last outcome", typeof handoff?.outcome === "string" ? [`- ${handoff.outcome}${input.lastHandoff ? ` [event:${input.lastHandoff.seq}]` : ""}`] : []],
-    ["Incoming", input.mail.map((mail) => `- [${mail.level}] ${mail.id} from ${mail.from}: ${render(mail.body,2_000)}`)],
-    ["Team motion", input.team.map((member) => `- ${member.agent}: ${member.status}; goals=${member.goalIds.join(",") || "none"}; next=${member.nextWakeAt ?? "none"}; handoff=${member.lastHandoffSeq ?? "none"}`)],
+    ["Incoming", input.mail.map((mail) => `- [${mail.level}] ${mail.id} from ${mail.from}${mail.goalId?` for Goal ${mail.goalId}`:""}: ${render(mail.body,2_000)}`)],
+    ["Team motion", input.team.map((member) => `- ${member.agent}: motion=${member.motion}; outcome=${member.lastOutcome??"none"}; goals=${member.goalIds.join(",") || "none"}; next=${member.nextWakeAt ?? "none"}; handoff=${member.lastHandoffSeq ?? "none"}`)],
     ["Team handoffs", input.teamHandoffs.map((event) => `- ${event.actor}: ${render(event.data)} [event:${event.seq}]`)],
     ["Recovery", input.recoveryEvents.map((event) => `- ${event.type}: ${render(event.data)} [event:${event.seq}]`)],
   ];

@@ -56,7 +56,7 @@ export interface WakeSnapshot {
 }
 export interface WakeTriggerSnapshot { wakeId: string; agent: string; triggerRef: string; source: TurnSourceKind; status: WakeTriggerStatus; addedAt: string; resolvedAt: string | null }
 export type MailLevel = "fyi" | "decision" | "emergency";
-export interface MailSnapshot { id: string; to: string; from: string; level: MailLevel; body: JsonValue; readAt: string | null }
+export interface MailSnapshot { id: string; to: string; from: string; level: MailLevel; goalId?: string; body: JsonValue; readAt: string | null }
 export interface DelegationRequest {
   id: string;
   parentGoalId: string;
@@ -80,11 +80,12 @@ export interface ReassignmentRequest {
 }
 export interface ReassignmentResult { reassignmentId: string; goal: GoalSnapshot; mail: MailSnapshot[]; wake: WakeSnapshot }
 export interface GoalCompletionRequest { goalId: string; revision: number; reason: string; evidence: number[];sourceTurnId?:string }
-export type TeamMemberStatus = "running" | "queued" | "scheduled" | "waiting" | "blocked" | "idle_unplanned" | "retired";
+export type TeamMemberMotion = "running" | "queued" | "scheduled" | "idle" | "retired";
 export interface TeamMemberView {
   agent: string;
   goalIds: string[];
-  status: TeamMemberStatus;
+  motion: TeamMemberMotion;
+  lastOutcome: GoalOutcome | null;
   lastHandoffSeq: number | null;
   lastWakeStatus: WakeStatus | null;
   nextWakeAt: string | null;
@@ -93,9 +94,8 @@ export type GoalOutcome = "progress" | "waiting" | "blocked" | "completion_propo
 export interface AgentHandoff { outcome: GoalOutcome; evidence: number[] }
 export interface GoalHandoff extends AgentHandoff { goalId: string; goalRevision: number; recordRevision: number }
 export type Handoff = GoalHandoff;
-export interface MailDraft { to: string; level: MailLevel; body: JsonValue }
-export interface TurnOutput { handoff: AgentHandoff; mail: MailDraft[]; nextWakeAt: string | null }
-export interface CommittedTurnOutput { handoff: GoalHandoff; mail: MailDraft[]; nextWakeAt: string | null }
+export interface TurnOutput { handoff: AgentHandoff }
+export interface CommittedTurnOutput { handoff: GoalHandoff }
 export interface RunnerTraceEvent { type: string; data: JsonValue }
 
 export type AgentRole = "child" | "ceo" | "verifier" | "audit";
@@ -134,7 +134,7 @@ export type RunnerCandidateResult = { outcome: "response"; response: AssistantRe
 export interface RunnerHandle { pid: number | null; begin(): void; result: Promise<RunnerCandidateResult>; steer?(message: string): Promise<void>; terminate(): Promise<void> }
 export interface Runner { readonly isolation: "process"; prepare(request: RunRequest): RunnerHandle; terminateProcess(pid: number, runnerProfileId?: string): Promise<void> }
 
-export interface HandoffCommit { agent: string; turnId: string; sourceWakeId: string | null; mailIds: string[]; ts: string; output: CommittedTurnOutput; outgoingMail: MailSnapshot[]; schedule: ScheduleSnapshot | null; item: TurnItemSnapshot }
+export interface HandoffCommit { agent: string; turnId: string; sourceWakeId: string | null; mailIds: string[]; ts: string; output: CommittedTurnOutput; item: TurnItemSnapshot }
 
 /** Standard execution modules composed on top of the generic event store. */
 export interface Ledger extends EventStore {
@@ -174,6 +174,7 @@ export interface Ledger extends EventStore {
   dueSchedules(now: string): ScheduleSnapshot[];
   unreadMail(agent: string): MailSnapshot[];
   lastEvent(actor: string, type: string): EventRecord | null;
+  lastGoalHandoff(goalId:string):EventRecord|null;
   latestEvent(): EventRecord | null;
   eventsForWake(wakeId: string): EventRecord[];
   wake(id: string): WakeSnapshot | null;

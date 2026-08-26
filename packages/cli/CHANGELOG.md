@@ -4,6 +4,7 @@
 
 - Removed `silencePolicy`; organizational waiting and follow-up are Agent decisions expressed with Handoff, Mail, and Schedule tools.
 - Updated terminal and welcome Handoff presentation to the declarative outcome/evidence contract.
+- Updated status and Console read models for typed Mail routes, recovery Schedules, and separate Team motion/outcome.
 
 - Removed Action approval commands and Console surfaces; snapshots now expose the closed Schedule lifecycle instead.
 - Local Console rejects non-canonical Host headers before setting its auth cookie; generic goal-update no longer bypasses atomic ownership reassignment.

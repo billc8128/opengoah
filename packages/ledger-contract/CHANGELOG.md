@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Contract 0.13 adds typed Mail Goal routing, removes all Handoff effect fields, and splits Team motion from lastOutcome.
+
 - Contract 0.12 makes Wake and Schedule revision-neutral while Turn admission owns the exact Goal revision fence.
 - Removed the framework Metric vocabulary; arbitrary observations are Agent Tool Results and ordinary Ledger evidence.
 - Split Agent Handoff drafts from committed Goal Handoffs and require explicit outcome/evidence.

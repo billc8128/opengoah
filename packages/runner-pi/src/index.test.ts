@@ -6,7 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantResponse, RunRequest, TurnSnapshot, WakeSnapshot, TurnOutput } from "goah-ledger-contract";
 import { PiRunnerAdapter, ProcessRunner, piWorkerPath, type PiDriver } from "./index.js";
-import { assistantResponseText, bashTimeoutMs, compactMessages, compactMessagesToTokenBudget, linuxSandboxArgs, resolveContextPolicy, runBashCommand, sandboxWorkspacePaths, scopedRunnerPath, snapshotModelConfig, validateNextWakeAt } from "./pi-worker.js";
+import { assistantResponseText, bashTimeoutMs, compactMessages, compactMessagesToTokenBudget, linuxSandboxArgs, resolveContextPolicy, runBashCommand, sandboxWorkspacePaths, scopedRunnerPath, snapshotModelConfig } from "./pi-worker.js";
 import { createPiModel, modelCatalog, providerCatalog } from "./model-provider.js";
 
 const wake: WakeSnapshot = { id: "w", agent: "a", triggerRef: "t", status: "consumed", attempt: 1, enqueuedSeq: 1, claimedAt:"2026-08-18T00:00:00.000Z",consumedAt:"2026-08-18T00:00:00.000Z",turnId:"turn" };
@@ -44,7 +44,7 @@ test("runner policy is external and a multi-step driver can hand off", async () 
   const now = "2026-08-18T00:00:00.000Z";
   const faux = driver([
     {},
-    { handoff: { handoff: { outcome:"progress",evidence:[1] }, mail: [], nextWakeAt: null } },
+    { handoff: { handoff: { outcome:"progress",evidence:[1] } } },
   ]);
   const request: RunRequest = {
     ...requestBase, turn: goalTurn, context: {},
@@ -226,14 +226,6 @@ test("token-budget compaction keeps the first message and a bounded recent tail"
   assert.equal(compacted.at(-1), messages.at(-1));
   assert.ok(compacted.length < messages.length);
   assert.ok(Math.ceil(JSON.stringify(compacted.slice(1)).length / 4) <= 350);
-});
-
-test("handoff rejects stale next-wake times", () => {
-  const startedAt = "2026-08-19T00:00:00.000Z";
-  assert.equal(validateNextWakeAt(undefined, startedAt), null);
-  assert.equal(validateNextWakeAt("2026-08-19T01:00:00Z", startedAt), "2026-08-19T01:00:00.000Z");
-  assert.throws(() => validateNextWakeAt("2025-08-19T01:00:00Z", startedAt), /later than/);
-  assert.throws(() => validateNextWakeAt("not-a-date", startedAt), /later than/);
 });
 
 test("request snapshots allowlist model behavior and never persist credentials", () => {
