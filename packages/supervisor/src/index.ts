@@ -140,7 +140,7 @@ export class Supervisor {
   }
   startGoal(objective: string, id: string = randomUUID()): { goal: GoalSnapshot; wake: WakeSnapshot } {
     const goal = this.createRootGoal(objective, id);
-    const wake = this.#enqueueTrigger("ceo", `root:${id}:created`,{goalId:goal.id,goalRevision:goal.revision});
+    const wake = this.#enqueueTrigger("ceo", `root:${id}:created`,{goalId:goal.id});
     if (!wake) throw new Error("CEO wake was not admitted for an active root goal");
     return { goal, wake };
   }
@@ -160,7 +160,7 @@ export class Supervisor {
     if (!message.trim()) throw new Error("message is required");
     const thread = this.threadFor("ceo"); const active = this.ledger.activeTurn(thread.id);
     if (active) {
-      if (active.source !== "human") { const goalId = active.goalId; await this.interruptTurn(active.id); if (goalId){const goal=this.ledger.goal(goalId);if(goal?.phase==="active")this.#enqueueTrigger(goal.owner,`human-interrupted:${active.id}`,{goalId:goal.id,goalRevision:goal.revision});} }
+      if (active.source !== "human") { const goalId = active.goalId; await this.interruptTurn(active.id); if (goalId){const goal=this.ledger.goal(goalId);if(goal?.phase==="active")this.#enqueueTrigger(goal.owner,`human-interrupted:${active.id}`,{goalId:goal.id});} }
       else { const handle=this.#handles.get(active.id);if(handle&&!handle.steer)await this.interruptTurn(active.id);else if(handle?.steer){const item=this.#appendTurnItem(active.id,"user_message",{text:message},"human",randomUUID(),"in_progress");try{await handle.steer(message);const stored=this.ledger.turnItems(active.id).find((candidate)=>candidate.id===item.id);if(this.ledger.turn(active.id)?.status==="in_progress"&&stored?.status==="in_progress"){this.ledger.putTurnItem({...stored,status:"completed",completedAt:this.#now()},"human");return{threadId:thread.id,turnId:active.id,steered:true};}}catch{const stored=this.ledger.turnItems(active.id).find((candidate)=>candidate.id===item.id);if(this.ledger.turn(active.id)?.status==="in_progress"&&stored?.status==="in_progress")this.ledger.putTurnItem({...stored,status:"failed",completedAt:this.#now()},"human");if(this.ledger.turn(active.id)?.status==="in_progress")await this.interruptTurn(active.id);}}else{this.#appendTurnItem(active.id,"user_message",{text:message},"human");return{threadId:thread.id,turnId:active.id,steered:true};} }
     }
     await this.#awaitAgentExecution("ceo");
@@ -212,7 +212,7 @@ export class Supervisor {
   async #terminateHandle(turnId:string,handle:RunnerHandle):Promise<void>{try{await handle.terminate();}catch(error){this.#recordCleanupFailure(turnId,error);}}
   #recordCleanupFailure(turnId:string,error:unknown):void{this.ledger.appendEvent({streamId:`turn:${turnId}`,ts:this.#now(),actor:"supervisor",type:"runner.cleanup_failed",data:{message:error instanceof Error?error.message:String(error)},ignorable:true});}
 
-  #scheduleTurnRecovery(sourceWake:WakeSnapshot|null,triggers:WakeTriggerSnapshot[],turnId:string,agent:string):void{if(!sourceWake)return;const prior=Math.max(0,...triggers.map((trigger)=>parseRecoveryTrigger(trigger.triggerRef)?.attempt??0));const next=prior+1;const goal=sourceWake.goalId?this.ledger.goal(sourceWake.goalId):null;if(next<this.#retryPolicy.maxAttempts){const delay=this.#retryPolicy.baseDelayMs*2**prior;this.ledger.putSchedule({id:`recovery:${turnId}:${next}`,agent:goal?.owner??agent,nextWakeAt:new Date(this.clock.now().getTime()+delay).toISOString(),reason:`recovery:${turnId}`,setBy:"supervisor",status:"pending",resolvedAt:null,...(goal&&goal.phase==="active"?{goalId:goal.id,goalRevision:goal.revision}:{})},"supervisor",sourceWake.id);}else if(agent!=="ceo"&&this.#hasActiveRoot()){const root=this.#activeRoot();if(root)this.#enqueueTrigger("ceo",`child-retry-exhausted:${turnId}`,{goalId:root.id,goalRevision:root.revision});}}
+  #scheduleTurnRecovery(sourceWake:WakeSnapshot|null,triggers:WakeTriggerSnapshot[],turnId:string,agent:string):void{if(!sourceWake)return;const prior=Math.max(0,...triggers.map((trigger)=>parseRecoveryTrigger(trigger.triggerRef)?.attempt??0));const next=prior+1;const goal=sourceWake.goalId?this.ledger.goal(sourceWake.goalId):null;if(next<this.#retryPolicy.maxAttempts){const delay=this.#retryPolicy.baseDelayMs*2**prior;this.ledger.putSchedule({id:`recovery:${turnId}:${next}`,agent:goal?.owner??agent,nextWakeAt:new Date(this.clock.now().getTime()+delay).toISOString(),reason:`recovery:${turnId}`,setBy:"supervisor",status:"pending",resolvedAt:null,...(goal&&goal.phase==="active"?{goalId:goal.id}:{})},"supervisor",sourceWake.id);}else if(agent!=="ceo"&&this.#hasActiveRoot()){const root=this.#activeRoot();if(root)this.#enqueueTrigger("ceo",`child-retry-exhausted:${turnId}`,{goalId:root.id});}}
 
   #closeStreamingItems(turnId:string):void{const open=this.ledger.turnItems(turnId).filter((item)=>item.status==="in_progress");if(open.some((item)=>item.type==="tool_call"||item.type==="user_message"))throw new Error("Runner returned while an input or tool call was still open");for(const item of open)this.ledger.putTurnItem({...item,status:"completed",completedAt:this.#now()},"supervisor");}
 
@@ -253,7 +253,7 @@ export class Supervisor {
       revision: current.revision + 1,
     };
     this.#preemptGoalTurn(current.id,"Goal definition changed");this.ledger.putGoal(next,actor,change?.sourceWakeId,{operation:"revise",reason:change?.reason??"Goal definition revised",evidence:change?.evidence??[],...(change?.sourceTurnId?{sourceTurnId:change.sourceTurnId}:{}),...(change?.sourceWakeId?{sourceWakeId:change.sourceWakeId}:{})});
-    if (next.parentId === null && next.owner === "ceo" && actor === "human") this.#enqueueTrigger("ceo", `root:${id}:revised:${next.revision}`,{goalId:next.id,goalRevision:next.revision});
+    if (next.parentId === null && next.owner === "ceo" && actor === "human") this.#enqueueTrigger("ceo", `root:${id}:revised:${next.revision}`,{goalId:next.id});
     return next;
   }
   confirmObservationMethod(id: string, observationMethod: string): GoalSnapshot {
@@ -273,7 +273,7 @@ export class Supervisor {
     const goal = this.ledger.completeGoal(request, actor, wakeId);
     this.#preemptGoalTurn(goal.id,"Goal completed");
     this.#suppressQueuedWake(goal.owner, `goal:${goal.id}:complete`,goal.id);
-    if (goal.parentId && actor !== "ceo") {const root=this.#activeRoot();if(root)this.#enqueueTrigger("ceo", `goal:${goal.id}:complete:${goal.revision}`,{goalId:root.id,goalRevision:root.revision});}
+    if (goal.parentId && actor !== "ceo") {const root=this.#activeRoot();if(root)this.#enqueueTrigger("ceo", `goal:${goal.id}:complete:${goal.revision}`,{goalId:root.id});}
     return goal;
   }
   transitionGoal(id: string, phase: GoalPhase, actor = "human",scheduleMotion=true,sourceTurnId?:string): GoalSnapshot {
@@ -284,12 +284,12 @@ export class Supervisor {
     const next = { ...current, phase, revision: current.revision + 1 };
     const operation=phase==="paused"?"pause":phase==="blocked"?"block":"resume";this.#preemptGoalTurn(current.id,`Goal ${operation}`);this.ledger.putGoal(next,actor,undefined,{operation,reason:`Goal ${operation} requested by ${actor}`,evidence:[],...(sourceTurnId?{sourceTurnId}:{})});
     if (phase === "paused") this.#suppressQueuedWake(next.owner, `goal:${id}:${phase}`,next.id);
-    if (phase === "active"&&scheduleMotion) this.#enqueueTrigger(next.owner, `${next.parentId ? "goal" : "root"}:${id}:resumed:${next.revision}`,{goalId:next.id,goalRevision:next.revision});
-    if (next.parentId && actor !== "ceo" && phase === "blocked") {const root=this.#activeRoot();if(root)this.#enqueueTrigger("ceo", `goal:${id}:${phase}:${next.revision}`,{goalId:root.id,goalRevision:root.revision});}
+    if (phase === "active"&&scheduleMotion) this.#enqueueTrigger(next.owner, `${next.parentId ? "goal" : "root"}:${id}:resumed:${next.revision}`,{goalId:next.id});
+    if (next.parentId && actor !== "ceo" && phase === "blocked") {const root=this.#activeRoot();if(root)this.#enqueueTrigger("ceo", `goal:${id}:${phase}:${next.revision}`,{goalId:root.id});}
     return next;
   }
 
-  planWake(agent: string, at: string, reason: string, setBy = agent,target?:{goalId:string;goalRevision:number}): WakeSnapshot | null {
+  planWake(agent: string, at: string, reason: string, setBy = agent,target?:{goalId:string}): WakeSnapshot | null {
     const parsed=Date.parse(at);if(!Number.isFinite(parsed))throw new Error("schedule time is invalid");const nextWakeAt=new Date(parsed).toISOString();const binding=target??this.#singleActiveGoalTarget(agent);
     const schedule: ScheduleSnapshot = { id: `schedule:${agent}${binding?`:${binding.goalId}`:""}:${randomUUID()}`, agent, nextWakeAt, reason, setBy,status:"pending",resolvedAt:null,...(binding??{}) };
     this.ledger.putSchedule(schedule, setBy);
@@ -302,19 +302,18 @@ export class Supervisor {
 
   async recover(): Promise<void> {
     for(const wake of this.ledger.wakes().filter((candidate)=>candidate.status==="claimed"))this.ledger.releaseWake(wake.id,this.#now());
-    for (const turn of this.ledger.turns().filter((candidate) => candidate.status === "in_progress"&&!this.#handles.has(candidate.id))) { if (turn.runnerPid) await this.runner.terminateProcess(turn.runnerPid,turn.runnerProfileId); this.#failTurn(turn.id,"orphaned Runner ownership recovered after Supervisor restart"); if(turn.goalId){const goal=this.ledger.goal(turn.goalId);if(goal&&goal.phase==="active")this.#enqueueTrigger(goal.owner,`recovery:${turn.id}`,{goalId:goal.id,goalRevision:goal.revision});} }
+    for (const turn of this.ledger.turns().filter((candidate) => candidate.status === "in_progress"&&!this.#handles.has(candidate.id))) { if (turn.runnerPid) await this.runner.terminateProcess(turn.runnerPid,turn.runnerProfileId); this.#failTurn(turn.id,"orphaned Runner ownership recovered after Supervisor restart"); if(turn.goalId){const goal=this.ledger.goal(turn.goalId);if(goal&&goal.phase==="active")this.#enqueueTrigger(goal.owner,`recovery:${turn.id}`,{goalId:goal.id});} }
   }
   async tick(): Promise<WakeSnapshot | null> {
     const wake = await this.#claimNextWake();
     if (!wake) return null;
-    if(wake.goalId){const goal=this.ledger.goal(wake.goalId);if(!goal||goal.owner!==wake.agent||goal.phase!=="active"||goal.revision!==wake.goalRevision){this.ledger.cancelWake(wake.id,this.#now());return this.#wake(wake.id);}}
     let createdTurnId:string|null=null;
     try {
-      await this.#awaitAgentExecution(wake.agent);const wakeTriggers=this.ledger.wakeTriggers(wake.id).filter((trigger)=>trigger.status==="pending");const turnContext = this.#turnContext(wake,wakeTriggers);const thread=this.threadFor(wake.agent);const now=this.#now();const leaseToken=randomUUID();const execution:TurnSnapshot={id:randomUUID(),threadId:thread.id,source:turnContext.source.kind,goalId:turnContext.goalBinding?.goalId??null,goalRevision:turnContext.goalBinding?.goalRevision??null,status:"in_progress",attempt:1,error:null,startedAt:now,endedAt:null,leaseUntil:new Date(this.clock.now().getTime()+this.#leaseMs).toISOString(),leaseToken,runnerPid:null,runnerProfileId:this.#runnerProfileId(wake.agent)};
+      await this.#awaitAgentExecution(wake.agent);const currentWake=this.#wake(wake.id);if(currentWake.status!=="claimed")return currentWake;if(currentWake.goalId){const goal=this.ledger.goal(currentWake.goalId);if(!goal||goal.owner!==currentWake.agent||goal.phase!=="active"){this.ledger.cancelWake(currentWake.id,this.#now());return this.#wake(currentWake.id);}}const wakeTriggers=this.ledger.wakeTriggers(currentWake.id).filter((trigger)=>trigger.status==="pending");const turnContext = this.#turnContext(currentWake,wakeTriggers);const thread=this.threadFor(currentWake.agent);const now=this.#now();const leaseToken=randomUUID();const execution:TurnSnapshot={id:randomUUID(),threadId:thread.id,source:turnContext.source.kind,goalId:turnContext.goalBinding?.goalId??null,goalRevision:turnContext.goalBinding?.goalRevision??null,status:"in_progress",attempt:1,error:null,startedAt:now,endedAt:null,leaseUntil:new Date(this.clock.now().getTime()+this.#leaseMs).toISOString(),leaseToken,runnerPid:null,runnerProfileId:this.#runnerProfileId(currentWake.agent)};
       this.ledger.putThread({ ...thread,updatedAt:this.#now() },"supervisor");
-      this.ledger.startTurnFromWake(wake.id,execution,now);createdTurnId=execution.id;const deliveredMail=this.#contextMail(wake.agent);const deliveredMailIds=deliveredMail.map((mail)=>mail.id);this.ledger.appendEvent({streamId:`turn:${execution.id}`,ts:now,actor:"supervisor",type:"run.admitted",data:{...turnContext,wakeTriggers} as unknown as JsonValue,ignorable:true});const revision=turnContext.goalBinding?this.ledger.workRecord(turnContext.goalBinding.goalId)?.recordRevision??-1:-1;await this.#trackExecution(execution,wake.agent,turnContext,()=>this.#goalContext(wake,turnContext,execution.id,deliveredMail,wakeTriggers),wake,deliveredMailIds,revision,wakeTriggers);
+      this.ledger.startTurnFromWake(currentWake.id,execution,now);createdTurnId=execution.id;const deliveredMail=this.#contextMail(currentWake.agent);const deliveredMailIds=deliveredMail.map((mail)=>mail.id);this.ledger.appendEvent({streamId:`turn:${execution.id}`,ts:now,actor:"supervisor",type:"run.admitted",data:{...turnContext,wakeTriggers} as unknown as JsonValue,ignorable:true});const revision=turnContext.goalBinding?this.ledger.workRecord(turnContext.goalBinding.goalId)?.recordRevision??-1:-1;await this.#trackExecution(execution,currentWake.agent,turnContext,()=>this.#goalContext(currentWake,turnContext,execution.id,deliveredMail,wakeTriggers),currentWake,deliveredMailIds,revision,wakeTriggers);
       if (this.#verifyMetricsAfterWake) {
-        for (const goal of this.ledger.goalsForOwner(wake.agent)) if (this.#metricCollectors.has(goal.id)) await this.collectMetricNow(goal.id);
+        for (const goal of this.ledger.goalsForOwner(currentWake.agent)) if (this.#metricCollectors.has(goal.id)) await this.collectMetricNow(goal.id);
       }
       return this.#wake(wake.id);
     } catch (error) {
@@ -334,7 +333,7 @@ export class Supervisor {
       this.#checkSystemSilence();
       for (const mail of this.ledger.triggeringMail()) {
         const thread=this.ledger.threads().find((candidate)=>candidate.agent===mail.to);if(thread&&this.ledger.activeTurn(thread.id))continue;
-        const body=mail.body&&typeof mail.body==="object"&&!Array.isArray(mail.body)?mail.body as Record<string,JsonValue>:{};const goalId=typeof body.goalId==="string"?body.goalId:null;const goal=goalId?this.ledger.goal(goalId):null;const base=`mail:${mail.id}`;const related=this.ledger.wakeTriggersForAgent(mail.to).map((trigger)=>({trigger,attempt:mailDeliveryAttempt(trigger.triggerRef,base)})).filter((entry):entry is {trigger:WakeTriggerSnapshot;attempt:number}=>entry.attempt!==null);const pending=related.filter((entry)=>entry.trigger.status==="pending").sort((a,b)=>b.attempt-a.attempt)[0];const next=related.reduce((highest,entry)=>Math.max(highest,entry.attempt),-1)+1;const trigger=pending?.trigger.triggerRef??(next===0?base:`${base}@redelivery:${next}`);this.#enqueueTrigger(mail.to,trigger,goal&&goal.owner===mail.to&&goal.phase==="active"?{goalId:goal.id,goalRevision:goal.revision}:undefined);
+        const body=mail.body&&typeof mail.body==="object"&&!Array.isArray(mail.body)?mail.body as Record<string,JsonValue>:{};const goalId=typeof body.goalId==="string"?body.goalId:null;const goal=goalId?this.ledger.goal(goalId):null;const base=`mail:${mail.id}`;const related=this.ledger.wakeTriggersForAgent(mail.to).map((trigger)=>({trigger,attempt:mailDeliveryAttempt(trigger.triggerRef,base)})).filter((entry):entry is {trigger:WakeTriggerSnapshot;attempt:number}=>entry.attempt!==null);const pending=related.filter((entry)=>entry.trigger.status==="pending").sort((a,b)=>b.attempt-a.attempt)[0];const next=related.reduce((highest,entry)=>Math.max(highest,entry.attempt),-1)+1;const trigger=pending?.trigger.triggerRef??(next===0?base:`${base}@redelivery:${next}`);this.#enqueueTrigger(mail.to,trigger,goal&&goal.owner===mail.to&&goal.phase==="active"?{goalId:goal.id}:undefined);
       }
       return this.ledger.claimNextWake(this.#now());
     } finally {
@@ -361,7 +360,7 @@ export class Supervisor {
     this.ledger.appendEvent({ streamId: `metric:${goal.id}`, ts: this.#now(), actor: "supervisor", type: "metric.sampled", data: sample as unknown as JsonValue });
     const evaluation = evaluateMetric(contract, this.ledger.metricSamples(goal.id), this.#now());
     this.ledger.appendEvent({ streamId: `metric:${goal.id}`, ts: this.#now(), actor: "supervisor", type: "metric.evaluated", data: evaluation as unknown as JsonValue });
-    if (evaluation.shouldWakeOwner) this.#enqueueTrigger(goal.owner, `metric:${goal.id}:${sample.observedAt}`,{goalId:goal.id,goalRevision:goal.revision});
+    if (goal.phase==="active"&&evaluation.shouldWakeOwner) this.#enqueueTrigger(goal.owner, `metric:${goal.id}:${sample.observedAt}`,{goalId:goal.id});
     return evaluation;
   }
 
@@ -375,24 +374,23 @@ export class Supervisor {
 
   #enqueueSchedule(schedule: ScheduleSnapshot): WakeSnapshot | null {
     if(schedule.status!=="pending")return null;
-    if(schedule.goalId){const goal=this.ledger.goal(schedule.goalId);if(!goal||goal.owner!==schedule.agent||goal.phase!=="active"||goal.revision!==schedule.goalRevision){this.ledger.supersedeSchedule(schedule.id,this.#now());return null;}}
+    if(schedule.goalId){const goal=this.ledger.goal(schedule.goalId);if(!goal||goal.owner!==schedule.agent||goal.phase!=="active"){this.ledger.supersedeSchedule(schedule.id,this.#now());return null;}}
     else if(!this.ledger.goalsForOwner(schedule.agent).some((goal)=>goal.phase==="active"||goal.phase==="blocked")){this.ledger.cancelSchedule(schedule.id,this.#now());return null;}
-    const wake:WakeSnapshot={id:`wake:${schedule.id}`,agent:schedule.agent,triggerRef:`${schedule.id}@${schedule.nextWakeAt}`,status:"queued",attempt:0,enqueuedSeq:0,claimedAt:null,consumedAt:null,turnId:null,...(schedule.goalId?{goalId:schedule.goalId,goalRevision:schedule.goalRevision!}:{})};
+    const wake:WakeSnapshot={id:`wake:${schedule.id}`,agent:schedule.agent,triggerRef:`${schedule.id}@${schedule.nextWakeAt}`,status:"queued",attempt:0,enqueuedSeq:0,claimedAt:null,consumedAt:null,turnId:null,...(schedule.goalId?{goalId:schedule.goalId}:{})};
     return this.ledger.consumeSchedule(schedule.id,wake,this.#now()).wake;
   }
 
-  #enqueueTrigger(agent: string, triggerRef: string,target?:{goalId:string;goalRevision:number}): WakeSnapshot | null {
-    if(target){const goal=this.ledger.goal(target.goalId);if(!goal||goal.owner!==agent||goal.phase!=="active"||goal.revision!==target.goalRevision)throw new Error("Wake Goal target is stale or owned by another Agent");}
+  #enqueueTrigger(agent: string, triggerRef: string,target?:{goalId:string}): WakeSnapshot | null {
+    if(target){const goal=this.ledger.goal(target.goalId);if(!goal||goal.owner!==agent||goal.phase!=="active")return null;}
     const exact = this.ledger.wakeByTrigger(agent, triggerRef);
-    if (exact) {if((exact.goalId??null)!==(target?.goalId??null)||(exact.goalRevision??null)!==(target?.goalRevision??null))throw new Error("Wake trigger was reused with a different Goal target");return exact;}
+    if (exact) {if((exact.goalId??null)!==(target?.goalId??null))throw new Error("Wake trigger was reused with a different Goal target");return exact;}
     const ownsLiveGoal = this.ledger.goalsForOwner(agent).some((goal) => goal.phase === "active" || goal.phase === "blocked");
     const ceoInterrupt = agent === "ceo" && (triggerRef.startsWith("mail:") || triggerRef.startsWith("child-"));
     if (!ownsLiveGoal && !ceoInterrupt) return null;
-    let queued = this.ledger.wakes().find((wake)=>wake.agent===agent&&wake.status==="queued"&&(wake.goalId??null)===(target?.goalId??null));
-    if(queued&&queued.goalRevision!==target?.goalRevision){this.ledger.cancelWake(queued.id,this.#now());queued=undefined;}
-    if (queued) {
-      this.ledger.addWakeTrigger(queued.id,triggerRef,"supervisor");
-      return queued;
+    const pending = this.ledger.wakes().find((wake)=>wake.agent===agent&&wake.status==="claimed"&&(wake.goalId??null)===(target?.goalId??null))??this.ledger.wakes().find((wake)=>wake.agent===agent&&wake.status==="queued"&&(wake.goalId??null)===(target?.goalId??null));
+    if (pending) {
+      this.ledger.addWakeTrigger(pending.id,triggerRef,"supervisor");
+      return pending;
     }
     const wake: WakeSnapshot = { id: randomUUID(), agent, triggerRef, status: "queued", attempt: 0, enqueuedSeq: 0, claimedAt:null,consumedAt:null,turnId:null,...(target??{}) };
     const result = this.ledger.enqueueWake(wake, "supervisor");
@@ -408,10 +406,10 @@ export class Supervisor {
 
   #hasActiveRoot(): boolean { return this.ledger.goals().some((goal) => goal.parentId === null && goal.owner === "ceo" && goal.phase === "active"); }
   #activeRoot():GoalSnapshot|null{return this.ledger.goals().find((goal)=>goal.parentId===null&&goal.owner==="ceo"&&goal.phase==="active")??null;}
-  #singleActiveGoalTarget(agent:string):{goalId:string;goalRevision:number}|undefined{const goals=this.ledger.goalsForOwner(agent).filter((goal)=>goal.phase==="active");if(goals.length>1)throw new Error("Wake requires an explicit Goal target when an Agent owns multiple active Goals");return goals.length===1?{goalId:goals[0]!.id,goalRevision:goals[0]!.revision}:undefined;}
+  #singleActiveGoalTarget(agent:string):{goalId:string}|undefined{const goals=this.ledger.goalsForOwner(agent).filter((goal)=>goal.phase==="active");if(goals.length>1)throw new Error("Wake requires an explicit Goal target when an Agent owns multiple active Goals");return goals.length===1?{goalId:goals[0]!.id}:undefined;}
   #role(agent: string): AgentRole { return this.#profiles.get(agent)?.role ?? "child"; }
 
-  #commitGoalTurn(turnId:string,agent:string,turn:TurnContext,raw:TurnOutput,sourceWakeId:string|null,mailIds:string[],revisionAtStart:number):void{const binding=turn.goalBinding!;const goal=this.#goal(binding.goalId);if(goal.revision!==binding.goalRevision)throw new Error("Goal revision changed during the Turn");const record=this.ledger.workRecord(goal.id);if(!record||record.recordRevision<=revisionAtStart||record.updatedInTurn!==turnId||record.goalRevision!==goal.revision)throw new Error("Goal-bound Turn must update its Work Record before handoff");const output=this.#goalTurnOutput(raw,binding);assertHandoff(output.handoff);this.#validateCeoHandoff(agent,turnId,output);const outgoingMail=output.mail.map((draft)=>({id:randomUUID(),to:draft.to,from:agent,level:draft.level,body:draft.body,readAt:null}));const next=output.nextWakeAt?this.#futureTime(output.nextWakeAt,this.ledger.turn(turnId)!.startedAt):null;const schedule:ScheduleSnapshot|null=next?{id:`schedule:${agent}:${goal.id}:${randomUUID()}`,agent,nextWakeAt:next,reason:"handoff.next_steps",setBy:agent,status:"pending",resolvedAt:null,goalId:goal.id,goalRevision:goal.revision}:null;const now=this.#now();const item:TurnItemSnapshot={id:randomUUID(),turnId,ordinal:this.ledger.turnItems(turnId).length+1,type:"handoff",status:"completed",data:output.handoff as unknown as JsonValue,createdAt:now,completedAt:now};const handoffEvent=this.ledger.commitHandoff({agent,turnId,sourceWakeId,mailIds,ts:now,output:{...output,nextWakeAt:next},outgoingMail,schedule,item});if(this.#role(agent)!=="ceo"&&handoffTriggersCeo(output.handoff)){const root=this.#activeRoot();if(root)this.#enqueueTrigger("ceo",`child-handoff:${handoffEvent.seq}`,{goalId:root.id,goalRevision:root.revision});}}
+  #commitGoalTurn(turnId:string,agent:string,turn:TurnContext,raw:TurnOutput,sourceWakeId:string|null,mailIds:string[],revisionAtStart:number):void{const binding=turn.goalBinding!;const goal=this.#goal(binding.goalId);if(goal.revision!==binding.goalRevision)throw new Error("Goal revision changed during the Turn");const record=this.ledger.workRecord(goal.id);if(!record||record.recordRevision<=revisionAtStart||record.updatedInTurn!==turnId||record.goalRevision!==goal.revision)throw new Error("Goal-bound Turn must update its Work Record before handoff");const output=this.#goalTurnOutput(raw,binding);assertHandoff(output.handoff);this.#validateCeoHandoff(agent,turnId,output);const outgoingMail=output.mail.map((draft)=>({id:randomUUID(),to:draft.to,from:agent,level:draft.level,body:draft.body,readAt:null}));const next=output.nextWakeAt?this.#futureTime(output.nextWakeAt,this.ledger.turn(turnId)!.startedAt):null;const schedule:ScheduleSnapshot|null=next?{id:`schedule:${agent}:${goal.id}:${randomUUID()}`,agent,nextWakeAt:next,reason:"handoff.next_steps",setBy:agent,status:"pending",resolvedAt:null,goalId:goal.id}:null;const now=this.#now();const item:TurnItemSnapshot={id:randomUUID(),turnId,ordinal:this.ledger.turnItems(turnId).length+1,type:"handoff",status:"completed",data:output.handoff as unknown as JsonValue,createdAt:now,completedAt:now};const handoffEvent=this.ledger.commitHandoff({agent,turnId,sourceWakeId,mailIds,ts:now,output:{...output,nextWakeAt:next},outgoingMail,schedule,item});if(this.#role(agent)!=="ceo"&&handoffTriggersCeo(output.handoff)){const root=this.#activeRoot();if(root)this.#enqueueTrigger("ceo",`child-handoff:${handoffEvent.seq}`,{goalId:root.id});}}
 
   #validateCeoHandoff(agent:string, turnId:string, output: TurnOutput): void {
     if (this.#role(agent) !== "ceo") return;
@@ -526,6 +524,7 @@ export class Supervisor {
     const now = this.clock.now().getTime();
     for (const registration of this.#metricCollectors.values()) {
       if (registration.nextAt > now) continue;
+      if(this.ledger.goal(registration.goalId)?.phase!=="active")continue;
       registration.nextAt = now + registration.intervalMs;
       const sample = await runJsonProcess<MetricSample>(registration.spec, { goalId: registration.goalId });
       this.recordMetric({ ...sample, goalId: registration.goalId });
@@ -538,7 +537,7 @@ export class Supervisor {
       if (!goal) continue;
       const samples = this.ledger.metricSamples(goal.id);
       const evaluation = evaluateMetric(contract, samples, this.#now());
-      if (evaluation.shouldWakeOwner) this.#enqueueTrigger(goal.owner, `metric:${goal.id}:${evaluation.status}:${samples.at(-1)?.observedAt ?? "none"}`,{goalId:goal.id,goalRevision:goal.revision});
+      if (goal.phase==="active"&&evaluation.shouldWakeOwner) this.#enqueueTrigger(goal.owner, `metric:${goal.id}:${evaluation.status}:${samples.at(-1)?.observedAt ?? "none"}`,{goalId:goal.id});
     }
   }
 

@@ -41,7 +41,7 @@ export interface WorkRecordUpdateRequest {
   sourceWakeId?: string;
 }
 export interface WorkRecordDiff { goalId: string; fromRevision: number; toRevision: number; text: string }
-export interface ScheduleSnapshot { id: string; agent: string; nextWakeAt: string; reason: string; setBy: string; status: ScheduleStatus; resolvedAt: string | null; goalId?: string; goalRevision?: number }
+export interface ScheduleSnapshot { id: string; agent: string; nextWakeAt: string; reason: string; setBy: string; status: ScheduleStatus; resolvedAt: string | null; goalId?: string }
 export interface WakeSnapshot {
   id: string;
   agent: string;
@@ -54,7 +54,6 @@ export interface WakeSnapshot {
   consumedAt: string | null;
   turnId: string | null;
   goalId?: string;
-  goalRevision?: number;
 }
 export interface WakeTriggerSnapshot { wakeId: string; agent: string; triggerRef: string; source: TurnSourceKind; status: WakeTriggerStatus; addedAt: string; resolvedAt: string | null }
 export type MailLevel = "fyi" | "decision" | "emergency";

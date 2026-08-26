@@ -9,7 +9,7 @@ The unified Turn runtime left four mismatched boundaries: Schedule had no termin
 
 ## Decision
 
-1. Schedule is a durable state machine: `pending → consumed|cancelled|superseded`. Wake creation and Schedule consumption are one Ledger transaction. Goal changes supersede pending schedules bound to older revisions. Coalesced Wake triggers are durable child records with explicit source and resolution state.
+1. Schedule is a durable state machine: `pending → consumed|cancelled|superseded`. Wake creation and Schedule consumption are one Ledger transaction. Wake and Schedule carry `goalId`, while the resulting Turn binds the latest active Goal revision at admission. Goal revisions do not implicitly rewrite future work. Coalesced Wake triggers are durable child records with explicit source and resolution state.
 2. Logical Turn termination and physical Runner exit are distinct. Every Agent has one execution lane, and replacement Turns wait for the prior Runner termination barrier.
 3. Projection name is private Event-table metadata. A typed event carries exactly one snapshot in `EventRecord.data`; raw business events cannot set the private projection name.
 4. Action, audit-advice, approval, and Connector contracts are removed. Runner Tool Calls remain the sole current execution vocabulary. External effects may return later only as an optional subsystem backed by isolated credentials and real reconciliation requirements.
@@ -20,4 +20,4 @@ The unified Turn runtime left four mismatched boundaries: Schedule had no termin
 - Preemption revokes Ledger authority immediately without allowing overlapping local processes.
 - Replay authority is structurally separate from business payload naming.
 - The core runtime is smaller: User Message → Turn → Tool Call/Result → optional Goal Work Record/Handoff.
-- Existing development workspaces use schema v17 and are recreated rather than migrated.
+- Existing development workspaces use schema v18 and are recreated rather than migrated.

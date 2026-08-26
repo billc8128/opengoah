@@ -104,15 +104,17 @@ test("a Human Goal revision fences the active stale Turn before more RPC",async(
 
 test("Goal preemption waits for the old Runner to exit before starting the replacement Turn",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const firstResult=Promise.withResolvers<{outcome:"abnormal";reason:string}>();const termination=Promise.withResolvers<void>();let prepared=0;let firstExited=false;let overlapped=false;const runner:Runner={isolation:"process",prepare:()=>{prepared+=1;if(prepared===1)return{pid:null,begin:()=>undefined,result:firstResult.promise,terminate:async()=>{await termination.promise;firstExited=true;firstResult.resolve({outcome:"abnormal",reason:"preempted"})}};if(!firstExited)overlapped=true;return{pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"abnormal" as const,reason:"replacement observed"}),terminate:async()=>undefined}},terminateProcess:async()=>undefined};const supervisor=new Supervisor(ledger,runner,clock,{turnRetryPolicy:{maxAttempts:1,baseDelayMs:1}});supervisor.createRootGoal("root","root");supervisor.planWake("ceo",clock.now().toISOString(),"work");const first=supervisor.tick();await new Promise((resolve)=>setImmediate(resolve));supervisor.updateGoal("root",{objective:"revised"},"human");const replacement=supervisor.tick();await new Promise((resolve)=>setImmediate(resolve));assert.equal(prepared,1);termination.resolve();await Promise.all([first,replacement]);assert.equal(prepared,2);assert.equal(overlapped,false);ledger.close();});
 
+test("a claimed Wake absorbs Goal revisions while waiting for the Runner exit barrier",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const firstResult=Promise.withResolvers<{outcome:"abnormal";reason:string}>();const termination=Promise.withResolvers<void>();let prepared=0;let replacementBinding:unknown;const runner:Runner={isolation:"process",prepare:(request)=>{prepared+=1;if(prepared===1)return{pid:null,begin:()=>undefined,result:firstResult.promise,terminate:async()=>{await termination.promise;firstResult.resolve({outcome:"abnormal",reason:"preempted"})}};replacementBinding=request.turn.goalBinding;return{pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"abnormal" as const,reason:"replacement observed"}),terminate:async()=>undefined}},terminateProcess:async()=>undefined};const supervisor=new Supervisor(ledger,runner,clock,{turnRetryPolicy:{maxAttempts:1,baseDelayMs:0}});supervisor.createRootGoal("root","root");supervisor.planWake("ceo",clock.now().toISOString(),"work");const first=supervisor.tick();await new Promise((resolve)=>setImmediate(resolve));supervisor.updateGoal("root",{objective:"revision one"},"human");const replacement=supervisor.tick();await new Promise((resolve)=>setImmediate(resolve));supervisor.updateGoal("root",{objective:"revision two"},"human");assert.equal(ledger.wakes().filter((wake)=>wake.status==="claimed").length,1);assert.equal(ledger.wakes().filter((wake)=>wake.status==="queued").length,0);termination.resolve();await Promise.all([first,replacement]);assert.deepEqual(replacementBinding,{goalId:"root",goalRevision:2});ledger.close();});
+
 test("Human admission rechecks the Thread after a replacement Wake clears the termination barrier",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const firstResult=Promise.withResolvers<{outcome:"abnormal";reason:string}>();const firstExit=Promise.withResolvers<void>();const replacementResult=Promise.withResolvers<{outcome:"abnormal";reason:string}>();let prepared=0;const runner:Runner={isolation:"process",prepare:()=>{prepared+=1;if(prepared===1)return{pid:null,begin:()=>undefined,result:firstResult.promise,terminate:async()=>{await firstExit.promise;firstResult.resolve({outcome:"abnormal",reason:"preempted"})}};if(prepared===2)return{pid:null,begin:()=>undefined,result:replacementResult.promise,terminate:async()=>replacementResult.resolve({outcome:"abnormal",reason:"interrupted for Human"})};return{pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"response" as const,response:{content:"accepted"}}),terminate:async()=>undefined}},terminateProcess:async()=>undefined};const supervisor=new Supervisor(ledger,runner,clock,{turnRetryPolicy:{maxAttempts:1,baseDelayMs:1}});supervisor.createRootGoal("root","root");supervisor.planWake("ceo",clock.now().toISOString(),"first");const first=supervisor.tick();await new Promise((resolve)=>setImmediate(resolve));supervisor.updateGoal("root",{objective:"revised"},"human");const replacement=supervisor.tick();await new Promise((resolve)=>setImmediate(resolve));const human=supervisor.startHumanTurn("urgent correction");await new Promise((resolve)=>setImmediate(resolve));firstExit.resolve();const accepted=await human;await Promise.all([first,replacement]);assert.equal(ledger.turnItems(accepted.turnId).some((item)=>item.type==="user_message"&&(item.data as {text?:unknown}).text==="urgent correction"),true);assert.equal(prepared,3);ledger.close();});
 
-test("Goal revision supersedes a future Schedule without poisoning later Wake claims",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const supervisor=new Supervisor(ledger,fauxRunner([]),clock,{turnRetryPolicy:{maxAttempts:1,baseDelayMs:1}});supervisor.createRootGoal("root","root");supervisor.planWake("ceo",new Date(clock.now().getTime()+1_000).toISOString(),"future review");supervisor.updateGoal("root",{objective:"revised"},"human");assert.equal(ledger.schedules().find((schedule)=>schedule.reason==="future review")?.status,"superseded");clock.advance(2_000);const wake=await supervisor.tick();assert.equal(wake?.status,"consumed");assert.equal(wake?.goalRevision,1);ledger.close();});
+test("a queued Schedule binds the latest Goal revision only when its Turn starts",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});let binding:unknown;const runner:Runner={isolation:"process",prepare:(request)=>{binding=request.turn.goalBinding;return{pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"abnormal" as const,reason:"observed latest Goal"}),terminate:async()=>undefined}},terminateProcess:async()=>undefined};const supervisor=new Supervisor(ledger,runner,clock,{turnRetryPolicy:{maxAttempts:1,baseDelayMs:1}});supervisor.createRootGoal("root","root");supervisor.planWake("ceo",new Date(clock.now().getTime()+1_000).toISOString(),"future review");supervisor.updateGoal("root",{objective:"revised"},"human");assert.equal(ledger.schedules().find((schedule)=>schedule.reason==="future review")?.status,"pending");clock.advance(2_000);const wake=await supervisor.tick();assert.equal(wake?.status,"consumed");assert.deepEqual(binding,{goalId:"root",goalRevision:1});ledger.close();});
 
 test("an active Human Turn blocks queued automatic Wakes",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const pending=Promise.withResolvers<{outcome:"response";response:{content:string}}>();const runner:Runner={isolation:"process",prepare:()=>({pid:null,begin:()=>undefined,result:pending.promise,terminate:async()=>pending.resolve({outcome:"response",response:{content:"stopped"}})}),terminateProcess:async()=>undefined};const supervisor=new Supervisor(ledger,runner,clock);supervisor.createRootGoal("background","root");supervisor.planWake("ceo",clock.now().toISOString(),"automatic");const human=await supervisor.startHumanTurn("hello");assert.equal(await supervisor.tick(),null);assert.equal(ledger.wakes()[0]?.status,"queued");await supervisor.interruptTurn(human.turnId);ledger.close();});
 
 test("concurrent Human submissions are serialized without losing either message",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const pending=Promise.withResolvers<{outcome:"abnormal";reason:string}>();let prepared=0;const runner:Runner={isolation:"process",prepare:()=>{prepared+=1;if(prepared===1)return{pid:null,begin:()=>undefined,result:pending.promise,terminate:async()=>pending.resolve({outcome:"abnormal",reason:"stopped"})};return{pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"response" as const,response:{content:"ok"}}),terminate:async()=>undefined}},terminateProcess:async()=>undefined};const supervisor=new Supervisor(ledger,runner,clock);supervisor.createRootGoal("background","root");supervisor.planWake("ceo",clock.now().toISOString(),"automatic");const automatic=supervisor.tick();await new Promise((resolve)=>setImmediate(resolve));const results=await Promise.all([supervisor.startHumanTurn("one"),supervisor.startHumanTurn("two")]);await automatic;assert.equal(results.length,2);assert.deepEqual(ledger.turns(supervisor.threadFor("ceo").id).flatMap((turn)=>ledger.turnItems(turn.id)).filter((item)=>item.type==="user_message").map((item)=>(item.data as {text:string}).text),["one","two"]);ledger.close();});
 
-test("a Goal-targeted Wake binds the requested Goal when one Agent owns several",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});let binding:unknown;const runner:Runner={isolation:"process",prepare:(request:RunRequest)=>{binding=request.turn.goalBinding;return{pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"abnormal",reason:"observed"}),terminate:async()=>undefined}},terminateProcess:async()=>undefined};const supervisor=new Supervisor(ledger,runner,clock,{turnRetryPolicy:{maxAttempts:1,baseDelayMs:1}});ledger.putGoal({id:"root",parentId:null,objective:"root",observationMethod:null,verificationMethod:null,owner:"ceo",phase:"active",revision:0},"human");for(const id of ["a","z"])ledger.putGoal({id,parentId:"root",objective:id,observationMethod:"observe",verificationMethod:"verify",owner:"worker",phase:"active",revision:0},"ceo");ledger.enqueueWake({...queuedWake("wake-z","worker","goal:z"),goalId:"z",goalRevision:0},"supervisor");await supervisor.tick();assert.deepEqual(binding,{goalId:"z",goalRevision:0});ledger.close();});
+test("a Goal-targeted Wake binds the requested Goal when one Agent owns several",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});let binding:unknown;const runner:Runner={isolation:"process",prepare:(request:RunRequest)=>{binding=request.turn.goalBinding;return{pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"abnormal",reason:"observed"}),terminate:async()=>undefined}},terminateProcess:async()=>undefined};const supervisor=new Supervisor(ledger,runner,clock,{turnRetryPolicy:{maxAttempts:1,baseDelayMs:1}});ledger.putGoal({id:"root",parentId:null,objective:"root",observationMethod:null,verificationMethod:null,owner:"ceo",phase:"active",revision:0},"human");for(const id of ["a","z"])ledger.putGoal({id,parentId:"root",objective:id,observationMethod:"observe",verificationMethod:"verify",owner:"worker",phase:"active",revision:0},"ceo");ledger.enqueueWake({...queuedWake("wake-z","worker","goal:z"),goalId:"z"},"supervisor");await supervisor.tick();assert.deepEqual(binding,{goalId:"z",goalRevision:0});ledger.close();});
 
 test("an ordinary source-Wake response atomically acknowledges delivered Mail",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const runner:Runner={isolation:"process",prepare:()=>({pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"response" as const,response:{content:"reply"}}),terminate:async()=>undefined}),terminateProcess:async()=>undefined};const supervisor=new Supervisor(ledger,runner,clock);const sent=supervisor.sendToCeo({message:"async hello"});const wake=await supervisor.tick();assert.equal(wake?.id,sent.wake.id);assert.equal(ledger.turn(wake!.turnId!)?.status,"completed");assert.equal(ledger.unreadMail("ceo").length,0);ledger.close();});
 
@@ -225,7 +227,7 @@ test("crashed wake keeps emergency mail and local partial work for recovery", as
 
   const recoveryContext = join(mkdtempSync(join(tmpdir(), "goah-context-")), "context.json");
   const recovering = fauxRunner([{ handoff: { handoff: { observations: [], results: [], nextSteps: [] }, mail: [], nextWakeAt: null } }], recoveryContext, repo);
-  ledger.enqueueWake({...queuedWake("recovery", "worker", `recovery:${abnormal!.turnId}`),goalId:"root",goalRevision:0}, "supervisor");
+  ledger.enqueueWake({...queuedWake("recovery", "worker", `recovery:${abnormal!.turnId}`),goalId:"root"}, "supervisor");
   const second = new Supervisor(ledger, recovering, clock);
   assert.equal((await second.tick())?.status, "consumed");
   const context = JSON.parse(readFileSync(recoveryContext, "utf8")) as { text: string };
@@ -242,7 +244,7 @@ test("a coalesced recovery trigger preserves failure context and retry sequence"
   ledger.putGoal(goal(),"human");
   const failed=testTurn(ledger,"worker","failed",{goalId:"root",goalRevision:0});
   ledger.finishTurn(failed.id,"failed",{message:"original failure"},clock.now().toISOString(),"supervisor");
-  ledger.enqueueWake({...queuedWake("coalesced","worker","manual:continue"),goalId:"root",goalRevision:0},"supervisor");
+  ledger.enqueueWake({...queuedWake("coalesced","worker","manual:continue"),goalId:"root"},"supervisor");
   ledger.addWakeTrigger("coalesced","recovery:failed:2","supervisor");
   let request:RunRequest|undefined;
   const runner:Runner={isolation:"process",prepare:(value)=>{request=value;return{pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"abnormal" as const,reason:"failed again"}),terminate:async()=>undefined}},terminateProcess:async()=>undefined};
@@ -268,6 +270,34 @@ test("Mail redelivery advances past coalesced terminal trigger aliases",async()=
   assert.equal(wake?.status,"consumed");
   assert.equal(ledger.unreadMail("ceo").length,0);
   assert.equal(request?.sourceWakeTriggers?.some((trigger)=>trigger.triggerRef==="mail:decision@redelivery:3"),true);
+  ledger.close();
+});
+
+test("a queued Mail Wake adopts the latest Goal revision at admission",async()=>{
+  const clock=new SimulatedClock();
+  const ledger=createMemoryLedger({clock});
+  ledger.putGoal({id:"root",parentId:null,objective:"root",observationMethod:null,verificationMethod:null,owner:"ceo",phase:"active",revision:0},"human");
+  ledger.putGoal({id:"child",parentId:"root",objective:"old",observationMethod:"observe",verificationMethod:"verify",owner:"worker",phase:"active",revision:0},"ceo");
+  ledger.putMail({id:"decision",to:"worker",from:"ceo",level:"decision",body:{goalId:"child"},readAt:null},"ceo");
+  ledger.enqueueWake({...queuedWake("mail-wake","worker","mail:decision"),goalId:"child"},"supervisor");
+  new Supervisor(ledger,fauxRunner([]),clock).updateGoal("child",{objective:"new",observationMethod:"observe new",verificationMethod:"verify new"},"ceo");
+  let binding:unknown;
+  const runner:Runner={isolation:"process",prepare:(request)=>{binding=request.turn.goalBinding;return{pid:null,begin:()=>undefined,result:Promise.resolve({outcome:"abnormal" as const,reason:"observed latest revision"}),terminate:async()=>undefined}},terminateProcess:async()=>undefined};
+  const wake=await new Supervisor(ledger,runner,clock,{turnRetryPolicy:{maxAttempts:1,baseDelayMs:0}}).tick();
+  assert.equal(wake?.status,"consumed");
+  assert.deepEqual(binding,{goalId:"child",goalRevision:1});
+  ledger.close();
+});
+
+test("metric maintenance ignores inactive Goals instead of blocking Wake claims",async()=>{
+  const clock=new SimulatedClock();
+  const ledger=createMemoryLedger({clock});
+  const supervisor=new Supervisor(ledger,fauxRunner([]),clock);
+  ledger.putGoal(goal(),"human");
+  supervisor.registerMetricContract("root",{...metric,onMissing:"wake_owner"});
+  supervisor.transitionGoal("root","paused","human");
+  assert.equal(await supervisor.tick(),null);
+  assert.equal(ledger.wakes().length,0);
   ledger.close();
 });
 
@@ -557,8 +587,8 @@ test("human observation confirmation and root revision wake CEO without preservi
   const revised = supervisor.updateGoal("revenue", { objective: "grow retained net revenue" }, "human");
   assert.equal(revised.observationMethod, null);
   assert.equal(revised.revision, 2);
-  assert.equal(ledger.wake(started.wake.id)?.status, "cancelled");
-  assert.equal(ledger.wakes().some((wake)=>wake.status==="queued"&&wake.goalId==="revenue"&&wake.goalRevision===2),true);
+  assert.equal(ledger.wake(started.wake.id)?.status, "queued");
+  assert.equal(ledger.wakeTriggers(started.wake.id).length,3);
   ledger.close();
 });
 
