@@ -33,7 +33,7 @@ import {
   wakeStream,
 } from "goah-ledger-contract";
 import { composeActiveContext, selectRecoveryEvents, selectWorkingMemory } from "./context-view.js";
-import { defaultRolePrompt } from "./roles.js";
+import { defaultTurnPrompt } from "./roles.js";
 
 export { composeActiveContext, selectRecoveryEvents, type ActiveContextInput, type ActiveContextView } from "./context-view.js";
 
@@ -174,7 +174,7 @@ export class Supervisor {
   async #awaitAgentExecution(agent:string):Promise<void>{const running=this.#agentExecutions.get(agent);if(running)await running;}
 
   #humanContext(turnId: string, agent: string,mail:MailSnapshot[]): JsonValue {
-    const turn=this.ledger.turn(turnId)!;const profile=this.#profiles.get(agent)??{agent,role:"ceo" as const};const runnerProfile=this.#runnerProfiles.get(profile.runnerProfile??"default");const recent=this.ledger.turns(turn.threadId).filter((candidate)=>candidate.id!==turn.id&&candidate.status==="completed").slice(-8).flatMap((candidate)=>this.ledger.turnItems(candidate.id).filter((item)=>item.type==="user_message"||item.type==="assistant_message").map((item)=>`${item.type==="user_message"?"Human":"Assistant"}: ${String((item.data as {text?:unknown}).text??"")}`));const current=this.#turnHistory(turn.id);const sourceSeqs=[...this.ledger.readStream(`turn:${turn.id}`).filter((event)=>event.type==="item.user_message.started").map((event)=>event.seq),...this.#mailSourceSeqs(mail)];const incoming=mail.map((item)=>`- [${item.level}] ${item.id} from ${item.from}${item.goalId?` for Goal ${item.goalId}`:""}: ${boundedJson(item.body)}`);return {text:[...(recent.length?[`# Recent conversation\n\n${recent.join("\n")}`]:[]),...(incoming.length?[`# Incoming\n\n${incoming.join("\n")}`]:[]),`# Current Turn\n\n${current}`].join("\n\n"),sourceSeqs,capabilities:profile.capabilities??defaultCapabilities(profile.role),systemPrompt:profile.systemPrompt??"You are Goah's primary Agent. Respond naturally and use tools when useful.",...(runnerProfile?{runnerProfile}:{})} as unknown as JsonValue;
+    const turn=this.ledger.turn(turnId)!;const profile=this.#profiles.get(agent)??{agent,role:"ceo" as const};const runnerProfile=this.#runnerProfiles.get(profile.runnerProfile??"default");const recent=this.ledger.turns(turn.threadId).filter((candidate)=>candidate.id!==turn.id&&candidate.status==="completed").slice(-8).flatMap((candidate)=>this.ledger.turnItems(candidate.id).filter((item)=>item.type==="user_message"||item.type==="assistant_message").map((item)=>`${item.type==="user_message"?"Human":"Assistant"}: ${String((item.data as {text?:unknown}).text??"")}`));const current=this.#turnHistory(turn.id);const sourceSeqs=[...this.ledger.readStream(`turn:${turn.id}`).filter((event)=>event.type==="item.user_message.started").map((event)=>event.seq),...this.#mailSourceSeqs(mail)];const incoming=mail.map((item)=>`- [${item.level}] ${item.id} from ${item.from}${item.goalId?` for Goal ${item.goalId}`:""}: ${boundedJson(item.body)}`);const context:TurnContext={source:{kind:"human"}};return {text:[...(recent.length?[`# Recent conversation\n\n${recent.join("\n")}`]:[]),...(incoming.length?[`# Incoming\n\n${incoming.join("\n")}`]:[]),`# Current Turn\n\n${current}`].join("\n\n"),sourceSeqs,capabilities:profile.capabilities??defaultCapabilities(profile.role),systemPrompt:profile.systemPrompt??defaultTurnPrompt(profile.role,agent,context),...(runnerProfile?{runnerProfile}:{})} as unknown as JsonValue;
   }
 
   #goalContext(wake:WakeSnapshot,turn:TurnContext,turnId:string,mail:MailSnapshot[],wakeTriggers:WakeTriggerSnapshot[]):JsonValue{const base=this.#loadContext(wake,turn,mail,wakeTriggers);if(!base||typeof base!=="object"||Array.isArray(base))return base;const value=base as Record<string,JsonValue>;const history=this.#turnHistory(turnId);return {...value,...(history?{text:`${String(value.text??"")}\n\n# Current Turn retry history\n\n${history}`}:{})};}
@@ -188,7 +188,7 @@ export class Supervisor {
   async #terminateHandle(turnId:string,handle:RunnerHandle):Promise<void>{try{await handle.terminate();}catch(error){this.#recordCleanupFailure(turnId,error);}}
   #recordCleanupFailure(turnId:string,error:unknown):void{this.ledger.appendEvent({streamId:`turn:${turnId}`,ts:this.#now(),actor:"supervisor",type:"runner.cleanup_failed",data:{message:error instanceof Error?error.message:String(error)},ignorable:true});}
 
-  #scheduleTurnRecovery(sourceWake:WakeSnapshot|null,triggers:WakeTriggerSnapshot[],turnId:string,agent:string):void{if(!sourceWake)return;const prior=Math.max(0,...triggers.map((trigger)=>parseRecoveryTrigger(trigger.triggerRef)?.attempt??0));const next=prior+1;const goal=sourceWake.goalId?this.ledger.goal(sourceWake.goalId):null;if(next<this.#retryPolicy.maxAttempts){const delay=this.#retryPolicy.baseDelayMs*2**prior;this.ledger.putSchedule({id:`recovery:${turnId}:${next}`,agent:goal?.owner??agent,nextWakeAt:new Date(this.clock.now().getTime()+delay).toISOString(),reason:`recovery:${turnId}`,setBy:"supervisor",status:"pending",resolvedAt:null,...(goal&&goal.phase==="active"?{goalId:goal.id}:{})},"supervisor",sourceWake.id);}else if(agent!=="ceo"&&this.#hasActiveRoot()){const root=this.#activeRoot();if(root)this.#enqueueTrigger("ceo",`child-retry-exhausted:${turnId}`,{goalId:root.id});}}
+  #scheduleTurnRecovery(sourceWake:WakeSnapshot|null,triggers:WakeTriggerSnapshot[],turnId:string,agent:string):void{if(!sourceWake)return;const prior=Math.max(0,...triggers.map((trigger)=>parseRecoveryTrigger(trigger.triggerRef)?.attempt??0));const next=prior+1;const goal=sourceWake.goalId?this.ledger.goal(sourceWake.goalId):null;if(next<this.#retryPolicy.maxAttempts){const delay=this.#retryPolicy.baseDelayMs*2**prior;this.ledger.putSchedule({id:recoveryScheduleId(turnId,next),agent:goal?.owner??agent,nextWakeAt:new Date(this.clock.now().getTime()+delay).toISOString(),reason:recoveryRef(turnId),setBy:"supervisor",status:"pending",resolvedAt:null,...(goal&&goal.phase==="active"?{goalId:goal.id}:{})},"supervisor",sourceWake.id);}else if(agent!=="ceo"&&this.#hasActiveRoot()){const root=this.#activeRoot();if(root)this.#enqueueTrigger("ceo",childRetryExhaustedRef(turnId),{goalId:root.id});}}
 
   #closeStreamingItems(turnId:string):void{const open=this.ledger.turnItems(turnId).filter((item)=>item.status==="in_progress");if(open.some((item)=>item.type==="tool_call"||item.type==="user_message"))throw new Error("Runner returned while an input or tool call was still open");for(const item of open)this.ledger.putTurnItem({...item,status:"completed",completedAt:this.#now()},"supervisor");}
 
@@ -274,7 +274,7 @@ export class Supervisor {
 
   async recover(): Promise<void> {
     for(const wake of this.ledger.wakes().filter((candidate)=>candidate.status==="claimed"))this.ledger.releaseWake(wake.id,this.#now());
-    for (const turn of this.ledger.turns().filter((candidate) => candidate.status === "in_progress"&&!this.#handles.has(candidate.id))) { if (turn.runnerPid) await this.runner.terminateProcess(turn.runnerPid,turn.runnerProfileId); this.#failTurn(turn.id,"orphaned Runner ownership recovered after Supervisor restart"); if(turn.goalId){const goal=this.ledger.goal(turn.goalId);if(goal&&goal.phase==="active")this.#enqueueTrigger(goal.owner,`recovery:${turn.id}`,{goalId:goal.id});} }
+    for (const turn of this.ledger.turns().filter((candidate) => candidate.status === "in_progress"&&!this.#handles.has(candidate.id))) { if (turn.runnerPid) await this.runner.terminateProcess(turn.runnerPid,turn.runnerProfileId); this.#failTurn(turn.id,"orphaned Runner ownership recovered after Supervisor restart"); if(turn.goalId){const goal=this.ledger.goal(turn.goalId);if(goal&&goal.phase==="active")this.#enqueueTrigger(goal.owner,recoveryRef(turn.id),{goalId:goal.id});} }
   }
   async tick(): Promise<WakeSnapshot | null> {
     const wake = await this.#claimNextWake();
@@ -383,7 +383,7 @@ export class Supervisor {
       ? [...this.ledger.eventsSince(0, ["handoff.recorded"])].reverse().filter((event, index, all) => all.findIndex((candidate) => candidate.actor === event.actor) === index)
       : [];
     const workingMemory = selectWorkingMemory(this.ledger.readStream(memoryStream(wake.agent)), this.#memoryTailChars);
-    const active = composeActiveContext({ role, capabilities, systemPrompt: profile.systemPrompt ?? defaultRolePrompt(role), wake,wakeTriggers, goals, mail, lastHandoff: handoff, teamHandoffs, team: role === "ceo" ? this.teamList() : [], recoveryEvents, workingMemory });
+    const active = composeActiveContext({ role, capabilities, systemPrompt: profile.systemPrompt ?? defaultTurnPrompt(role,wake.agent,turn), wake,wakeTriggers, goals, mail, lastHandoff: handoff, teamHandoffs, team: role === "ceo" ? this.teamList() : [], recoveryEvents, workingMemory });
     const records = this.ledger.workRecords();
     const currentRecord = turn.goalBinding ? this.ledger.workRecord(turn.goalBinding.goalId) : null;
     const currentGoal = turn.goalBinding ? this.ledger.goal(turn.goalBinding.goalId) : null;
@@ -474,6 +474,48 @@ export function deriveTeam(ledger: Ledger, now = new Date().toISOString()): Team
   });
 }
 
+export interface RecoveryView { turnId: string; agent: string; state: "scheduled" | "queued" | "running" | "recovered" | "escalated" | "superseded" | "needed"; actionable: boolean }
+
+export function deriveRecoveryViews(ledger: Ledger): RecoveryView[] {
+  const views: RecoveryView[] = [];
+  const wakes = ledger.wakes();
+  const schedules = ledger.schedules();
+  const triggers = wakes.flatMap((wake) => ledger.wakeTriggers(wake.id));
+  for (const turn of ledger.turns()) {
+    if (turn.status !== "failed" || !turn.goalId) continue;
+    const sourceWake = wakes.find((wake) => wake.turnId === turn.id);
+    const thread = ledger.thread(turn.threadId);
+    const goal = ledger.goal(turn.goalId);
+    if (!sourceWake || !thread || !goal || goal.phase !== "active" || goal.owner !== thread.agent) continue;
+    const base = { turnId: turn.id, agent: thread.agent };
+    const scheduled = schedules.some((schedule) => {
+      const recovery = parseRecoveryTrigger(schedule.id);
+      return schedule.status === "pending" && schedule.setBy === "supervisor" && schedule.agent === thread.agent && schedule.goalId === goal.id && schedule.reason === recoveryRef(turn.id) && recovery?.turnId === turn.id && recovery.attempt > 0;
+    });
+    if (scheduled) { views.push({ ...base, state: "scheduled", actionable: false }); continue; }
+    const recoveryWake = triggers.flatMap((trigger) => {
+      const recovery = parseRecoveryTrigger(trigger.triggerRef);
+      const wake = recovery?.turnId === turn.id ? wakes.find((candidate) => candidate.id === trigger.wakeId) : null;
+      return wake?.agent === thread.agent && wake.goalId === goal.id ? [wake] : [];
+    }).sort((left, right) => right.enqueuedSeq - left.enqueuedSeq)[0];
+    if (recoveryWake?.status === "queued" || recoveryWake?.status === "claimed") { views.push({ ...base, state: "queued", actionable: false }); continue; }
+    if (recoveryWake?.status === "consumed" && recoveryWake.turnId) {
+      const retry = ledger.turn(recoveryWake.turnId);
+      const state: RecoveryView["state"] = retry?.status === "in_progress" ? "running" : retry?.status === "completed" ? "recovered" : "superseded";
+      views.push({ ...base, state, actionable: false });
+      continue;
+    }
+    const escalation = triggers.flatMap((trigger) => {
+      const wake = trigger.triggerRef === childRetryExhaustedRef(turn.id) ? wakes.find((candidate) => candidate.id === trigger.wakeId) : null;
+      const target = wake?.goalId ? ledger.goal(wake.goalId) : null;
+      return wake && wake.agent === "ceo" && target?.parentId === null && target.owner === "ceo" && target.phase === "active" ? [wake] : [];
+    }).find((wake) => wake.status === "queued" || wake.status === "claimed" || wake.status === "consumed");
+    if (escalation) { views.push({ ...base, state: "escalated", actionable: false }); continue; }
+    views.push({ ...base, state: "needed", actionable: true });
+  }
+  return views;
+}
+
 export function renderDashboard(ledger: Ledger): string {
   const rows = (values: unknown[]) => values.map((value) => `<tr><td><pre>${escapeHtml(JSON.stringify(value, null, 2))}</pre></td></tr>`).join("");
   return `<!doctype html><html><head><meta charset="utf-8"><title>goah status</title><style>body{font:14px ui-monospace;margin:32px;background:#101418;color:#dce3e4}section{margin:32px 0}pre{white-space:pre-wrap;border:1px solid #334;padding:12px}</style></head><body><h1>goah</h1><p>seq ${ledger.events().at(-1)?.seq ?? 0}</p><section><h2>Team</h2><table>${rows(deriveTeam(ledger))}</table></section><section><h2>Goals</h2><table>${rows(ledger.goals())}</table></section><section><h2>Wakes</h2><table>${rows(ledger.wakes())}</table></section><section><h2>Mailbox</h2><table>${rows(ledger.mailbox())}</table></section></body></html>`;
@@ -484,6 +526,9 @@ function messageTextContent(content: unknown): string { if (typeof content === "
 function goalBoundCapability(method: AgentCapability): boolean { return ["goal.delegate", "goal.reassign", "goal.revise", "goal.put", "work_record.update", "schedule.set", "human.request"].includes(method); }
 function asRecord(value: JsonValue): Record<string, JsonValue> { if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("RPC params must be an object"); return value; }
 function boundedJson(value:JsonValue,maxChars=2_000):string{const text=typeof value==="string"?value:JSON.stringify(value);return text.length<=maxChars?text:`${text.slice(0,maxChars)}…`;}
+function recoveryRef(turnId:string):string{return `recovery:${turnId}`;}
+function recoveryScheduleId(turnId:string,attempt:number):string{return `${recoveryRef(turnId)}:${attempt}`;}
+function childRetryExhaustedRef(turnId:string):string{return `child-retry-exhausted:${turnId}`;}
 function parseRecoveryTrigger(triggerRef:string):{turnId:string;attempt:number}|null{if(!triggerRef.startsWith("recovery:"))return null;const [turnId,rawAttempt]=triggerRef.slice("recovery:".length).split("@")[0]!.split(":");if(!turnId)return null;const attempt=rawAttempt===undefined?0:Number(rawAttempt);return Number.isInteger(attempt)&&attempt>=0?{turnId,attempt}:null;}
 function mailDeliveryAttempt(triggerRef:string,base:string):number|null{if(triggerRef===base)return 0;const prefix=`${base}@redelivery:`;if(!triggerRef.startsWith(prefix))return null;const attempt=Number(triggerRef.slice(prefix.length));return Number.isInteger(attempt)&&attempt>0?attempt:null;}
 function numberArray(value: JsonValue | undefined): number[] { if (!Array.isArray(value) || value.some((item) => typeof item !== "number")) throw new Error("RPC evidence must be a number array"); return value as number[]; }

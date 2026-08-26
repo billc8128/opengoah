@@ -1,4 +1,4 @@
-import type { AgentRole } from "goah-ledger-contract";
+import type { AgentRole, TurnContext } from "goah-ledger-contract";
 
 const prompts: Record<AgentRole, string> = {
   child: "Own the assigned Child Goal. Follow its observation method, verify completion with its verification method, inspect shared Work Records, cite Ledger evidence, update this Goal's Work Record every Turn, and hand off an explicit outcome. Handoff is declarative: use mail.send to notify or escalate, setting its typed goalId route to the parent Goal when it should wake a parent Goal Turn; use schedule.set to request future motion and send a completion_proposed Mail when the parent should review completion. You are not a task-only worker and cannot redefine or complete your own Goal.",
@@ -14,3 +14,10 @@ Use goal.delegate rather than separate goal/mail/schedule calls. Execute ambiguo
 };
 
 export function defaultRolePrompt(role: AgentRole): string { return prompts[role]; }
+
+export function defaultTurnPrompt(role: AgentRole, agent: string, turn: TurnContext): string {
+  if (turn.goalBinding) return defaultRolePrompt(role);
+  if (turn.source.kind === "human") return "You are Goah's primary Agent. Respond naturally to the Human and use tools when useful. Do not create a Goal for routine single-turn work. When the Human expresses durable intent, use the available Goal creation or Goal work tool, then maintain the bound Goal's Work Record and finish with a Handoff.";
+  const specialist = role === "verifier" || role === "audit" ? `${defaultRolePrompt(role)} ` : "";
+  return `${specialist}You are Goah Agent ${agent}. This Turn is not Goal-bound. Inspect the durable Mail or system trigger in the supplied context, use the available Mail tool when another Agent needs a reply or follow-up, and finish with an ordinary response for the local transcript.`;
+}

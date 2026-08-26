@@ -16,6 +16,7 @@
 - Closed the v0.13 control boundary: typed Mail Goal routing, CEO-only Human requests, effect-free Handoff contracts, Goal-scoped outcome context, recovery Schedule awareness, and separate Team motion/outcome fields.
 - Completed Mail reachability and Schedule cleanup: known Agents accept ordinary unbound Mail, unknown recipients are rejected, and inactive/owner-changed Goal Schedules are superseded immediately.
 - Gave unbound Mail/system Turns a source-specific Pi prompt, invalidated Goal Wakes and Schedules atomically on phase/owner changes, and moved Console recovery classification into a Goal-aware backend read model.
+- Centralized source/binding prompt selection and recovery reduction in Supervisor, covered retry escalation and failed retries, rejected unrelated Schedule lookalikes, and made inactive reassignment notify through an executable unbound Mail Wake.
 - Rechecked Human admission after Runner barriers, coalesced scheduled motion with queued Goal Wakes, normalized Schedule timestamps, enforced immutable Wake/Mail identity, and delivered atomic verification results through bounded acknowledged Mail.
 - Made `commitHandoff` the only successful Goal-Turn terminal path, validated every duplicated Handoff representation against canonical TurnOutput, and preserved non-Mail triggers when acknowledging Mail.
 - Closed the remaining fail-closed boundaries for projection replay, Goal provenance/idempotency, stale Goal Turns, ancestor definition fences, and loopback Console Host authorization.

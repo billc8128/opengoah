@@ -5,6 +5,7 @@
 - Uses typed Mail routes, reserves Human requests for CEO, commits effect-free Handoffs, scopes outcome context by Goal, and separates Team motion/outcome.
 - Ordinary Mail can wake any known Agent without a Goal, unknown Agent recipients are rejected, and Team motion ignores non-executable Schedules.
 - Goal lifecycle invalidation is centralized in the Ledger; Supervisor no longer carries separate pause/completion Wake suppression paths, and Team motion ignores stale Goal Wakes.
+- Added one Turn prompt decision table and one canonical recovery reducer alongside Supervisor retry/escalation conventions; CLI no longer reconstructs either policy.
 
 - Turn source and Human authority now derive from pending durable Wake triggers rather than the Wake's original display trigger.
 - Recovery context/retry sequencing and Mail redelivery now use admitted trigger snapshots, including triggers coalesced under another Wake.

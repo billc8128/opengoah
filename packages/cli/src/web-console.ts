@@ -4,15 +4,13 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { extname, join, normalize } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { JsonValue, Ledger } from "goah-ledger-contract"
-import type { Supervisor } from "goah-supervisor"
+import { deriveRecoveryViews, type Supervisor } from "goah-supervisor"
 import { interactFrames } from "./control.js"
 import { redactValue } from "./thread-inspect.js"
 
 export interface ConsoleMetadata { url: string; host: string; port: number; pid: number; token: string }
 export interface TrajectoryItem { event: JsonValue; agent: string; wakeId: string | null }
 export interface TrajectoryPage { items: TrajectoryItem[]; nextBeforeSeq: number | null }
-export interface RecoveryView {turnId:string;agent:string;state:"scheduled"|"queued"|"running"|"recovered"|"needed";actionable:boolean}
-
 const assetsDirectory = fileURLToPath(new URL("./console/", import.meta.url))
 
 export function consoleMetadataPath(stateDir: string): string { return join(stateDir, "console.json") }
@@ -39,39 +37,10 @@ export function consoleSnapshot(ledger: Ledger, supervisor: Supervisor, now = ne
     wakes: ledger.wakes(),
     wakeTriggers:ledger.wakes().flatMap((wake)=>ledger.wakeTriggers(wake.id)),
     schedules: ledger.schedules(),
-    recoveries:recoveryViews(ledger),
+    recoveries:deriveRecoveryViews(ledger),
     mailbox: ledger.mailbox(),
     events,
   }) as JsonValue
-}
-
-export function recoveryViews(ledger: Ledger): RecoveryView[] {
-  const views: RecoveryView[] = []
-  const wakes = ledger.wakes()
-  const schedules = ledger.schedules()
-  const triggers = wakes.flatMap((wake) => ledger.wakeTriggers(wake.id))
-  for (const turn of ledger.turns()) {
-    if (turn.status !== "failed" || !turn.goalId) continue
-    const sourceWake = wakes.find((wake) => wake.turnId === turn.id)
-    const thread = ledger.thread(turn.threadId)
-    const goal = ledger.goal(turn.goalId)
-    if (!sourceWake || !thread || !goal || goal.phase !== "active" || goal.owner !== thread.agent) continue
-    const base = { turnId: turn.id, agent: thread.agent }
-    if (schedules.some((schedule) => schedule.status === "pending" && schedule.reason === `recovery:${turn.id}`)) {
-      views.push({ ...base, state: "scheduled", actionable: false })
-      continue
-    }
-    const trigger = triggers.find((candidate) => isRecoveryFor(candidate.triggerRef, turn.id))
-    const wake = trigger ? wakes.find((candidate) => candidate.id === trigger.wakeId) : null
-    if (wake?.status === "queued" || wake?.status === "claimed") views.push({ ...base, state: "queued", actionable: false })
-    else if (wake?.status === "consumed" && wake.turnId) views.push({ ...base, state: ledger.turn(wake.turnId)?.status === "in_progress" ? "running" : "recovered", actionable: false })
-    else views.push({ ...base, state: "needed", actionable: true })
-  }
-  return views
-}
-function isRecoveryFor(value: string, turnId: string): boolean {
-  const prefix = `recovery:${turnId}`
-  return value === prefix || value.startsWith(`${prefix}:`) || value.startsWith(`${prefix}@`)
 }
 
 export function organizationTrajectory(ledger: Ledger, options: { beforeSeq?: number; limit?: number; agent?: string; type?: string } = {}): TrajectoryPage {
