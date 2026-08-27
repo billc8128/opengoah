@@ -2,8 +2,8 @@
 
 ## Unreleased
 
-- Made Goal output dual-channel: every successful Goal Turn atomically commits a readable Assistant Message and a machine-readable Handoff; Human-to-Goal retries rebuild Goal context instead of retaining the ordinary-chat prompt.
-- Closed Turn admission under schema v22: removed the duplicate `consumeWake` API, restricted direct Turn creation to CEO Human Turns, fenced current Goal revision/owner/phase transactionally, enforced one Wake per Turn, and added typed Turn/Wake replay reducers.
+- Made Goal output dual-channel without duplicate message authority: Pi validates Handoff drafts through `beforeToolCall`, correctable issues return to the live Agent, and successful commit references the existing readable Message via `response.committed`; Human-to-Goal retries rebuild Goal context.
+- Closed Turn admission under schema v23: removed the duplicate `consumeWake` API, restricted direct Turn creation to CEO Human Turns, fenced current Goal revision/owner/phase transactionally, enforced one Wake per Turn, and added typed Turn/Wake replay reducers.
 - Removed the unused Action/Connector aggregate so Runner Tool Calls are the sole execution vocabulary; simplified verification, CLI, TUI, Console, examples, and testkit accordingly.
 - Added terminal Schedule states with atomic Wake creation and Goal-revision supersession, plus a per-Agent Runner-exit barrier that prevents replacement Turn overlap.
 - Moved projection authority out of business event payloads into private schema-v17 Event metadata; raw facts may now use fields such as `projection` and `snapshot` safely.

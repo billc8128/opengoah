@@ -620,7 +620,7 @@ interface GoalHandoff {
 }
 ```
 
-Agent supplies a readable response plus `outcome` and evidence. Supervisor injects Goal and record revisions, validates them, and atomically commits the Assistant Message and Handoff Item. Asynchronous Mail and future scheduling remain separate tool operations. A source Wake links to the Turn and is consumed; it is not the execution identity.
+Agent writes readable Assistant Messages and supplies `outcome` plus evidence. Before the Handoff tool executes, Supervisor validates the draft: correctable issues become Tool feedback so the live Agent can repair them, while authority/fencing changes revoke the old Turn. A successful validation returns a one-use token; commit references the existing Message, injects Goal/record revisions, and records Handoff without requiring a fixed Message/Tool/Handoff order. Asynchronous Mail and future scheduling remain separate tool operations.
 
 Unbound CEO Human interactions and Verifier/Audit specialist Turns return a normal assistant response and do not create Goal Handoff. A Human interaction that becomes Goal-bound follows the readable-response plus Handoff protocol. Every Child Turn is Goal-bound.
 
@@ -743,7 +743,7 @@ Hide by default:
 
 ## 18. Migration
 
-This development release has no external users, so schema v22 does not migrate earlier development schemas. Development workspaces are recreated. Wake, Schedule, and Turn use a discriminated Human, Goal, or Specialist execution binding; Mail uses a discriminated Goal, Human-inbox, Human-request, or Specialist-inbox route. There is no optional Goal route whose meaning is reconstructed later. Turn admission freezes the current active Goal revision, and automatic Turns can start only from a claimed Wake.
+This development release has no external users, so schema v23 does not migrate earlier development schemas. Development workspaces are recreated. Wake, Schedule, and Turn use a discriminated Human, Goal, or Specialist execution binding; Mail uses a discriminated Goal, Human-inbox, Human-request, or Specialist-inbox route. There is no optional Goal route whose meaning is reconstructed later. Turn admission freezes the current active Goal revision, and automatic Turns can start only from a claimed Wake.
 
 ## 19. Implementation sequence
 

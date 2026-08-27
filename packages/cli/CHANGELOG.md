@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Goal completion now returns the committed readable Assistant Message to TUI/Console while rendering structured Handoff only as compact status.
+- Goal responses containing Handoff stay provisional in TUI until `response.committed`; failed drafts disappear from the main transcript while remaining durable in Turn history.
 - Removed `silencePolicy`; organizational waiting and follow-up are Agent decisions expressed with Handoff, Mail, and Schedule tools.
 - Updated terminal and welcome Handoff presentation to the declarative outcome/evidence contract.
 - Updated status and Console read models for typed Mail routes, recovery Schedules, and separate Team motion/outcome.

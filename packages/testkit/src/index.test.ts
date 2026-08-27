@@ -175,12 +175,12 @@ test("a follow-up during Turn retry backoff joins the same Turn", async () => {
 
 test("a Human Turn that becomes Goal-bound rebuilds Goal context on Runner retry",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const seen:Array<{binding:unknown;execution:string;prompt:string;text:string}>=[];let attempt=0;const runner:Runner={isolation:"process",prepare:(request)=>{attempt+=1;const context=request.context as {systemPrompt?:unknown;text?:unknown};seen.push({binding:request.turn.goalBinding??null,execution:request.execution.bindingKind,prompt:String(context.systemPrompt??""),text:String(context.text??"")});let resolve!:(value:import("goah-ledger-contract").RunnerCandidateResult)=>void;const result=new Promise<import("goah-ledger-contract").RunnerCandidateResult>((done)=>{resolve=done;});return{pid:null,begin:()=>{if(attempt===1)void request.rpc!("goal.create",{id:"retry-goal",objective:"finish the durable goal"}).then(()=>resolve({outcome:"abnormal",reason:"retry after binding"}),error=>resolve({outcome:"abnormal",reason:String(error)}));else resolve({outcome:"abnormal",reason:"captured rebound context"});},result,terminate:async()=>undefined};},terminateProcess:async()=>undefined};const supervisor=new Supervisor(ledger,runner,clock,{turnRetryPolicy:{maxAttempts:2,baseDelayMs:0}});const accepted=await supervisor.startHumanTurn("finish this goal");while(ledger.turn(accepted.turnId)?.status==="in_progress")await new Promise((resolve)=>setImmediate(resolve));assert.equal(seen[0]?.execution,"human");assert.equal(seen[1]?.execution,"goal");assert.deepEqual(seen[1]?.binding,{goalId:"retry-goal",goalRevision:0});assert.match(seen[1]?.prompt??"",/sole operating interface/);assert.match(seen[1]?.text??"",/# Shared Work Record Index[\s\S]*retry-goal/);ledger.close();});
 
-test("a Goal-bound Turn cannot hand off without updating its Work Record", async () => {
+test("a nonrepairing Runner cannot hand off without updating its Work Record", async () => {
   const clock = new SimulatedClock();
   const ledger = createMemoryLedger({ clock });
   const runner: Runner = {
     isolation: "process",
-    prepare: () => ({ pid: null, begin: () => undefined, result: Promise.resolve({ outcome: "handoff", output: { response:{content:"Goal progress recorded."},handoff: { outcome:"progress",evidence:[1] } } }), terminate: async () => undefined }),
+    prepare: (request) => {let resolve!:(value:import("goah-ledger-contract").RunnerCandidateResult)=>void;const result=new Promise<import("goah-ledger-contract").RunnerCandidateResult>((done)=>{resolve=done;});return{pid:null,begin:()=>{void request.rpc!("goal.handoff.validate",{handoff:{outcome:"progress",evidence:[1]},candidateMessage:"Goal progress recorded."}).then((value)=>resolve({outcome:"abnormal",reason:JSON.stringify(value)}));},result,terminate:async()=>undefined};},
     terminateProcess: async () => undefined,
   };
   const supervisor = new Supervisor(ledger, runner, clock);
@@ -188,7 +188,7 @@ test("a Goal-bound Turn cannot hand off without updating its Work Record", async
   supervisor.planWake("worker", clock.now().toISOString(), "missing record update");
   const wake = await supervisor.tick();
   assert.equal(wake?.status, "consumed");
-  assert.match(String((ledger.turn(wake!.turnId!)?.error as {reason?:string;message?:string})?.message), /update its Work Record/);
+  assert.match(String((ledger.turn(wake!.turnId!)?.error as {reason?:string;message?:string})?.message), /Update this Goal's Work Record/);
   ledger.close();
 });
 
@@ -471,7 +471,7 @@ test("official Pi agent core worker completes a structured handoff through the p
   } });
   const supervisor = new Supervisor(ledger, runner, clock);
   createWorkerGoal(ledger); supervisor.planWake("worker", clock.now().toISOString(), "pi integration");
-  assert.equal((await supervisor.tick())?.status, "consumed");
+  const completed=await supervisor.tick();assert.equal(completed?.status, "consumed");
   const started = ledger.events().find((event) => event.type === "transcript.started");
   assert.equal((started?.data as { formatVersion?: number }).formatVersion, 1);
   assert.equal(ledger.events().some((event) => event.type === "request.prepared"), true);
@@ -482,8 +482,11 @@ test("official Pi agent core worker completes a structured handoff through the p
   for (const name of ["read", "write", "edit", "bash", "handoff", "work_record_update"]) assert.equal(prepared.tools?.some((tool) => tool.name === name), true, name);
   assert.equal(prepared.tools?.some((tool) => tool.name === "memory_append"), false);
   const handoff=ledger.lastEvent("worker","handoff.recorded")?.data as {goalId?:unknown;goalRevision?:unknown;recordRevision?:unknown;outcome?:unknown;evidence?:unknown[]};assert.deepEqual({goalId:handoff.goalId,goalRevision:handoff.goalRevision,recordRevision:handoff.recordRevision,outcome:handoff.outcome},{goalId:"root",goalRevision:0,recordRevision:1,outcome:"progress"});assert.equal((handoff.evidence??[]).length,1);
+  assert.equal(ledger.turnItems(completed!.turnId!).filter((item)=>item.type==="assistant_message").length,1);assert.equal(ledger.readStream(`turn:${completed!.turnId}`).filter((event)=>event.type==="response.committed").length,1);
   ledger.close();
 });
+
+test("official Pi returns correctable Handoff issues to the live Agent and succeeds after repair",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});createWorkerGoal(ledger);const runner=new ProcessRunner({command:process.execPath,args:[piWorkerPath()],env:{GOAH_PI_PROVIDER:"faux",GOAH_PI_MODEL:"faux-goah",GOAH_PI_FAUX_HANDOFF_REPAIR:"1"}});const supervisor=new Supervisor(ledger,runner,clock,{turnRetryPolicy:{maxAttempts:1,baseDelayMs:0}});supervisor.planWake("worker",clock.now().toISOString(),"repair Handoff");const wake=await supervisor.tick();const turn=ledger.turn(wake!.turnId!)!;assert.equal(turn.status,"completed");const stream=ledger.readStream(`turn:${turn.id}`);assert.equal(stream.filter((event)=>event.type==="rpc.goal.handoff.validate").length,2);assert.equal(stream.filter((event)=>event.type==="tool.called"&&(event.data as {name?:unknown}).name==="handoff").length,2);assert.equal(stream.filter((event)=>event.type==="response.committed").length,1);assert.deepEqual(ledger.turnItems(turn.id).filter((item)=>item.type==="assistant_message").map((item)=>(item.data as {text:string}).text),["Premature completion attempt.","Goal work recorded with outcome progress."]);ledger.close();});
 
 test("failed Runner execution ends the canonical transcript as interrupted",async()=>{const clock=new SimulatedClock();const ledger=createMemoryLedger({clock});const runner=new ProcessRunner({command:process.execPath,args:[piWorkerPath()],env:{GOAH_PI_PROVIDER:"faux",GOAH_PI_MODEL:"faux-goah",GOAH_PI_FAUX_ERROR:"provider failed"}});const supervisor=new Supervisor(ledger,runner,clock,{turnRetryPolicy:{maxAttempts:1,baseDelayMs:1}});const accepted=await supervisor.startHumanTurn("hello");while(ledger.turn(accepted.turnId)?.status==="in_progress")await new Promise((resolve)=>setTimeout(resolve,5));const terminals=ledger.readStream(`turn:${accepted.turnId}`).filter((event)=>event.type==="transcript.completed"||event.type==="transcript.interrupted").map((event)=>event.type);assert.deepEqual(terminals,["transcript.interrupted"]);ledger.close();});
 
@@ -522,7 +525,7 @@ test("bidirectional runner RPC applies child capabilities and rejects parent-onl
   assert.equal((await supervisor.tick())?.status, "consumed");
   assert.equal(ledger.mailbox().some((mail) => mail.to === "ceo"), true);
   assert.equal(ledger.schedules().find((schedule)=>schedule.reason==="continue")?.nextWakeAt, "2026-08-20T00:00:00.000Z");
-  assert.equal(ledger.events().filter((event) => event.type.startsWith("rpc.")).length, 5);
+  assert.equal(ledger.events().filter((event) => event.type.startsWith("rpc.")).length, 6);
 
   const denied = new Supervisor(ledger, fauxRunner([{ rpc: { method: "goal.put", params: { goal: { ...goal(), revision: 1 } } } }]), clock, { profiles: [{ agent: "worker", role: "child" }] });
   clock.advance(1);

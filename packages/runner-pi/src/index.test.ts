@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { goalExecutionBinding, type AssistantResponse, type RunRequest, type TurnSnapshot, type WakeSnapshot, type TurnOutput } from "goah-ledger-contract";
+import { goalExecutionBinding, type AgentHandoff,type AssistantResponse, type RunRequest, type TurnSnapshot, type WakeSnapshot } from "goah-ledger-contract";
 import { PiRunnerAdapter, ProcessRunner, piWorkerPath, type PiDriver } from "./index.js";
 import { assistantResponseText, bashTimeoutMs, compactMessages, compactMessagesToTokenBudget, linuxSandboxArgs, resolveContextPolicy, runBashCommand, sandboxWorkspacePaths, scopedRunnerPath, snapshotModelConfig } from "./pi-worker.js";
 import { createPiModel, modelCatalog, providerCatalog } from "./model-provider.js";
@@ -26,7 +26,7 @@ test("assistant response excludes thinking and tool blocks", () => {
   assert.equal(assistantResponseText(message), "Visible answer.");
 });
 
-function driver(steps: Array<{ stop?: boolean; response?: AssistantResponse; handoff?: TurnOutput }>): PiDriver {
+function driver(steps: Array<{ stop?: boolean; response?: AssistantResponse; handoff?: {response:AssistantResponse;handoff:AgentHandoff} }>): PiDriver {
   return {
     createRunnerSession: async () => ({
       step: async () => {
@@ -48,7 +48,7 @@ test("runner policy is external and a multi-step driver can hand off", async () 
   ]);
   const request: RunRequest = {
     ...requestBase, turn: goalTurn, context: {},
-    now: () => now, emit: () => undefined,
+    now: () => now, emit: () => undefined,rpc:async(method)=>method==="goal.handoff.validate"?{accepted:true,fatal:false,token:"accepted",goalId:"goal",goalRevision:0,recordRevision:1}:null,
   };
   const handle = new PiRunnerAdapter(faux).prepare(request);
   handle.begin();
@@ -178,13 +178,13 @@ test("ProcessRunner bounds steering acknowledgement waits", async () => {
 
 test("ProcessRunner kills an oversized protocol line",async()=>{const runner=new ProcessRunner({command:process.execPath,args:["-e","process.stdout.write('x'.repeat(1100000));setInterval(()=>{},1000)"],killGraceMs:10});const handle=runner.prepare({...requestBase,turn:{source:{kind:"human"}},context:{},now:()=>execution.startedAt,emit:()=>undefined});handle.begin();const result=await handle.result;assert.equal(result.outcome,"abnormal");if(result.outcome==="abnormal")assert.match(result.reason,/protocol line exceeded 1 MB/);});
 
-test("the Pi worker accepts a pre-0.11 daemon request without Turn metadata", async () => {
+test("the Pi worker rejects a legacy Goal request without live Handoff validation", async () => {
   const runner = new ProcessRunner({ command: process.execPath, args: [piWorkerPath()], env: { GOAH_PI_PROVIDER: "faux", GOAH_PI_MODEL: "faux-goah", GOAH_PI_FAUX_HANDOFF: JSON.stringify({ outcome:"progress",evidence:[1] }) } });
   const legacy = { ...requestBase, context: {}, now: () => "2026-08-18T00:00:00.000Z", emit: () => undefined } as unknown as RunRequest;
   const handle = runner.prepare(legacy);
   handle.begin();
   const result = await handle.result;
-  assert.equal(result.outcome, "handoff");
+  assert.equal(result.outcome, "abnormal");
 });
 
 test("the Pi worker preserves provider error messages from empty assistant responses", async () => {

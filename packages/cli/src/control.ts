@@ -174,7 +174,7 @@ async function* turnFrames(turnId: string, ledger: Ledger, isActive: () => boole
     if (!isActive()) return;
     yield* drain();
     const current = ledger.turn(turnId); if (!current) throw new Error("Turn disappeared");
-    if (current.status !== "in_progress") {yield* drain();const answer = ledger.turnItems(turnId).filter((item) => item.type === "assistant_message").at(-1);const answerText=String((answer?.data as {text?:unknown}|undefined)?.text??"");const streamed=answerText!==""&&ledger.readStream(`turn:${turnId}`).some((event)=>event.type==="message.assistant.completed"&&assistantEventText(event.data)===answerText);yield { type: "result", value: { turn:{...current,leaseToken:null}, ...(answer&&!streamed ? { response: { content: answerText } } : {}) } as unknown as JsonValue }; return; }
+    if (current.status !== "in_progress") {yield* drain();const answer = ledger.turnItems(turnId).filter((item) => item.type === "assistant_message").at(-1);const answerText=String((answer?.data as {text?:unknown}|undefined)?.text??"");const streamed=answerText!==""&&ledger.readStream(`turn:${turnId}`).some((event)=>event.type==="response.committed"?(event.data as {text?:unknown}).text===answerText:event.type==="message.assistant.completed"&&assistantEventText(event.data)===answerText);yield { type: "result", value: { turn:{...current,leaseToken:null}, ...(answer&&!streamed ? { response: { content: answerText } } : {}) } as unknown as JsonValue }; return; }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
@@ -187,7 +187,7 @@ function ceoStatus(ledger: Ledger, supervisor: Supervisor): JsonValue {
 }
 function requiredGoal(ledger: Ledger, id: string) { const goal = ledger.goal(id); if (!goal) throw new Error("goal not found"); return goal; }
 function assistantEventText(value:JsonValue):string{if(!value||typeof value!=="object"||Array.isArray(value)||!value.message||typeof value.message!=="object"||Array.isArray(value.message))return"";const content=value.message.content;if(typeof content==="string")return content;if(!Array.isArray(content))return"";return content.map((item)=>item&&typeof item==="object"&&!Array.isArray(item)&&item.type==="text"&&typeof item.text==="string"?item.text:"").filter(Boolean).join("\n");}
-export function isTurnPresentationEvent(type:string):boolean{return type.startsWith("message.")||type.startsWith("tool.")||type.startsWith("item.")||type.startsWith("turn.")||type==="handoff.recorded"||type==="transcript.interrupted"||type==="transcript.completed";}
+export function isTurnPresentationEvent(type:string):boolean{return type.startsWith("message.")||type.startsWith("tool.")||type.startsWith("item.")||type.startsWith("turn.")||type==="response.committed"||type==="handoff.recorded"||type==="transcript.interrupted"||type==="transcript.completed";}
 function write(socket: Socket, frame: ControlFrame): void { socket.write(`${JSON.stringify(frame)}\n`); }
 
 export interface RuntimeSwap { runner: ProcessRunner | import("goah-ledger-contract").Runner; ledger?: SqliteLedger; profiles?: import("goah-ledger-contract").RunnerProfile[] }

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  assertAgentHandoff,
   assertHandoff,
   assertTurnOutput,
   goalStream,
@@ -13,6 +14,7 @@ import {
   specialistBinding,
   specialistTurnBinding,
   type AgentCapability,
+  type AgentHandoff,
   type AgentProfile,
   type AgentRole,
   type Clock,
@@ -21,6 +23,8 @@ import {
   type DelegationResult,
   type ExecutionBinding,
   type GoalSnapshot,
+  type HandoffValidationRequest,
+  type HandoffValidationResult,
   type GoalCompletionRequest,
   type GoalHandoff,
   type GoalPhase,
@@ -33,6 +37,7 @@ import {
   type Runner,
   type RunnerHandle,
   type RunnerProfile,
+  type RunnerRpcMethod,
   type ScheduleSnapshot,
   type TeamMemberView,
   type TurnContext,
@@ -92,6 +97,7 @@ export class Supervisor {
   readonly #handles = new Map<string, RunnerHandle>();
   readonly #executions=new Map<string,Promise<void>>();
   readonly #agentExecutions=new Map<string,Promise<void>>();
+  readonly #handoffValidations=new Map<string,{turnId:string;agent:string;attempt:number;leaseToken:string;goalId:string;goalRevision:number;recordRevision:number;message:string;handoff:AgentHandoff}>();
 
   #runner: Runner;
   constructor(readonly ledger: Ledger, runner: Runner, readonly clock: Clock, options: SupervisorOptions = {}) {
@@ -162,7 +168,7 @@ export class Supervisor {
 
   async interruptTurn(turnId: string): Promise<TurnSnapshot> {
     const turn = this.ledger.turn(turnId); if (!turn || turn.status !== "in_progress") throw new Error("active Turn not found");
-    this.ledger.finishTurn(turn.id,"interrupted",{message:"interrupted by Human"},this.#now(),"human");const handle=this.#handles.get(turn.id);try{await handle?.terminate();}catch(error){this.#recordCleanupFailure(turn.id,error);}finally{this.#handles.delete(turn.id);}await this.#executions.get(turn.id);
+    this.#clearHandoffValidations(turn.id);this.ledger.finishTurn(turn.id,"interrupted",{message:"interrupted by Human"},this.#now(),"human");const handle=this.#handles.get(turn.id);try{await handle?.terminate();}catch(error){this.#recordCleanupFailure(turn.id,error);}finally{this.#handles.delete(turn.id);}await this.#executions.get(turn.id);
     return this.ledger.turn(turn.id)!;
   }
 
@@ -210,8 +216,8 @@ export class Supervisor {
 
   #turnHistory(turnId: string): string { const items=this.ledger.turnItems(turnId).map((item)=>{const data=item.data as {text?:unknown;tool?:unknown;result?:unknown};if(item.type==="user_message")return `Human: ${String(data.text??"")}`;if(item.type==="assistant_message")return `Assistant: ${String(data.text??"")}`;if(item.type==="tool_call")return `Tool call: ${String(data.tool??"")} ${JSON.stringify(item.data)}`;if(item.type==="tool_result")return `Tool result: ${JSON.stringify(data.result??item.data)}`;return `${item.type}: ${JSON.stringify(item.data)}`;});const facts=this.ledger.readStream(`turn:${turnId}`).filter((event)=>event.type==="turn.retry_started").map((event)=>`${event.type}: ${JSON.stringify(event.data)}`);return [...items,...facts].join("\n"); }
 
-  #failTurn(turnId: string, reason: string): void { const current=this.ledger.turn(turnId);if(!current||current.status!=="in_progress")return;this.ledger.finishTurn(turnId,"failed",{message:reason},this.#now(),"supervisor"); }
-  #preemptGoalTurn(goalId:string,reason:string):void{const turn=this.ledger.turns().find((candidate)=>candidate.status==="in_progress"&&candidate.bindingKind==="goal"&&candidate.goalId===goalId);if(!turn)return;this.ledger.finishTurn(turn.id,"interrupted",{message:reason},this.#now(),"supervisor");const handle=this.#handles.get(turn.id);if(handle)void this.#terminateHandle(turn.id,handle).finally(()=>this.#handles.delete(turn.id));}
+  #failTurn(turnId: string, reason: string): void { const current=this.ledger.turn(turnId);if(!current||current.status!=="in_progress")return;this.#clearHandoffValidations(turnId);this.ledger.finishTurn(turnId,"failed",{message:reason},this.#now(),"supervisor"); }
+  #preemptGoalTurn(goalId:string,reason:string):void{const turn=this.ledger.turns().find((candidate)=>candidate.status==="in_progress"&&candidate.bindingKind==="goal"&&candidate.goalId===goalId);if(!turn)return;this.#clearHandoffValidations(turn.id);this.ledger.finishTurn(turn.id,"interrupted",{message:reason},this.#now(),"supervisor");const handle=this.#handles.get(turn.id);if(handle)void this.#terminateHandle(turn.id,handle).finally(()=>this.#handles.delete(turn.id));}
   async #terminateHandle(turnId:string,handle:RunnerHandle):Promise<void>{try{await handle.terminate();}catch(error){this.#recordCleanupFailure(turnId,error);}}
   #recordCleanupFailure(turnId:string,error:unknown):void{this.ledger.appendEvent({streamId:`turn:${turnId}`,ts:this.#now(),actor:"supervisor",type:"runner.cleanup_failed",data:{message:error instanceof Error?error.message:String(error)},ignorable:true});}
 
@@ -378,7 +384,7 @@ export class Supervisor {
   #role(agent:string):AgentRole{return this.#profiles.get(agent)?.role??(agent==="ceo"?"ceo":"child");}
   #validGoalOwner(agent:string,goal:GoalSnapshot):boolean{const role=this.#role(agent);return goal.owner===agent&&(role==="ceo"?agent==="ceo"&&goal.parentId===null:role==="child"&&goal.parentId!==null);}
   #validExecution(agent:string,turn:TurnContext):boolean{const role=this.#role(agent);if(turn.goalBinding){const goal=this.ledger.goal(turn.goalBinding.goalId);return Boolean(goal&&this.#validGoalOwner(agent,goal));}if(turn.source.kind==="human")return agent==="ceo"&&role==="ceo";return role==="verifier"||role==="audit";}
-  #commitGoalTurn(turnId:string,agent:string,turn:TurnContext,raw:TurnOutput,sourceWakeId:string|null,mailIds:string[],revisionAtStart:number):void{const binding=turn.goalBinding!;const goal=this.#goal(binding.goalId);if(goal.revision!==binding.goalRevision)throw new Error("Goal revision changed during the Turn");const record=this.ledger.workRecord(goal.id);if(!record||record.recordRevision<=revisionAtStart||record.updatedInTurn!==turnId||record.goalRevision!==goal.revision)throw new Error("Goal-bound Turn must update its Work Record before handoff");assertTurnOutput(raw);const output=this.#goalTurnOutput(raw,binding);assertHandoff(output.handoff);const now=this.#now();const ordinal=this.ledger.turnItems(turnId).length+1;const responseItem:TurnItemSnapshot={id:randomUUID(),turnId,ordinal,type:"assistant_message",status:"completed",data:{text:output.response.content},createdAt:now,completedAt:now};const item:TurnItemSnapshot={id:randomUUID(),turnId,ordinal:ordinal+1,type:"handoff",status:"completed",data:output.handoff as unknown as JsonValue,createdAt:now,completedAt:now};this.ledger.commitHandoff({agent,turnId,sourceWakeId,mailIds,ts:now,output,responseItem,item});}
+  #commitGoalTurn(turnId:string,agent:string,turn:TurnContext,raw:TurnOutput,sourceWakeId:string|null,mailIds:string[],revisionAtStart:number):void{const binding=turn.goalBinding!;const goal=this.#goal(binding.goalId);if(goal.revision!==binding.goalRevision)throw new Error("Goal revision changed during the Turn");const record=this.ledger.workRecord(goal.id);if(!record||record.recordRevision<=revisionAtStart||record.updatedInTurn!==turnId||record.goalRevision!==goal.revision)throw new Error("Goal-bound Turn must update its Work Record before handoff");assertTurnOutput(raw);const validation=this.#handoffValidations.get(raw.validationToken);const execution=this.ledger.turn(turnId);if(!validation||!execution||validation.turnId!==turnId||validation.agent!==agent||validation.attempt!==execution.attempt||validation.leaseToken!==execution.leaseToken||validation.goalId!==goal.id||validation.goalRevision!==goal.revision||validation.handoff.outcome!==raw.handoff.outcome||!isSameNumbers(validation.handoff.evidence,raw.handoff.evidence))throw new Error("Handoff validation token is stale or does not match this Turn");const responseItem=[...this.ledger.turnItems(turnId)].reverse().find((item)=>item.type==="assistant_message"&&item.status==="completed"&&(item.data as {text?:unknown}).text===validation.message);if(!responseItem)throw new Error("accepted Handoff response was not recorded in the Turn");const output=this.#goalTurnOutput(raw,binding);assertHandoff(output.handoff);const now=this.#now();const item:TurnItemSnapshot={id:randomUUID(),turnId,ordinal:this.ledger.turnItems(turnId).length+1,type:"handoff",status:"completed",data:output.handoff as unknown as JsonValue,createdAt:now,completedAt:now};this.ledger.commitHandoff({agent,turnId,sourceWakeId,mailIds,ts:now,output,responseItemId:responseItem.id,item});this.#handoffValidations.delete(raw.validationToken);}
 
   #goalTurnOutput(output: TurnOutput, binding: NonNullable<TurnContext["goalBinding"]>): CommittedTurnOutput {
     const record = this.ledger.workRecord(binding.goalId);
@@ -390,7 +396,7 @@ export class Supervisor {
       outcome: output.handoff.outcome,
       evidence: output.handoff.evidence,
     };
-    return { response: output.response, handoff };
+    return { handoff };
   }
 
   #turnContext(wake:WakeSnapshot,triggers=this.ledger.wakeTriggers(wake.id).filter((trigger)=>trigger.status==="pending")):TurnContext{
@@ -431,12 +437,14 @@ export class Supervisor {
   #contextMail(target:ExecutionBinding):MailSnapshot[]{const selected:MailSnapshot[]=[];let used=0;const matches=(mail:MailSnapshot)=>target.bindingKind==="goal"?mail.routeKind==="goal"&&mail.goalId===target.goalId:target.bindingKind==="human"?mail.routeKind==="human_inbox":mail.routeKind==="specialist_inbox"&&mail.specialistRole===target.specialistRole;for(const mail of this.ledger.unreadMail(target.agent).filter(matches)){const cost=Math.min(JSON.stringify(mail.body).length,2_000)+128;if(selected.length>=20||selected.length>0&&used+cost>this.#memoryTailChars)break;selected.push(mail);used+=cost;}return selected;}
   #mailSourceSeqs(mail:MailSnapshot[]):number[]{const ids=new Set(mail.map((item)=>item.id));if(!ids.size)return[];return this.ledger.eventsSince(0,["mail.put"]).filter((event)=>{const data=event.data&&typeof event.data==="object"&&!Array.isArray(event.data)?event.data as {snapshot?:{id?:unknown}}:{};return typeof data.snapshot?.id==="string"&&ids.has(data.snapshot.id);}).map((event)=>event.seq);}
 
-  async #agentRpcForTurn(turnId: string, agent: string, context: TurnContext, method: AgentCapability, params: JsonValue, sourceWakeId?:string): Promise<JsonValue> {
+  async #agentRpcForTurn(turnId: string, agent: string, context: TurnContext, method: RunnerRpcMethod, params: JsonValue, sourceWakeId?:string): Promise<JsonValue> {
     const execution = this.ledger.turn(turnId); if (!execution || execution.status !== "in_progress" || !execution.leaseToken || !execution.leaseUntil || execution.leaseUntil < this.#now()) throw new Error("stale Turn RPC rejected");
     if(context.goalBinding){const goal=this.ledger.goal(context.goalBinding.goalId);const thread=this.ledger.thread(execution.threadId);if(!goal||goal.phase!=="active"||goal.revision!==context.goalBinding.goalRevision||goal.owner!==agent||execution.bindingKind!=="goal"||execution.goalId!==goal.id||execution.goalRevision!==goal.revision||thread?.agent!==agent)throw new Error("stale Goal-bound Turn RPC rejected");}
+    const input = asRecord(params);
+    if(method==="goal.handoff.validate"){const candidate=String(input.candidateMessage??"");this.ledger.appendEvent({streamId:`turn:${turnId}`,ts:this.#now(),actor:agent,type:"rpc.goal.handoff.validate",data:{handoff:input.handoff??null,candidateMessagePresent:Boolean(candidate.trim()),candidateMessageChars:candidate.length},ignorable:true});return this.#validateHandoffDraft(turnId,agent,execution,context,input) as unknown as JsonValue;}
     const profile = this.#profiles.get(agent) ?? { agent, role: "child" as const }; const allowed = new Set(profile.capabilities ?? defaultCapabilities(profile.role)); if (!allowed.has(method)) throw new Error(`${profile.role} agent is not allowed to call ${method}`);
     if (!context.goalBinding && goalBoundCapability(method)) throw new Error(`${method} requires a Goal-bound Turn`);
-    this.ledger.appendEvent({ streamId: `turn:${turnId}`, ts: this.#now(), actor: agent, type: `rpc.${method}`, data: params, ignorable:true }); const input = asRecord(params);
+    this.ledger.appendEvent({ streamId: `turn:${turnId}`, ts: this.#now(), actor: agent, type: `rpc.${method}`, data: params, ignorable:true });
     if (method === "ledger.search") return this.ledger.searchEvents(String(input.query), Number(input.limit ?? 20)) as unknown as JsonValue;
     if (method === "team.list") return this.teamList() as unknown as JsonValue;
     if (method === "goal.get") return (context.goalBinding ? this.ledger.goal(context.goalBinding.goalId) : null) as unknown as JsonValue;
@@ -462,6 +470,22 @@ export class Supervisor {
     if (method === "memory.append") { const note=String(input.note??"").trim(); if(!note) throw new Error("memory note cannot be empty"); const event=this.ledger.appendEvent({streamId:memoryStream(agent),ts:this.#now(),actor:agent,type:"memory.appended",data:{note,turnId}}); return {seq:event.seq} as unknown as JsonValue; }
     throw new Error(`unsupported Agent capability: ${method}`);
   }
+
+  #validateHandoffDraft(turnId:string,agent:string,execution:TurnSnapshot,context:TurnContext,input:Record<string,JsonValue>):HandoffValidationResult{
+    if(!context.goalBinding||execution.bindingKind!=="goal")return{accepted:false,fatal:true,issues:[{code:"turn_not_goal_bound",message:"This Turn is no longer Goal-bound."}]};
+    const request: HandoffValidationRequest={handoff:(input.handoff??null) as unknown as HandoffValidationRequest["handoff"],candidateMessage:String(input.candidateMessage??"")};
+    const issues:import("goah-ledger-contract").HandoffValidationIssue[]=[];
+    try{assertAgentHandoff(request.handoff);}catch{issues.push({code:"handoff_invalid",message:"Handoff requires a valid outcome and at least one evidence event."});}
+    const existingMessage=[...this.ledger.turnItems(turnId)].reverse().find((item)=>item.type==="assistant_message"&&item.status==="completed"&&typeof (item.data as {text?:unknown}).text==="string"&&Boolean((item.data as {text:string}).text.trim()));
+    const message=request.candidateMessage.trim()||String((existingMessage?.data as {text?:unknown}|undefined)?.text??"").trim();
+    if(!message)issues.push({code:"message_missing",message:"This Goal Turn needs a readable assistant message before it can finish."});
+    const goal=this.ledger.goal(context.goalBinding.goalId);if(!goal||goal.phase!=="active"||goal.owner!==agent||goal.revision!==context.goalBinding.goalRevision)return{accepted:false,fatal:true,issues:[{code:"goal_fence_changed",message:"Goal ownership, phase, or revision changed; this Turn can no longer finish against the old binding."}]};
+    const record=this.ledger.workRecord(goal.id);if(!record||record.updatedInTurn!==turnId||record.goalRevision!==goal.revision)issues.push({code:"work_record_not_updated",message:"Update this Goal's Work Record in the current Turn before Handoff.",details:{goalId:goal.id,recordRevision:record?.recordRevision??null}});
+    const evidence=Array.isArray(request.handoff?.evidence)?request.handoff.evidence:[];for(const seq of evidence)if(!Number.isInteger(seq)||!this.ledger.eventsSince(seq-1).some((event)=>event.seq===seq))issues.push({code:"evidence_not_found",message:`Evidence event ${String(seq)} does not exist in the Ledger.`,details:{seq}});
+    if(issues.length)return{accepted:false,fatal:false,issues};
+    const token=randomUUID();this.#clearHandoffValidations(turnId);this.#handoffValidations.set(token,{turnId,agent,attempt:execution.attempt,leaseToken:execution.leaseToken!,goalId:goal.id,goalRevision:goal.revision,recordRevision:record!.recordRevision,message,handoff:{outcome:request.handoff.outcome,evidence:[...request.handoff.evidence]}});return{accepted:true,fatal:false,token,goalId:goal.id,goalRevision:goal.revision,recordRevision:record!.recordRevision};
+  }
+  #clearHandoffValidations(turnId:string):void{for(const[token,value]of this.#handoffValidations)if(value.turnId===turnId)this.#handoffValidations.delete(token);}
 
 }
 
@@ -567,6 +591,7 @@ function parseRecoveryTrigger(triggerRef:string):{turnId:string;attempt:number}|
 function mailIdFromTriggerRef(triggerRef:string):string|null{if(!triggerRef.startsWith("mail:"))return null;return triggerRef.slice("mail:".length).split("@redelivery:")[0]||null;}
 function mailDeliveryAttempt(triggerRef:string,base:string):number|null{if(triggerRef===base)return 0;const prefix=`${base}@redelivery:`;if(!triggerRef.startsWith(prefix))return null;const attempt=Number(triggerRef.slice(prefix.length));return Number.isInteger(attempt)&&attempt>0?attempt:null;}
 function numberArray(value: JsonValue | undefined): number[] { if (!Array.isArray(value) || value.some((item) => typeof item !== "number")) throw new Error("RPC evidence must be a number array"); return value as number[]; }
+function isSameNumbers(left:number[],right:number[]):boolean{return left.length===right.length&&left.every((value,index)=>value===right[index]);}
 function asChildGoal(value: JsonValue | undefined): { id: string; objective: string; observationMethod: string; verificationMethod: string; owner: string } {
   const input = asRecord(value ?? null);
   return { id: String(input.id), objective: String(input.objective), observationMethod: String(input.observationMethod), verificationMethod: String(input.verificationMethod), owner: String(input.owner) };

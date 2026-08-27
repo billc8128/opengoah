@@ -141,6 +141,8 @@ test("welcome snapshot restores ordinary Human conversation", async () => {
   assert.deepEqual(welcomeSnapshot(state, { runner: "pi", target: "test/model" }).conversation.map((row) => row.text), ["remember this question", "restored answer"]);
 });
 
+test("welcome snapshot excludes an uncommitted Goal response",()=>{const state=mkdtempSync(join(tmpdir(),"goah-welcome-provisional-"));const clock:Clock={now:()=>new Date("2030-01-01T00:00:00.000Z")};const ledger=new SqliteLedger(join(state,"ledger.sqlite"),{clock});const now=clock.now().toISOString();ledger.putThread({id:"ceo",agent:"ceo",parentThreadId:null,createdAt:now,updatedAt:now},"supervisor");ledger.putGoal({id:"g",parentId:null,objective:"g",observationMethod:null,verificationMethod:null,owner:"ceo",phase:"active",revision:0},"human");ledger.putTurn({id:"t",threadId:"ceo",source:"human",bindingKind:"human",goalId:null,goalRevision:null,specialistRole:null,status:"in_progress",attempt:1,error:null,startedAt:now,endedAt:null,leaseUntil:"2030-01-01T00:10:00.000Z",leaseToken:"lease",runnerPid:null},"human");ledger.putTurn({...ledger.turn("t")!,bindingKind:"goal",goalId:"g",goalRevision:0,specialistRole:null},"supervisor");ledger.putTurnItem({id:"provisional",turnId:"t",ordinal:1,type:"assistant_message",status:"completed",data:{text:"not committed"},createdAt:now,completedAt:now},"ceo");ledger.finishTurn("t","failed",{message:"Handoff rejected"},now,"supervisor");ledger.close();assert.deepEqual(welcomeSnapshot(state,{runner:"pi",target:"test/model"}).conversation,[]);});
+
 test("version-one Pi config migrates in memory to an opaque Runner Profile", () => {
   const directory = repository();
   const path = join(directory, "goah.config.json");

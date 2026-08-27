@@ -3,11 +3,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   specialistBinding,
+  type AgentHandoff,
   type Clock,
   type JsonValue,
   type Ledger,
   type RunRequest,
-  type TurnOutput,
 } from "goah-ledger-contract";
 import { SqliteLedger, type SqliteLedgerOptions } from "goah-ledger-sqlite";
 import type { PiDriver, PiRunnerSession } from "goah-runner-pi";
@@ -27,7 +27,7 @@ export interface FauxStep {
   trace?: Array<{ type: string; data: JsonValue }>;
   response?: string;
   write?: { path: string; content: string };
-  handoff?: TurnOutput;
+  handoff?: {response:{content:string};handoff:AgentHandoff};
   stop?: boolean;
   crash?: string;
   effect?: (request: RunRequest) => void;

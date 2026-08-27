@@ -1,13 +1,15 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { runProcessWorker } from "goah-runner-pi";
-import type { JsonValue, RunnerCandidateResult, TurnOutput } from "goah-ledger-contract";
+import type { AgentHandoff, HandoffValidationResult, JsonValue, RunnerCandidateResult, TurnOutput } from "goah-ledger-contract";
+
+interface FauxHandoffStep {response:{content:string};handoff:AgentHandoff}
 
 interface WorkerStep {
   trace?: Array<{ type: string; data: JsonValue }>;
   response?: string;
   write?: { path: string; content: string };
-  handoff?: TurnOutput;
+  handoff?: FauxHandoffStep;
   crash?: string;
   hang?: boolean;
   delayMs?: number;
@@ -40,14 +42,14 @@ await runProcessWorker(async (request, emit, rpc): Promise<RunnerCandidateResult
     if (step.hang) await new Promise(() => undefined);
     if (step.response !== undefined) return { outcome: "response", response: { content: step.response } };
     if (step.handoff) {
-      const output=step.handoff;
+      const draft=step.handoff;
       if (goalBinding && !recordUpdated) {
         const current = await rpc("work_record.read", { goalId: goalBinding.goalId });
         const record = current && typeof current === "object" && !Array.isArray(current) ? current as Record<string, JsonValue> : {};
         const evidence = sourceSeqs(request.context);
-        await rpc("work_record.update", { expectedRevision: Number(record.recordRevision ?? 0), content: handoffRecord(output, request.execution.id), reason: "record faux Goal progress", evidence: evidence.length ? [Math.max(...evidence)] : [] });
+        await rpc("work_record.update", { expectedRevision: Number(record.recordRevision ?? 0), content: handoffRecord(draft.handoff, request.execution.id), reason: "record faux Goal progress", evidence: evidence.length ? [Math.max(...evidence)] : [] });
       }
-      return { outcome: "handoff", output };
+      const validation=await rpc("goal.handoff.validate",{handoff:draft.handoff,candidateMessage:draft.response.content} as unknown as JsonValue) as unknown as HandoffValidationResult;if(!validation.accepted)return{outcome:"abnormal",reason:validation.issues.map((issue)=>issue.message).join("; ")};emit({type:"message.assistant.completed",data:{message:{id:`faux:${request.execution.id}`,role:"assistant",content:[{type:"text",text:draft.response.content}],stopReason:"toolUse"}}});const output:TurnOutput={validationToken:validation.token,handoff:draft.handoff};return { outcome: "handoff", output };
     }
   }
   return { outcome: "abnormal", reason: "faux worker stopped without handoff" };
@@ -70,6 +72,6 @@ function bindingFrom(value: JsonValue): { goalId: string; goalRevision: number }
   const binding = value.goalBinding as Record<string, JsonValue>;
   return typeof binding.goalId === "string" && typeof binding.goalRevision === "number" ? { goalId: binding.goalId, goalRevision: binding.goalRevision } : undefined;
 }
-function handoffRecord(output: TurnOutput, turnId: string): string {
-  return `# Current State\n\nGoal outcome: ${output.handoff.outcome}.\n\n# Observations\n\nSee Ledger evidence ${output.handoff.evidence.join(", ") || "none"}.\n\n# Work Completed\n\nRecorded Goal progress.\n\n# Decisions\n\nRecorded by the faux Goal runner in ${turnId}.\n\n# Blockers\n\n${output.handoff.outcome === "blocked" ? "Blocked." : "None."}\n\n# Next Steps\n\nContinue from the current Goal state.\n`;
+function handoffRecord(handoff: AgentHandoff, turnId: string): string {
+  return `# Current State\n\nGoal outcome: ${handoff.outcome}.\n\n# Observations\n\nSee Ledger evidence ${handoff.evidence.join(", ") || "none"}.\n\n# Work Completed\n\nRecorded Goal progress.\n\n# Decisions\n\nRecorded by the faux Goal runner in ${turnId}.\n\n# Blockers\n\n${handoff.outcome === "blocked" ? "Blocked." : "None."}\n\n# Next Steps\n\nContinue from the current Goal state.\n`;
 }

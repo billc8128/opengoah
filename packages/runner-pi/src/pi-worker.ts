@@ -6,7 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { Agent, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxText, fauxToolCall, Type, type Message } from "@earendil-works/pi-ai";
-import { TRANSCRIPT_FORMAT_VERSION, type AgentCapability, type AgentHandoff, type JsonValue, type RunnerCandidateResult, type TranscriptMessage } from "goah-ledger-contract";
+import { TRANSCRIPT_FORMAT_VERSION, type AgentCapability, type AgentHandoff, type HandoffValidationResult, type JsonValue, type RunnerCandidateResult, type TranscriptMessage, type TurnOutput } from "goah-ledger-contract";
 import { runProcessWorker, type WorkerRpc } from "./index.js";
 import { createPiModel } from "./model-provider.js";
 
@@ -48,10 +48,9 @@ export async function runPiWorker(): Promise<void> {
         const evidence = Array.isArray(contextRecord.sourceSeqs) ? contextRecord.sourceSeqs.filter((value): value is number => typeof value === "number") : [];
         const outcome=["progress","waiting","blocked","completion_proposed"].includes(String(handoff.outcome))?String(handoff.outcome):"progress";const handoffEvidence=Array.isArray(handoff.evidence)&&handoff.evidence.every((value)=>typeof value==="number")?handoff.evidence:evidence.length?[Math.max(...evidence)]:[];
         const record = `# Current State\n\nFaux Goal outcome: ${outcome}.\n\n# Observations\n\nSee the cited Ledger evidence.\n\n# Work Completed\n\nExecuted the scripted faux Goal turn.\n\n# Decisions\n\nRecord the scripted result from ${request.execution.id}.\n\n# Blockers\n\n${outcome==="blocked"?"Blocked.":"None."}\n\n# Next Steps\n\nFollow the current Goal and explicit tools.\n`;
-        faux.setResponses([
-          fauxAssistantMessage(fauxToolCall("work_record_update", { expectedRevision: Number(current.recordRevision ?? 0), content: record, reason: "record faux Goal progress", evidence: evidence.length ? [Math.max(...evidence)] : [] }), { stopReason: "toolUse" }),
-          fauxAssistantMessage([fauxText(String(handoff.message??`Goal work recorded with outcome ${outcome}.`)),fauxToolCall("handoff", {outcome,evidence:handoffEvidence})], { stopReason: "toolUse" }),
-        ]);
+        const finalResponse=fauxAssistantMessage([fauxText(String(handoff.message??`Goal work recorded with outcome ${outcome}.`)),fauxToolCall("handoff", {outcome,evidence:handoffEvidence})], { stopReason: "toolUse" });
+        const recordResponse=fauxAssistantMessage(fauxToolCall("work_record_update", { expectedRevision: Number(current.recordRevision ?? 0), content: record, reason: "record faux Goal progress", evidence: evidence.length ? [Math.max(...evidence)] : [] }), { stopReason: "toolUse" });
+        faux.setResponses(process.env.GOAH_PI_FAUX_HANDOFF_REPAIR==="1"?[fauxAssistantMessage([fauxText("Premature completion attempt."),fauxToolCall("handoff",{outcome,evidence:handoffEvidence})],{stopReason:"toolUse"}),recordResponse,finalResponse]:[recordResponse,finalResponse]);
       } else if (!goalState.bound) {
         faux.setResponses([fauxAssistantMessage([fauxText(process.env.GOAH_PI_FAUX_RESPONSE ?? "Hello from Goah.")])]);
       } else {
@@ -60,7 +59,9 @@ export async function runPiWorker(): Promise<void> {
       }
     }
 
-    let output: AgentHandoff | null = null;
+    let output: TurnOutput | null = null;
+    let acceptedHandoff:{token:string;handoff:AgentHandoff}|null=null;
+    let revokedReason="";
     let response = "";
     let responseFailure = "";
     let compactions = 0;
@@ -80,7 +81,7 @@ export async function runPiWorker(): Promise<void> {
       ? new Set(contextRecord.capabilities.filter((value): value is AgentCapability => typeof value === "string"))
       : undefined;
     if (contextRecord.workRecord && typeof contextRecord.workRecord === "object" && !Array.isArray(contextRecord.workRecord) && typeof contextRecord.workRecord.recordRevision === "number") goalState.recordRevision = contextRecord.workRecord.recordRevision;
-    const tools = createTools(root, (value) => { output = value; }, rpc, capabilities, goalState, protectedPaths);
+    const tools = createTools(root, (value) => {if(!acceptedHandoff||!sameHandoff(acceptedHandoff.handoff,value))throw new Error("Handoff tool executed without accepted validation");output={validationToken:acceptedHandoff.token,handoff:value};}, rpc, capabilities, goalState, protectedPaths);
     const contextPolicy = resolveContextPolicy(model.contextWindow, process.env);
     emit({ type: "transcript.started", data: { formatVersion: TRANSCRIPT_FORMAT_VERSION, provider, model: modelId, runner: "pi", contextWindowTokens: model.contextWindow, maxOutputTokensPerTurn: model.maxTokens } });
     const suppliedPrompt = typeof contextRecord.systemPrompt === "string" ? contextRecord.systemPrompt : undefined;
@@ -130,7 +131,8 @@ export async function runPiWorker(): Promise<void> {
         }
         return view;
       },
-      shouldStopAfterTurn: () => output !== null,
+      beforeToolCall:async({assistantMessage,toolCall,args})=>{if(toolCall.name!=="handoff")return;acceptedHandoff=null;output=null;const handoff=args as AgentHandoff;try{const result=await rpc("goal.handoff.validate",{handoff,candidateMessage:assistantResponseText(assistantMessage)} as unknown as JsonValue) as unknown as HandoffValidationResult;if(result.accepted){acceptedHandoff={token:result.token,handoff};return;}const reason=result.issues.map((issue)=>`- ${issue.message}`).join("\n");if(result.fatal)revokedReason=reason;return{block:true,reason:`Handoff was not accepted:\n${reason}`,terminate:result.fatal};}catch(error){revokedReason=error instanceof Error?error.message:String(error);return{block:true,reason:`Handoff validation could not continue: ${revokedReason}`,terminate:true};}},
+      shouldStopAfterTurn: () => output !== null||Boolean(revokedReason),
       toolExecution: "sequential",
     });
     let acceptingSteering = true;
@@ -164,10 +166,11 @@ export async function runPiWorker(): Promise<void> {
       process.off("SIGTERM", abortAgent);
       process.off("SIGINT", abortAgent);
     }
+    if(revokedReason)return{outcome:"abnormal",reason:revokedReason};
     if (!goalState.bound) return response ? { outcome: "response", response: { content: response } } : { outcome: "abnormal", reason: responseFailure || "Pi worker exited without a response" };
     if (responseFailure) return { outcome: "abnormal", reason: responseFailure };
-    if (!output||!response) return { outcome: "abnormal", reason: "Pi worker exited without a readable response and valid handoff" };
-    return { outcome: "handoff", output:{response:{content:response},handoff:output} };
+    if (!output) return { outcome: "abnormal", reason: "Pi worker exited without an accepted Handoff" };
+    return { outcome: "handoff", output };
   });
 }
 
@@ -469,4 +472,5 @@ export function assistantResponseText(message: AgentMessage): string {
     .join("\n")
     .trim();
 }
+function sameHandoff(left:AgentHandoff,right:AgentHandoff):boolean{return left.outcome===right.outcome&&left.evidence.length===right.evidence.length&&left.evidence.every((value,index)=>value===right.evidence[index]);}
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) await runPiWorker();

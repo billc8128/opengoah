@@ -41,7 +41,12 @@ export interface WakeTriggerView { wakeId:string;agent:string;triggerRef:string;
 
 interface ScheduleViewBase { id: string;agent: string;nextWakeAt: string; reason: string; setBy: string; status: "pending" | "consumed" | "cancelled" | "superseded"; resolvedAt: string | null }
 export type ScheduleView = ScheduleViewBase & ({ bindingKind:"goal";goalId:string;specialistRole:null } | { bindingKind:"specialist";goalId:null;specialistRole:"verifier"|"audit" })
-export interface MailView { id: string;routeKind:"goal"|"human_inbox"|"human_request"|"specialist_inbox";to: string; from: string;level: string;goalId:string|null;specialistRole:"verifier"|"audit"|null;body: JsonValue; readAt: string | null }
+interface MailViewBase {id:string;to:string;from:string;level:string;body:JsonValue;readAt:string|null}
+export type MailView=MailViewBase&(
+  | {routeKind:"goal";goalId:string;specialistRole:null}
+  | {routeKind:"human_inbox"|"human_request";goalId:null;specialistRole:null}
+  | {routeKind:"specialist_inbox";goalId:null;specialistRole:"verifier"|"audit"}
+)
 export interface EventView { seq: number; streamId: string; streamSeq: number; ts: string; actor: string; type: string; data: JsonValue }
 export interface TrajectoryItemView { event: EventView; agent: string; wakeId: string | null }
 export interface TrajectoryPageView { items: TrajectoryItemView[]; nextBeforeSeq: number | null }

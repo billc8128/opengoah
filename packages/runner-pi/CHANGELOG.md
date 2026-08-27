@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Goal execution now requires a normal readable assistant message before the separate Handoff tool call; Pi returns both channels in `TurnOutput`.
+- Pi uses `beforeToolCall` to validate Handoff with Supervisor; blocked drafts become model-visible Tool errors, accepted drafts terminate with a token, and the original Assistant Message remains the sole readable-message fact.
 - Removed next-wake effects from Handoff and added typed Agent-only Mail routing; future motion uses schedule_wake.
 
 - Bounded Runner protocol line size and converted in-process session initialization failures into abnormal terminal results.

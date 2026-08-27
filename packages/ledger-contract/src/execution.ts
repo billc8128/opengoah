@@ -142,8 +142,13 @@ export type GoalOutcome = "progress" | "waiting" | "blocked" | "completion_propo
 export interface AgentHandoff { outcome: GoalOutcome; evidence: number[] }
 export interface GoalHandoff extends AgentHandoff { goalId: string; goalRevision: number; recordRevision: number }
 export type Handoff = GoalHandoff;
-export interface TurnOutput { response: AssistantResponse; handoff: AgentHandoff }
-export interface CommittedTurnOutput { response: AssistantResponse; handoff: GoalHandoff }
+export interface HandoffValidationIssue { code:string;message:string;details?:JsonValue }
+export type HandoffValidationResult=
+  | {accepted:true;fatal:false;token:string;goalId:string;goalRevision:number;recordRevision:number}
+  | {accepted:false;fatal:boolean;issues:HandoffValidationIssue[]};
+export interface HandoffValidationRequest {handoff:AgentHandoff;candidateMessage:string}
+export interface TurnOutput { validationToken:string;handoff: AgentHandoff }
+export interface CommittedTurnOutput { handoff: GoalHandoff }
 export interface RunnerTraceEvent { type: string; data: JsonValue }
 
 export type AgentRole = "child" | "ceo" | "verifier" | "audit";
@@ -151,6 +156,8 @@ export type AgentCapability = "ledger.search" | "mail.send" | "schedule.set" | "
   | "team.list" | "goal.get" | "goal.create" | "goal.work" | "goal.delegate" | "goal.reassign" | "goal.revise" | "goal.pause" | "goal.resume" | "goal.complete" | "human.request"
   | "work_record.list" | "work_record.read" | "work_record.history" | "work_record.diff" | "work_record.search" | "work_record.update"
   | "memory.append";
+export type RunnerControlMethod="goal.handoff.validate";
+export type RunnerRpcMethod=AgentCapability|RunnerControlMethod;
 export interface RunnerProfile { id: string; runner: string; config: JsonValue; credentialRefs?: string[] }
 export interface AgentProfile { agent: string; role: AgentRole; capabilities?: AgentCapability[]; systemPrompt?: string; runnerProfile?: string }
 export interface RunnerChoice { value: string; label: string; description?: string }
@@ -177,12 +184,12 @@ export type TurnSource = { kind: "human" } | { kind: "goal"; round: number } | {
 export interface GoalBinding { goalId: string; goalRevision: number }
 export interface TurnContext { source: TurnSource; goalBinding?: GoalBinding }
 export interface AssistantResponse { content: string }
-export interface RunRequest { agent: string; execution: TurnSnapshot; sourceWake?: WakeSnapshot; sourceWakeTriggers?: WakeTriggerSnapshot[]; turn: TurnContext; context: JsonValue; now(): string; emit(event: RunnerTraceEvent): void; rpc?(method: AgentCapability, params: JsonValue): Promise<JsonValue> }
+export interface RunRequest { agent: string; execution: TurnSnapshot; sourceWake?: WakeSnapshot; sourceWakeTriggers?: WakeTriggerSnapshot[]; turn: TurnContext; context: JsonValue; now(): string; emit(event: RunnerTraceEvent): void; rpc?(method: RunnerRpcMethod, params: JsonValue): Promise<JsonValue> }
 export type RunnerCandidateResult = { outcome: "response"; response: AssistantResponse } | { outcome: "handoff"; output: TurnOutput } | { outcome: "abnormal"; reason: string };
 export interface RunnerHandle { pid: number | null; begin(): void; result: Promise<RunnerCandidateResult>; steer?(message: string): Promise<void>; terminate(): Promise<void> }
 export interface Runner { readonly isolation: "process"; prepare(request: RunRequest): RunnerHandle; terminateProcess(pid: number, runnerProfileId?: string): Promise<void> }
 
-export interface HandoffCommit { agent: string; turnId: string; sourceWakeId: string | null; mailIds: string[]; ts: string; output: CommittedTurnOutput; responseItem: TurnItemSnapshot; item: TurnItemSnapshot }
+export interface HandoffCommit { agent: string; turnId: string; sourceWakeId: string | null; mailIds: string[]; ts: string; output: CommittedTurnOutput; responseItemId:string;item: TurnItemSnapshot }
 
 /** Standard execution modules composed on top of the generic event store. */
 export interface Ledger extends EventStore {
@@ -255,7 +262,7 @@ export function assertHandoff(value: Handoff): void {
   if (!value.goalId.trim() || !Number.isInteger(value.goalRevision) || value.goalRevision<0 || !Number.isInteger(value.recordRevision) || value.recordRevision<1) throw new Error("invalid Goal handoff");
 }
 export function assertAgentHandoff(value:AgentHandoff):void{if(!["progress", "waiting", "blocked", "completion_proposed"].includes(value.outcome)||!Array.isArray(value.evidence)||value.evidence.length===0)throw new Error("invalid Agent handoff");}
-export function assertTurnOutput(value:TurnOutput):void{if(typeof value.response?.content!=="string"||!value.response.content.trim())throw new Error("Goal Turn requires a readable response");assertAgentHandoff(value.handoff);}
+export function assertTurnOutput(value:TurnOutput):void{if(typeof value.validationToken!=="string"||!value.validationToken.trim())throw new Error("Goal Turn requires an accepted Handoff validation token");assertAgentHandoff(value.handoff);}
 export function assertGoalSnapshot(value: GoalSnapshot): void {
   if (!value.objective.trim() || !value.owner.trim()) throw new Error("goal objective and owner are required");
   if (value.observationMethod !== null && !value.observationMethod.trim()) throw new Error("goal observation method cannot be blank");

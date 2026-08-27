@@ -4,13 +4,15 @@ import { resolveEnvSpec } from "./env-spec.js";
 import { fileURLToPath } from "node:url";
 import {
   assertTurnOutput,
+  type AgentHandoff,
+  type HandoffValidationResult,
   type JsonValue,
-  type AgentCapability,
   type AssistantResponse,
   type RunRequest,
   type Runner,
   type RunnerHandle,
   type RunnerCandidateResult,
+  type RunnerRpcMethod,
   type TurnContext,
   type TurnOutput,
 } from "goah-ledger-contract";
@@ -23,7 +25,7 @@ export { resolveEnvSpec } from "./env-spec.js";
 export interface PiStep {
   trace?: Array<{ type: string; data: JsonValue }>;
   response?: AssistantResponse;
-  handoff?: TurnOutput;
+  handoff?: {response:AssistantResponse;handoff:AgentHandoff};
   stopped?: boolean;
 }
 export interface PiRunnerSession { step(): Promise<PiStep>; close(): Promise<void> }
@@ -59,8 +61,7 @@ export class PiRunnerAdapter {
         for (const trace of step.trace ?? []) request.emit(trace);
         if (step.response) return { outcome: "response", response: step.response };
         if (step.handoff) {
-          assertTurnOutput(step.handoff);
-          return { outcome: "handoff", output: step.handoff };
+          const validation=await request.rpc?.("goal.handoff.validate",{handoff:step.handoff.handoff,candidateMessage:step.handoff.response.content} as unknown as JsonValue) as unknown as HandoffValidationResult|undefined;if(!validation?.accepted)return{outcome:"abnormal",reason:validation&&!validation.accepted?validation.issues.map((issue)=>issue.message).join("; "):"Handoff validation is unavailable"};request.emit({type:"message.assistant.completed",data:{message:{id:`adapter:${request.execution.id}`,role:"assistant",content:[{type:"text",text:step.handoff.response.content}],stopReason:"toolUse"}}});const output:TurnOutput={validationToken:validation.token,handoff:step.handoff.handoff};assertTurnOutput(output);return { outcome: "handoff", output };
         }
         if (step.stopped) return { outcome: "abnormal", reason: request.turn.goalBinding ? "runner stopped without a readable response and valid handoff" : "runner stopped without a response" };
       }
@@ -95,7 +96,7 @@ export function verificationWorkerPath(): string { return fileURLToPath(new URL(
 type WorkerRequest = Omit<RunRequest, "now" | "emit" | "rpc" | "turn"> & { turn?: TurnContext; runtime?: JsonValue };
 type WorkerMessage =
   | { type: "trace"; event: { type: string; data: JsonValue } }
-  | { type: "rpc_request"; id: string; method: AgentCapability; params: JsonValue }
+  | { type: "rpc_request"; id: string; method: RunnerRpcMethod; params: JsonValue }
   | { type: "steer_ack"; id: string; accepted: boolean }
   | { type: "result"; result: RunnerCandidateResult };
 type ParentMessage =
@@ -205,7 +206,7 @@ export class ProcessRunner implements Runner {
   async terminateProcess(pid: number): Promise<void> { await terminatePid(pid, this.options.killGraceMs ?? 500); }
 }
 
-export type WorkerRpc = (method: AgentCapability, params: JsonValue) => Promise<JsonValue>;
+export type WorkerRpc = (method: RunnerRpcMethod, params: JsonValue) => Promise<JsonValue>;
 export interface WorkerControls { onSteer(listener: (message: string) => boolean): void }
 export type WorkerRun = (request: WorkerRequest, emit: (event: { type: string; data: JsonValue }) => void, rpc: WorkerRpc, controls: WorkerControls) => Promise<RunnerCandidateResult>;
 

@@ -332,14 +332,14 @@ type ChatExchange = { kind: "user" | "ceo"; seq: number; turnId?:string; text: s
 type LiveChat = { status: "running" | "done" | "error";turnId:string|null;prompt:string; text: string; lines: string[]; handoff: ChatExchange["handoff"] }
 
 function chatHistory(snapshot: ConsoleSnapshot): ChatExchange[] {
-  const items: ChatExchange[] = [];const ceoThreadIds=new Set(snapshot.threads.filter((thread)=>thread.agent==="ceo").map((thread)=>thread.id));const humanTurnIds=new Set(snapshot.turns.filter((turn)=>turn.source==="human"&&ceoThreadIds.has(turn.threadId)).map((turn)=>turn.id));const messageItems=new Map<string,{seq:number;item:Record<string,unknown>}>();
+  const items: ChatExchange[] = [];const ceoThreadIds=new Set(snapshot.threads.filter((thread)=>thread.agent==="ceo").map((thread)=>thread.id));const humanTurns=new Map(snapshot.turns.filter((turn)=>turn.source==="human"&&ceoThreadIds.has(turn.threadId)).map((turn)=>[turn.id,turn]));const committedMessages=new Set(snapshot.events.filter((event)=>event.type==="response.committed").map((event)=>record(event.data).messageItemId).filter((id):id is string=>typeof id==="string"));const messageItems=new Map<string,{seq:number;item:Record<string,unknown>}>();
   for (const event of snapshot.events) {
     if(event.type.startsWith("item.user_message.")||event.type.startsWith("item.assistant_message.")){const item=record(record(event.data).snapshot);if(typeof item.id==="string")messageItems.set(item.id,{seq:event.seq,item});}
     else if (event.type === "handoff.recorded" && event.actor === "ceo") {
       items.push({ kind: "ceo", seq: event.seq,turnId:event.streamId.startsWith("turn:")?event.streamId.slice(5):undefined, text: "", handoff: handoffOf(event.data) })
     }
   }
-  for(const {seq,item} of messageItems.values()){if(item.status!=="completed"||!humanTurnIds.has(String(item.turnId)))continue;const data=record(item.data);if(typeof data.text==="string")items.push({kind:item.type==="user_message"?"user":"ceo",seq,turnId:String(item.turnId),text:data.text});}
+  for(const {seq,item} of messageItems.values()){const turn=humanTurns.get(String(item.turnId));if(item.status!=="completed"||!turn||item.type==="assistant_message"&&turn.bindingKind==="goal"&&!committedMessages.has(String(item.id)))continue;const data=record(item.data);if(typeof data.text==="string")items.push({kind:item.type==="user_message"?"user":"ceo",seq,turnId:String(item.turnId),text:data.text});}
   return items.sort((a, b) => a.seq - b.seq)
 }
 
@@ -428,8 +428,10 @@ function applyFrame(frame: ChatFrame, setLive: Dispatch<SetStateAction<LiveChat 
   const event = frame.event
   if (!event) return
   if (event.type === "message.assistant.completed") {
-    const text = messageContent(record(event.data).message)
-    if (text) setLive((current) => current && { ...current, text })
+    const message=record(event.data).message;const text = messageContent(message)
+    if(hasToolCall(message,"handoff"))setLive((current)=>current&&{...current,text:""});else if (text) setLive((current) => current && { ...current, text })
+  } else if(event.type==="response.committed"){
+    const text=record(event.data).text;if(typeof text==="string")setLive((current)=>current&&{...current,text});
   } else if (event.type === "message.assistant.delta") {
     const delta = record(record(event.data).delta)
     const text = delta.type === "text_delta"&&typeof delta.delta === "string" ? delta.delta : null
@@ -538,4 +540,5 @@ function demoThreadDetail(snapshot: ConsoleSnapshot, thread: ThreadView): Thread
   return { thread, turns }
 }
 function summarize(value: unknown): string { const text = typeof value === "string" ? value : JSON.stringify(value); return text.length > 110 ? `${text.slice(0, 107)}…` : text }
+function hasToolCall(message:unknown,name:string):boolean{const content=record(message).content;return Array.isArray(content)&&content.some((item)=>{const value=record(item);return value.type==="toolCall"&&value.name===name;});}
 function formatPayload(value: unknown): string { return typeof value === "string" ? value : JSON.stringify(value, null, 2) }

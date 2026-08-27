@@ -36,7 +36,7 @@ Implemented and tested today:
 - Real runner subprocess boundary with sliding lease renewal, process-group termination, per-Agent exit barriers, optional runner-specific timeout, and stale-event rejection
 - Ordinary Human Turns return normal responses; Goal-bound Turns require both a readable assistant response and a current Work Record revision plus compact Goal Handoff
 - Goal Mail is acknowledged atomically with its successful Handoff; ordinary Human conversation never uses Mail or Wake
-- Injected clocks, schema v22 persisted execution bindings/Mail routing, one canonical Wake-to-Turn transition, durable Wake trigger sets, revision-neutral Goal scheduling, and Turn-owned revision fencing, with indexed bounded queries and a public ledger conformance suite; earlier development schemas are intentionally rejected
+- Injected clocks, schema v23 persisted execution bindings/Mail routing, one canonical Wake-to-Turn transition, durable Wake trigger sets, revision-neutral Goal scheduling, and Turn-owned revision fencing, with indexed bounded queries and a public ledger conformance suite; earlier development schemas are intentionally rejected
 - Textual observation and verification methods executed by Agents with ordinary tools, plus trigger coalescing and FTS5 fact search
 - Official Pi 0.84.2 worker binding with `read`, `write`, `edit`, and `bash` for every Agent plus model-view-only mid-turn compaction
 - Durable textual Goal observation methods with root human confirmation, atomic child assignment, revision invalidation, replay, and evidence-backed completion
@@ -162,7 +162,7 @@ One Goal Wake, step by step:
 2. Claiming it creates one Goal-bound Turn in the owner Agent's Thread. Human input starts or steers a Turn directly and never creates Wake or Mail.
 3. Turn owns Runner lease, fencing, PID, transcript, retry, interruption, and terminal state. `sourceWake` is provenance only.
 4. The Goal Turn receives Goal/Work Record context and runs the same Runner agent loop as a Human Turn.
-5. A Goal Turn must update its Work Record, emit a readable Assistant Message, and then emit a compact Handoff Item before completion.
+5. A successful Goal Turn must contain a readable Assistant Message, a current-Turn Work Record update, and an accepted compact Handoff; their working order is Agent-controlled.
 6. Future scheduling creates another Wake and therefore another Turn. Mail remains asynchronous communication only.
 7. Invalid execution fails the Turn; interrupted open Tool Calls receive explicit unknown results. A replacement Turn waits until the old Runner process exits. Committed Work Record history survives.
 
@@ -203,7 +203,7 @@ Not guaranteed, by design honesty:
 
 | Milestone | Scope |
 |---|---|
-| v2 ledger kernel | ✅ stream-aware event schema, typed replay reducers, private projection metadata, required/ignorable events, SQLite schema v22, transaction fault injection |
+| v2 ledger kernel | ✅ stream-aware event schema, typed replay reducers, private projection metadata, required/ignorable events, SQLite schema v23, transaction fault injection |
 | resumable Thread + Turn transcript | ✅ durable Thread/Turn/Item projections, normalized Pi messages/tools/requests, compaction facts, replay and interrupted-tool repair |
 | Active Context | ✅ deterministic Markdown composition with evidence source sequences |
 | execution modules | ✅ Goal/Wake/Schedule/Mailbox/Handoff contracts are layered above the generic kernel; Schedule has a closed lifecycle and Action is deliberately deferred |
