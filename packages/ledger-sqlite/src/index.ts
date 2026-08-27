@@ -231,7 +231,7 @@ CREATE TABLE IF NOT EXISTS mailbox (
   goal_id TEXT REFERENCES goals(id),
   body TEXT NOT NULL CHECK(json_valid(body)),
   read_at TEXT,
-  CHECK((route_kind='goal' AND goal_id IS NOT NULL AND specialist_role IS NULL) OR (route_kind IN ('human_inbox','human_request') AND goal_id IS NULL AND specialist_role IS NULL) OR (route_kind='specialist_inbox' AND goal_id IS NULL AND specialist_role IS NOT NULL))
+  CHECK((route_kind='goal' AND goal_id IS NOT NULL AND specialist_role IS NULL) OR (route_kind='human_inbox' AND to_agent='ceo' AND from_agent IN ('human','verifier','audit','supervisor') AND goal_id IS NULL AND specialist_role IS NULL) OR (route_kind='human_request' AND to_agent='human' AND from_agent='ceo' AND goal_id IS NULL AND specialist_role IS NULL) OR (route_kind='specialist_inbox' AND goal_id IS NULL AND specialist_role IS NOT NULL))
 ) STRICT;
 ${indexesAndTriggers}`;
 
@@ -514,7 +514,7 @@ export class SqliteLedger implements Ledger {
     if (current.status !== "claimed") throw new Error("only a claimed Wake may be consumed");
     const turn = this.turn(turnId); if (!turn) throw new Error("consumed Wake Turn does not exist");
     const thread = this.thread(turn.threadId); if (!thread || thread.agent !== current.agent) throw new Error("consumed Wake Turn agent does not match");
-    if((current.goalId??null)!==turn.goalId)throw new Error("consumed Wake Turn Goal target does not match");
+    if(current.goalId!==turn.goalId||current.targetKind==="human"&&turn.source!=="human"||current.targetKind==="specialist"&&turn.source!=="system")throw new Error("consumed Wake Turn execution target does not match");
     const next: WakeSnapshot = { ...current, status: "consumed", consumedAt: now, turnId };
     return this.#transaction(()=>{this.#resolveWakeTriggers(id,now);this.#recordProjection("wakes",next,"supervisor","wake.consumed",id,now);return next;});
   }

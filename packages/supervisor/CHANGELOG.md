@@ -9,6 +9,7 @@
 - Goal lifecycle invalidation is centralized in the Ledger; Supervisor no longer carries separate pause/completion Wake suppression paths, and Team motion ignores stale Goal Wakes.
 - Added one Turn prompt decision table and one canonical recovery reducer alongside Supervisor retry/escalation conventions; CLI no longer reconstructs either policy.
 - Nested Child recovery now escalates to the direct parent Goal owner, Specialist recovery shares the canonical view, and manual wake/stop are Goal-targeted.
+- Parent escalation now carries the failed Child recovery facts, and Human/Goal/Specialist Turns consume only their exact MailRoute; Specialist inbox Mail opens the matching specialist Turn.
 
 - Turn source and Human authority now derive from pending durable Wake triggers rather than the Wake's original display trigger.
 - Recovery context/retry sequencing and Mail redelivery now use admitted trigger snapshots, including triggers coalesced under another Wake.
