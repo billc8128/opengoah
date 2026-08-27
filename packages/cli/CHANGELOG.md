@@ -2,7 +2,10 @@
 
 ## 0.13.1
 
-- Published `@goah/cli` as one fully self-contained bundle: the tarball carries zero registry dependencies, so consumer installs execute no third-party lifecycle scripts and can no longer fail on broken upstream postinstalls (for example protobufjs on machines with a partially extracted global prefix). Each pack bundles from a pristine snapshot of the tsc output and restores it afterwards, ships the TypeScript declarations for every public subpath, all spawned worker entries, and generated third-party license notices.
+- Published `@goah/cli` as one fully self-contained bundle: the tarball carries zero registry dependencies, so consumer installs execute no third-party lifecycle scripts and can no longer fail on broken upstream postinstalls (for example protobufjs on machines with a partially extracted global prefix). Each pack bundles from a pristine snapshot of the tsc output and restores it afterwards, ships the TypeScript declarations for every public subpath, all spawned worker entries, Goah's Apache license, and generated third-party license notices.
+- Kept provider construction and credential storage behind the Pi Runner boundary instead of exposing third-party SDK types through the public `runner-pi` subpath.
+- Made rejected Goal revisions and reassignments side-effect free, while successful reassignment fences the old Turn and waits for its Runner to exit before the new owner starts.
+- Added one canonical current Root read model for TUI and Console, and bounded local control-protocol requests to 1 MB.
 - Documented install-failure recovery in the README: clearing leftover global state, refreshing the npm cache, and the `--ignore-scripts` last resort.
 
 ## Unreleased

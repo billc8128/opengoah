@@ -88,6 +88,7 @@ try {
 
   await bundleDeclarations(originalDist, stagedBundle);
   cpSync(join(originalDist, "console"), join(stagedBundle, "console"), { recursive: true });
+  cpSync(join(root,"LICENSE"),join(stagedBundle,"LICENSE"));
   writeFileSync(join(stagedBundle, "THIRD-PARTY-NOTICES.md"), thirdPartyNotices(result.metafile));
 
   renameSync(stagedBundle, dist);

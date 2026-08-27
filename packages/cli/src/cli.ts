@@ -141,6 +141,7 @@ async function main(): Promise<void> {
       console.log(JSON.stringify(supervisor.sendToCeo({ message: required("--message") }, "decision"), null, 2));
     } else if (command === "ceo-status") {
       console.log(JSON.stringify({
+        root:supervisor.currentRoot(),
         roots: ledger.goals().filter((goal) => goal.parentId === null && goal.owner === "ceo"),
         team: supervisor.teamList(),
         pendingHuman: ledger.unreadMail("human"),

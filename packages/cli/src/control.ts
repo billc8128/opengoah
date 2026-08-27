@@ -38,6 +38,8 @@ export type ControlFrame =
   | { type: "event"; event: JsonValue }
   | { type: "error"; error: string };
 
+export const CONTROL_LINE_LIMIT=1_000_000;
+
 export function controlEndpoint(stateDir: string): string {
   if (process.platform !== "win32") return join(stateDir, "control.sock");
   return `\\\\.\\pipe\\goah-${createHash("sha256").update(stateDir).digest("hex").slice(0, 16)}`;
@@ -104,7 +106,10 @@ export async function controlAvailable(stateDir: string): Promise<boolean> {
 
 async function serve(socket: Socket, supervisor: Supervisor, ledger: Ledger, reloadRuntime?: (configPath: string) => Promise<RuntimeSwap | undefined>, stop?: () => void): Promise<void> {
   let buffer = "";
+  let bufferedBytes=0;
   socket.on("data", (chunk: Buffer) => {
+    bufferedBytes+=chunk.length;
+    if(bufferedBytes>CONTROL_LINE_LIMIT){socket.removeAllListeners("data");write(socket,{type:"error",error:"control request exceeded 1 MB"});socket.end();return;}
     buffer += chunk.toString();
     const index = buffer.indexOf("\n");
     if (index < 0) return;
@@ -183,7 +188,7 @@ function snapshot(ledger: Ledger, supervisor: Supervisor): JsonValue {
   return { seq: ledger.events().at(-1)?.seq ?? 0, threads: ledger.threads(), turns: ledger.turns().map((turn)=>({...turn,leaseToken:null})), goals: ledger.goals(), team: supervisor.teamList(), wakes: ledger.wakes(), wakeTriggers:ledger.wakes().flatMap((wake)=>ledger.wakeTriggers(wake.id)), schedules: ledger.schedules() } as unknown as JsonValue;
 }
 function ceoStatus(ledger: Ledger, supervisor: Supervisor): JsonValue {
-  return { roots: ledger.goals().filter((goal) => goal.parentId === null && goal.owner === "ceo"), team: supervisor.teamList(), pendingHuman: ledger.unreadMail("human"), recentCeoHandoffs: ledger.eventsSince(0, ["handoff.recorded"]).filter((event) => event.actor === "ceo").slice(-10) } as unknown as JsonValue;
+  return { root:supervisor.currentRoot(),roots: ledger.goals().filter((goal) => goal.parentId === null && goal.owner === "ceo"), team: supervisor.teamList(), pendingHuman: ledger.unreadMail("human"), recentCeoHandoffs: ledger.eventsSince(0, ["handoff.recorded"]).filter((event) => event.actor === "ceo").slice(-10) } as unknown as JsonValue;
 }
 function requiredGoal(ledger: Ledger, id: string) { const goal = ledger.goal(id); if (!goal) throw new Error("goal not found"); return goal; }
 function assistantEventText(value:JsonValue):string{if(!value||typeof value!=="object"||Array.isArray(value)||!value.message||typeof value.message!=="object"||Array.isArray(value.message))return"";const content=value.message.content;if(typeof content==="string")return content;if(!Array.isArray(content))return"";return content.map((item)=>item&&typeof item==="object"&&!Array.isArray(item)&&item.type==="text"&&typeof item.text==="string"?item.text:"").filter(Boolean).join("\n");}

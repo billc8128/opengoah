@@ -30,6 +30,7 @@ export function consoleSnapshot(ledger: Ledger, supervisor: Supervisor, now = ne
   return redactValue({
     seq: ledger.events().at(-1)?.seq ?? 0,
     now,
+    currentRoot:supervisor.currentRoot(),
     goals: ledger.goals(),
     team: supervisor.teamList(now),
     threads: ledger.threads(),

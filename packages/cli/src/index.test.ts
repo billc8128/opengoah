@@ -4,12 +4,13 @@ import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createConnection } from "node:net";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { specialistBinding,type Clock, type Runner } from "goah-ledger-contract";
 import { SqliteLedger } from "goah-ledger-sqlite";
 import { Supervisor } from "goah-supervisor";
-import { interactFrames,isTurnPresentationEvent,streamControl } from "./control.js";
+import { CONTROL_LINE_LIMIT,interactFrames,isTurnPresentationEvent,streamControl } from "./control.js";
 import { welcomeSnapshot } from "./welcome.js";
 import { controlAvailable, controlEndpoint, diagnoseConfig, loadConfig, persistRunnerProfile, profilePath, readDefaultRunnerProfile, redactValue, statusSnapshot,SupervisorLock } from "./index.js";
 
@@ -255,6 +256,7 @@ test("CLI exposes one-objective CEO entry and coalesces human corrections", () =
   assert.equal(sent.mail.to, "ceo");
   assert.notEqual(sent.wake.id, started.wake.id);
   const status = JSON.parse(invoke(directory, "ceo", "status"));
+  assert.equal(status.root.id,"company");
   assert.equal(status.roots[0].id, "company");
   assert.equal(status.team.find((member: { agent: string }) => member.agent === "ceo").motion, "queued");
   assert.deepEqual(JSON.parse(invoke(directory, "ceo", "inbox")), []);
@@ -269,6 +271,9 @@ test("CLI revises and confirms a root through the resident Supervisor control so
   try {
     await waitFor(async () => controlAvailable(config.stateDir));
     if (process.platform !== "win32") assert.equal(statSync(controlEndpoint(config.stateDir)).mode & 0o777, 0o600);
+    const oversized=await new Promise<string>((resolveResponse,reject)=>{const socket=createConnection(controlEndpoint(config.stateDir));let response="";socket.on("connect",()=>socket.write("x".repeat(CONTROL_LINE_LIMIT+1)));socket.on("data",(chunk)=>{response+=chunk.toString();});socket.on("error",reject);socket.on("close",()=>resolveResponse(response));});
+    assert.match(oversized,/exceeded 1 MB/);
+    assert.equal(await controlAvailable(config.stateDir),true);
     const started = JSON.parse(invoke(directory, "goal", "start", "--id", "live", "--objective", "Grow revenue"));
     assert.equal(started.goal.observationMethod, null);
     const observed = JSON.parse(invoke(directory, "goal-update", "live", "--observation-method", "Run the net revenue report every six hours."));

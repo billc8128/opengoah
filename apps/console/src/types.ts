@@ -90,6 +90,7 @@ export interface ThreadDetailView { thread: ThreadView; turns: Array<TurnView & 
 export interface ConsoleSnapshot {
   seq: number
   now: string
+  currentRoot: GoalView | null
   goals: GoalView[]
   team: TeamView[]
   threads: ThreadView[]

@@ -5,7 +5,8 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { CONTRACT_VERSION, wakeStream, type AgentProfile, type RunnerProfile } from "goah-ledger-contract";
 import { SQLITE_SCHEMA_VERSION, SqliteLedger } from "goah-ledger-sqlite";
-import { createPiModel, piWorkerPath, ProcessRunner, resolveEnvSpec, type ProcessRunnerOptions } from "goah-runner-pi";
+import { piWorkerPath, ProcessRunner, resolveEnvSpec, type ProcessRunnerOptions } from "goah-runner-pi";
+import { createPiModel } from "goah-runner-pi/internal";
 import { renderDashboard, runSupervisorDaemon, RunnerRouter, Supervisor } from "goah-supervisor";
 import { runnerPlugin } from "./runner-registry.js";
 

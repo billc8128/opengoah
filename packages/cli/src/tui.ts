@@ -421,18 +421,17 @@ async function printStatus(stateDir: string, push: (line: string) => void): Prom
   try {
     const status = await requestControl(stateDir, { op: "ceo.status" });
     const value = status && typeof status === "object" && !Array.isArray(status) ? status as Record<string, unknown> : {};
-    const roots = Array.isArray(value.roots) ? value.roots as Array<Record<string, unknown>> : [];
+    const root = value.root&&typeof value.root==="object"&&!Array.isArray(value.root)?value.root as Record<string,unknown>:null;
     const team = Array.isArray(value.team) ? value.team as Array<Record<string, unknown>> : [];
     const pending = Array.isArray(value.pendingHuman) ? value.pendingHuman.length : 0;
-    push([tuiTheme.strong("Status"), roots[0] ? `  ${tuiTheme.active(" GOAL ")}  ${String(roots[0].objective)}  ${tuiTheme.muted(String(roots[0].phase))}` : `  ${tuiTheme.muted("No active Goal")}`, `  ${tuiTheme.muted(team.length ? team.map((member) => `${String(member.agent)} ${String(member.motion)}${member.lastOutcome?`/${String(member.lastOutcome)}`:""}`).join(" · ") : "No Goal Agents")}`, ...(pending ? [`  ${tuiTheme.warning(`${pending} decision${pending === 1 ? "" : "s"} need you`)}`] : []), ""].join("\n"));
+    push([tuiTheme.strong("Status"), root ? `  ${tuiTheme.active(" GOAL ")}  ${String(root.objective)}  ${tuiTheme.muted(String(root.phase))}` : `  ${tuiTheme.muted("No current Goal")}`, `  ${tuiTheme.muted(team.length ? team.map((member) => `${String(member.agent)} ${String(member.motion)}${member.lastOutcome?`/${String(member.lastOutcome)}`:""}`).join(" · ") : "No Goal Agents")}`, ...(pending ? [`  ${tuiTheme.warning(`${pending} decision${pending === 1 ? "" : "s"} need you`)}`] : []), ""].join("\n"));
   } catch (error) { push(errorLine(error)); }
 }
 
 async function refreshGoalBar(stateDir: string, view: GoalBar, tui: TuiAltScreen): Promise<void> {
   try {
     const status = await requestControl(stateDir, { op: "ceo.status" });
-    const roots = status && typeof status === "object" && !Array.isArray(status) && Array.isArray((status as Record<string, unknown>).roots) ? (status as Record<string, unknown>).roots as Array<Record<string, unknown>> : [];
-    const root = roots[0];
+    const root = status && typeof status === "object" && !Array.isArray(status) && (status as Record<string,unknown>).root && typeof (status as Record<string,unknown>).root === "object" ? (status as Record<string,unknown>).root as Record<string,unknown> : null;
     view.setRoot(root ? { objective: String(root.objective), phase: String(root.phase) } : null);
     tui.requestRender();
   } catch {}
@@ -468,8 +467,7 @@ async function slashGoal(text: string, stateDir: string, push: (line: string) =>
   const value = text.slice(isGoal ? 6 : 9).trim();
   try {
     const status = await requestControl(stateDir, { op: "ceo.status" });
-    const roots = status && typeof status === "object" && !Array.isArray(status) && Array.isArray((status as Record<string, unknown>).roots) ? (status as Record<string, unknown>).roots as unknown[] : [];
-    const root = roots.find((item) => item && typeof item === "object" && !Array.isArray(item)) as Record<string, unknown> | undefined;
+    const root = status && typeof status === "object" && !Array.isArray(status) && (status as Record<string,unknown>).root && typeof (status as Record<string,unknown>).root === "object" ? (status as Record<string,unknown>).root as Record<string,unknown> : undefined;
     if (!root) {
       if (!isGoal) throw new Error("no active root goal");
       const created = await requestControl(stateDir, { op: "goal.start", objective: value });

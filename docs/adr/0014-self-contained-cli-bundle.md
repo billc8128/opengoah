@@ -17,7 +17,7 @@ Pack time now bundles the CLI into a single self-contained output:
 - `scripts/prepare-single-package.mjs` snapshots the pristine tsc output, runs esbuild over all public subpath entries plus the spawned worker entries (`pi-worker`, `verification-worker`, `faux-runner-worker`), bundles every public TypeScript declaration graph, copies Console assets, generates `dist/THIRD-PARTY-NOTICES.md` from the exact bundled dependency closure, and swaps the bundle in. Cleanup restores the snapshot afterwards; startup and failure paths also recover an interrupted pack.
 - Only node builtins stay external; CJS dependencies receive a `createRequire` banner so runtime `require()` of builtins keeps working in ESM output.
 - The published manifest ships zero `dependencies`, and no bundled dependencies remain.
-- Missing third-party license metadata or text fails the pack instead of producing an incomplete notice.
+- The tarball includes Goah's Apache-2.0 license. Missing third-party license metadata or text fails the pack instead of producing an incomplete notice.
 - `scripts/pack-smoke.mjs` packs twice and validates the second tarball — the one a publish would ship: it asserts a dependency-free manifest, no `node_modules/` paths, resolvable declarations, worker entries, Console assets, complete license notices, normal and `--ignore-scripts` installs, and a full goal-to-handoff run.
 
 External Pi dependencies are no longer registry dependencies of the published package (supersedes that sentence of ADR 0007).

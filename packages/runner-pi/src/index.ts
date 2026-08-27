@@ -17,8 +17,7 @@ import {
   type TurnOutput,
 } from "goah-ledger-contract";
 
-export { createPiModel, defaultAuthFile, modelCatalog, providerCatalog, resolvedApiKey, LOCAL_PROVIDERS, type ModelSummary, type ProviderSummary } from "./model-provider.js";
-export { JsonCredentialStore } from "./credential-store.js";
+export { defaultAuthFile, modelCatalog, providerCatalog, LOCAL_PROVIDERS, type ModelSummary, type ProviderSummary } from "./model-provider.js";
 export { createPiProcessRunner, piConfig, piEnvironment, piRunnerConfigurator, type PiRunnerConfig } from "./configurator.js";
 export { resolveEnvSpec } from "./env-spec.js";
 

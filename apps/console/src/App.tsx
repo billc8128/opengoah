@@ -57,7 +57,7 @@ export function App() {
 
   if (!snapshot) return <LoadingState connection={connection} />
 
-  const root = snapshot.goals.find((goal) => goal.parentId === null) ?? snapshot.goals[0] ?? null
+  const root = snapshot.currentRoot
   const openThread = (threadId: string) => { setSelectedThreadId(threadId); setView("thread") }
   return (
     <div className="console-shell">
