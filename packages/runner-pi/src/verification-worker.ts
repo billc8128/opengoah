@@ -2,7 +2,7 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
-import { fauxAssistantMessage, fauxToolCall, Type } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxToolCall, Type, type MutableModels } from "@earendil-works/pi-ai";
 import { createPiModel, resolvedApiKey } from "./model-provider.js";
 interface VerificationResult { findings: Array<{ id: string; body: unknown; evidence: number[]; riskWeight: number }>; tokensUsed: number }
 
@@ -14,7 +14,8 @@ export async function runVerificationWorker(): Promise<void> {
     const modelId = process.env.GOAH_PI_MODEL;
     if (!modelId) throw new Error("GOAH_PI_MODEL is required");
     const configured = createPiModel(provider, modelId);
-    const { models, model } = configured;
+    const models = configured.models as unknown as MutableModels;
+    const model = configured.model as unknown as import("@earendil-works/pi-ai").Model<import("@earendil-works/pi-ai").Api>;
     if (provider === "faux") {
       const faux = configured.faux!;
       const findings = JSON.parse(process.env.GOAH_VERIFIER_FAUX_FINDINGS ?? "[]");
@@ -31,7 +32,7 @@ export async function runVerificationWorker(): Promise<void> {
     const systemPrompt = request.operation === "blind_audit"
       ? "Independently audit durable facts. Report only evidence-backed findings."
       : "Verify the handoff against trace facts. Never trust self-report without support.";
-    const agent = new Agent({ initialState: { systemPrompt: `${systemPrompt} You must call report_findings exactly once.`, model, tools: [tool] }, streamFn: models.streamSimple.bind(models), getApiKey: (id) => resolvedApiKey(models, id), shouldStopAfterTurn: () => result !== null });
+    const agent = new Agent({ initialState: { systemPrompt: `${systemPrompt} You must call report_findings exactly once.`, model, tools: [tool] }, streamFn: models.streamSimple.bind(models), getApiKey: (id) => resolvedApiKey(configured.models, id), shouldStopAfterTurn: () => result !== null });
     agent.subscribe((event) => { if (event.type === "message_end" && event.message.role === "assistant") tokensUsed += event.message.usage.totalTokens; });
     await agent.prompt(JSON.stringify(request.input));
     const finalResult = result as VerificationResult | null;

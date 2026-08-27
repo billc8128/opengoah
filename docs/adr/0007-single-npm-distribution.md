@@ -30,3 +30,4 @@ The release workflow performs one `npm publish`. Pack smoke installs only that t
 - Existing standalone 0.1/0.2 package versions remain in the registry but receive no 0.3 updates.
 - Consumers migrate imports from `goah-ledger-*`, `goah-supervisor`, `goah-runner-pi`, and `goah-testkit` to `@goah/cli/*` subpaths.
 - The top-level provenance attestation covers the complete bundled Goah tarball.
+- Updated by ADR 0014: external Pi dependencies are now bundled into the single distribution instead of resolving from the registry at consumer install time.

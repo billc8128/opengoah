@@ -1,19 +1,24 @@
 import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
-import type { Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
+import type { CredentialStore as UpstreamCredentialStore } from "@earendil-works/pi-ai";
+
+export type PiCredential =
+  | { type: "api_key"; key?: string; env?: Record<string, string> }
+  | ({ type: "oauth"; refresh: string; access: string; expires: number } & Record<string, unknown>);
+export interface PiCredentialInfo { providerId: string; type: PiCredential["type"] }
 
 /** Small file-backed implementation of Pi's credential contract. */
-export class JsonCredentialStore implements CredentialStore {
+export class JsonCredentialStore {
   #tail: Promise<void> = Promise.resolve();
   constructor(readonly path: string) {}
 
-  async read(providerId: string): Promise<Credential | undefined> { return (await this.#readAll())[providerId]; }
-  async list(): Promise<readonly CredentialInfo[]> {
+  async read(providerId: string): Promise<PiCredential | undefined> { return (await this.#readAll())[providerId]; }
+  async list(): Promise<readonly PiCredentialInfo[]> {
     return Object.entries(await this.#readAll()).map(([providerId, credential]) => ({ providerId, type: credential.type }));
   }
 
-  async modify(providerId: string, fn: (current: Credential | undefined) => Promise<Credential | undefined>): Promise<Credential | undefined> {
+  async modify(providerId: string, fn: (current: PiCredential | undefined) => Promise<PiCredential | undefined>): Promise<PiCredential | undefined> {
     return this.#enqueue(async () => {
       const all = await this.#readAll();
       const result = await fn(all[providerId]);
@@ -40,7 +45,7 @@ export class JsonCredentialStore implements CredentialStore {
     });
   }
 
-  async replaceProviderIfUnchanged(providerId: string, expected: Credential | undefined, next: Credential | undefined): Promise<void> {
+  async replaceProviderIfUnchanged(providerId: string, expected: PiCredential | undefined, next: PiCredential | undefined): Promise<void> {
     await this.#enqueue(async () => {
       const all = await this.#readAll();
       if (!sameCredential(all[providerId], expected)) throw new Error(`Credentials for ${providerId} changed in another process; refusing to overwrite them.`);
@@ -80,14 +85,14 @@ export class JsonCredentialStore implements CredentialStore {
     finally { if ((await readLockOwner(ownerPath))?.token === token) await rm(lock, { recursive: true, force: true }); }
   }
 
-  async #readAll(): Promise<Record<string, Credential>> {
-    try { return JSON.parse(await readFile(this.path, "utf8")) as Record<string, Credential>; }
+  async #readAll(): Promise<Record<string, PiCredential>> {
+    try { return JSON.parse(await readFile(this.path, "utf8")) as Record<string, PiCredential>; }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return {}; throw error; }
   }
 
   async #readRaw(): Promise<Buffer | null> { return readFile(this.path).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? null : Promise.reject(error)); }
 
-  async #writeAll(value: Record<string, Credential>): Promise<void> {
+  async #writeAll(value: Record<string, PiCredential>): Promise<void> {
     await mkdir(dirname(this.path), { recursive: true });
     const temporary = `${this.path}.${process.pid}.tmp`;
     await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
@@ -97,7 +102,7 @@ export class JsonCredentialStore implements CredentialStore {
 }
 
 function buffersEqual(left: Buffer | null, right: Buffer | null): boolean { return left === null || right === null ? left === right : left.equals(right); }
-function sameCredential(left: Credential | undefined, right: Credential | undefined): boolean { return JSON.stringify(left) === JSON.stringify(right); }
+function sameCredential(left: PiCredential | undefined, right: PiCredential | undefined): boolean { return JSON.stringify(left) === JSON.stringify(right); }
 async function readLockOwner(path: string): Promise<{ pid: number; token: string } | null> {
   try { const value = JSON.parse(await readFile(path, "utf8")) as { pid?: unknown; token?: unknown }; return Number.isInteger(value.pid) && Number(value.pid) > 0 && typeof value.token === "string" ? value as { pid: number; token: string } : null; }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) return null; throw error; }
@@ -106,3 +111,6 @@ function processIsAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; }
   catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 }
+
+const credentialStoreContract: new (path: string) => UpstreamCredentialStore = JsonCredentialStore;
+void credentialStoreContract;

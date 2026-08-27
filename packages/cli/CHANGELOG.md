@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.13.1
+
+- Published `@goah/cli` as one fully self-contained bundle: the tarball carries zero registry dependencies, so consumer installs execute no third-party lifecycle scripts and can no longer fail on broken upstream postinstalls (for example protobufjs on machines with a partially extracted global prefix). Each pack bundles from a pristine snapshot of the tsc output and restores it afterwards, ships the TypeScript declarations for every public subpath, all spawned worker entries, and generated third-party license notices.
+- Documented install-failure recovery in the README: clearing leftover global state, refreshing the npm cache, and the `--ignore-scripts` last resort.
+
 ## Unreleased
 
 - Goal responses containing Handoff stay provisional in TUI until `response.committed`; failed drafts disappear from the main transcript while remaining durable in Turn history.

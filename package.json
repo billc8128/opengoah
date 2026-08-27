@@ -30,6 +30,9 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "esbuild": "^0.28.2",
+    "rollup": "4.62.4",
+    "rollup-plugin-dts": "^6.5.1",
     "typescript": "^5.9.0"
   },
   "engines": {

@@ -5,7 +5,7 @@ import { delimiter, dirname, join, resolve, sep } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { Agent, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
-import { fauxAssistantMessage, fauxText, fauxToolCall, Type, type Message } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxText, fauxToolCall, Type, type Message, type Provider } from "@earendil-works/pi-ai";
 import { TRANSCRIPT_FORMAT_VERSION, type AgentCapability, type AgentHandoff, type HandoffValidationResult, type JsonValue, type RunnerCandidateResult, type TranscriptMessage, type TurnOutput } from "goah-ledger-contract";
 import { runProcessWorker, type WorkerRpc } from "./index.js";
 import { createPiModel } from "./model-provider.js";
@@ -115,7 +115,7 @@ export async function runPiWorker(): Promise<void> {
             sourceSeqs,
           },
         });
-        const runtimeProvider = models.getProvider(requestModel.provider);
+        const runtimeProvider = models.getProvider(requestModel.provider) as Provider | undefined;
         if (!runtimeProvider) throw new Error(`Provider not found: ${requestModel.provider}`);
         const runtimeModel = typeof privateAuth.baseUrl === "string" ? { ...requestModel, baseUrl: privateAuth.baseUrl } : requestModel;
         return runtimeProvider.streamSimple(runtimeModel, context, { ...options, ...(typeof privateAuth.apiKey === "string" ? { apiKey: privateAuth.apiKey } : {}), ...(privateAuth.headers && typeof privateAuth.headers === "object" && !Array.isArray(privateAuth.headers) ? { headers: privateAuth.headers as Record<string, string> } : {}), ...(process.env.GOAH_PI_CACHE_RETENTION === "none" ? { cacheRetention: "none" as const } : {}) });

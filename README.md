@@ -96,6 +96,18 @@ goah update
 
 `goah update` preserves global npm installs and custom-prefix installs such as `~/.goah-tool`. It never invokes `sudo`; permission failures are reported with the exact npm command. Use `--dry-run` to inspect the command or `--version X.Y.Z` to install an explicit version.
 
+If a global install fails mid-way, an earlier interrupted install usually left a partial package behind. Clear the leftover global directory, refresh the npm cache, and reinstall:
+
+```bash
+npm uninstall -g @goah/cli && npm cache verify && npm install --global @goah/cli@latest
+```
+
+The published CLI is a single self-contained bundle with zero registry dependencies, so third-party install scripts never run on your machine. As a last resort on hosts where lifecycle scripts are blocked or stripped, skip them entirely — the CLI needs none:
+
+```bash
+npm install --global @goah/cli --ignore-scripts && goah --version
+```
+
 The global CLI is the default product path: after installation, `goah` works from any directory and initializes that directory as its local workspace. For TypeScript library integration instead, install `@goah/cli` in the project and use its documented subpath exports.
 
 The normal product flow is an ordinary CEO interaction. Greetings, questions, and bounded work do not create a Goal. Durable Human intent may be translated by CEO into `create_goal`, or created explicitly with `/goal`; from that point the Turn follows strict Goal, Work Record, observation, verification, and Handoff policy. Lower-level Goal controls remain available for inspection, extensions, and Human root authority:

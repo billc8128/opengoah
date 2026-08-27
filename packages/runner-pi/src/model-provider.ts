@@ -12,7 +12,28 @@ export type LocalProvider = typeof LOCAL_PROVIDERS[number];
 
 export interface ProviderSummary { id: string; name: string; modelCount: number; oauth: boolean; apiKey: boolean; local: boolean }
 export interface ModelSummary { provider: string; id: string; name: string; contextWindow: number; maxTokens: number; reasoning: boolean }
-export interface ConfiguredPiModel { models: MutableModels; model: Model<Api>; faux?: ReturnType<typeof fauxProvider> }
+export interface PiModelHandle {
+  id: string;
+  name: string;
+  api: string;
+  provider: string;
+  baseUrl: string;
+  reasoning: boolean;
+  input: ("text" | "image")[];
+  cost: { input: number; output: number; cacheRead: number; cacheWrite: number; tiers?: Array<{ inputTokensAbove: number; input: number; output: number; cacheRead: number; cacheWrite: number }> };
+  contextWindow: number;
+  maxTokens: number;
+  [key: string]: unknown;
+}
+export interface PiModelsHandle {
+  getAuth(provider: string): Promise<{ auth: { apiKey?: string; headers?: Record<string, string>; baseUrl?: string }; source?: string } | undefined>;
+  getProvider(id: string): { streamSimple(...args: unknown[]): unknown } | undefined;
+  getModel(provider: string, id: string): PiModelHandle | undefined;
+  setProvider(provider: unknown): void;
+  streamSimple(...args: unknown[]): unknown;
+}
+export interface PiFauxHandle { setResponses(responses: unknown[]): void }
+export interface ConfiguredPiModel { models: PiModelsHandle; model: PiModelHandle; faux?: PiFauxHandle }
 
 export function defaultAuthFile(): string {
   return process.env.GOAH_PI_AUTH_FILE ?? join(process.env.GOAH_STATE_HOME ?? join(homedir(), ".goah"), "auth.json");
@@ -49,7 +70,7 @@ export function createPiModel(provider: string, modelId: string, env: NodeJS.Pro
     const models = createModels();
     const faux = fauxProvider({ provider, models: [{ id: modelId, contextWindow: 128_000, maxTokens: 32_000 }] });
     models.setProvider(faux.provider);
-    return { models, model: faux.getModel() as Model<Api>, faux };
+    return { models, model: faux.getModel() as Model<Api>, faux } as unknown as ConfiguredPiModel;
   }
 
   const ambient = defaultProviderAuthContext();
@@ -59,7 +80,7 @@ export function createPiModel(provider: string, modelId: string, env: NodeJS.Pro
   const model = models.getModel(provider, modelId);
   if (!model) throw new Error(`Model not found: ${provider}/${modelId}`);
   const baseUrl = env.GOAH_PI_BASE_URL;
-  return { models, model: baseUrl ? { ...model, baseUrl } as Model<Api> : model };
+  return { models, model: baseUrl ? { ...model, baseUrl } as Model<Api> : model } as unknown as ConfiguredPiModel;
 }
 
 function customProvider(provider: string, modelId: string, env: NodeJS.ProcessEnv) {
@@ -74,7 +95,7 @@ function customProvider(provider: string, modelId: string, env: NodeJS.ProcessEn
   return createProvider({ id: provider, name: provider, baseUrl, auth: { apiKey: envApiKeyAuth(`${provider} API key`, ["GOAH_PI_API_KEY"]) }, models: [model], api: stream });
 }
 
-export async function resolvedApiKey(models: MutableModels, provider: string): Promise<string | undefined> {
+export async function resolvedApiKey(models: PiModelsHandle, provider: string): Promise<string | undefined> {
   return (await models.getAuth(provider))?.auth.apiKey;
 }
 
