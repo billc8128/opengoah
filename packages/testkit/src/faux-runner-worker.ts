@@ -40,13 +40,14 @@ await runProcessWorker(async (request, emit, rpc): Promise<RunnerCandidateResult
     if (step.hang) await new Promise(() => undefined);
     if (step.response !== undefined) return { outcome: "response", response: { content: step.response } };
     if (step.handoff) {
+      const output=step.handoff;
       if (goalBinding && !recordUpdated) {
         const current = await rpc("work_record.read", { goalId: goalBinding.goalId });
         const record = current && typeof current === "object" && !Array.isArray(current) ? current as Record<string, JsonValue> : {};
         const evidence = sourceSeqs(request.context);
-        await rpc("work_record.update", { expectedRevision: Number(record.recordRevision ?? 0), content: handoffRecord(step.handoff, request.execution.id), reason: "record faux Goal progress", evidence: evidence.length ? [Math.max(...evidence)] : [] });
+        await rpc("work_record.update", { expectedRevision: Number(record.recordRevision ?? 0), content: handoffRecord(output, request.execution.id), reason: "record faux Goal progress", evidence: evidence.length ? [Math.max(...evidence)] : [] });
       }
-      return { outcome: "handoff", output: step.handoff };
+      return { outcome: "handoff", output };
     }
   }
   return { outcome: "abnormal", reason: "faux worker stopped without handoff" };

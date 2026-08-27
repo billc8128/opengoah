@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `TurnOutput` now requires a readable response alongside structured Handoff data, and the duplicate `consumeWake` transition has been removed.
 - Inactive reassignment results may contain no Wake because paused/blocked Goals cannot schedule execution.
 - Added discriminated `ExecutionBinding`, `ScheduleBinding`, `TurnBinding`, and `MailRoute` contracts plus constructors; removed optional and inferred execution routing.
 

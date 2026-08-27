@@ -12,7 +12,7 @@ export interface ActiveContextInput {
   role: AgentRole;
   capabilities: AgentCapability[];
   systemPrompt: string;
-  wake: WakeSnapshot;
+  wake: Pick<WakeSnapshot, "attempt"> & Partial<WakeSnapshot>;
   wakeTriggers: WakeTriggerSnapshot[];
   goals: GoalSnapshot[];
   mail: MailSnapshot[];

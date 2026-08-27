@@ -142,8 +142,8 @@ export type GoalOutcome = "progress" | "waiting" | "blocked" | "completion_propo
 export interface AgentHandoff { outcome: GoalOutcome; evidence: number[] }
 export interface GoalHandoff extends AgentHandoff { goalId: string; goalRevision: number; recordRevision: number }
 export type Handoff = GoalHandoff;
-export interface TurnOutput { handoff: AgentHandoff }
-export interface CommittedTurnOutput { handoff: GoalHandoff }
+export interface TurnOutput { response: AssistantResponse; handoff: AgentHandoff }
+export interface CommittedTurnOutput { response: AssistantResponse; handoff: GoalHandoff }
 export interface RunnerTraceEvent { type: string; data: JsonValue }
 
 export type AgentRole = "child" | "ceo" | "verifier" | "audit";
@@ -182,7 +182,7 @@ export type RunnerCandidateResult = { outcome: "response"; response: AssistantRe
 export interface RunnerHandle { pid: number | null; begin(): void; result: Promise<RunnerCandidateResult>; steer?(message: string): Promise<void>; terminate(): Promise<void> }
 export interface Runner { readonly isolation: "process"; prepare(request: RunRequest): RunnerHandle; terminateProcess(pid: number, runnerProfileId?: string): Promise<void> }
 
-export interface HandoffCommit { agent: string; turnId: string; sourceWakeId: string | null; mailIds: string[]; ts: string; output: CommittedTurnOutput; item: TurnItemSnapshot }
+export interface HandoffCommit { agent: string; turnId: string; sourceWakeId: string | null; mailIds: string[]; ts: string; output: CommittedTurnOutput; responseItem: TurnItemSnapshot; item: TurnItemSnapshot }
 
 /** Standard execution modules composed on top of the generic event store. */
 export interface Ledger extends EventStore {
@@ -208,7 +208,6 @@ export interface Ledger extends EventStore {
   addWakeTrigger(wakeId: string, triggerRef: string, actor: string): WakeTriggerSnapshot;
   claimNextWake(now: string): WakeSnapshot | null;
   startTurnFromWake(id: string, turn: TurnSnapshot, now: string): WakeSnapshot;
-  consumeWake(id: string, turnId: string, now: string): WakeSnapshot;
   releaseWake(id: string, now: string): WakeSnapshot;
   cancelWake(id: string, now: string): WakeSnapshot;
   attachTurnProcess(id: string, leaseToken: string, pid: number): TurnSnapshot;
@@ -256,6 +255,7 @@ export function assertHandoff(value: Handoff): void {
   if (!value.goalId.trim() || !Number.isInteger(value.goalRevision) || value.goalRevision<0 || !Number.isInteger(value.recordRevision) || value.recordRevision<1) throw new Error("invalid Goal handoff");
 }
 export function assertAgentHandoff(value:AgentHandoff):void{if(!["progress", "waiting", "blocked", "completion_proposed"].includes(value.outcome)||!Array.isArray(value.evidence)||value.evidence.length===0)throw new Error("invalid Agent handoff");}
+export function assertTurnOutput(value:TurnOutput):void{if(typeof value.response?.content!=="string"||!value.response.content.trim())throw new Error("Goal Turn requires a readable response");assertAgentHandoff(value.handoff);}
 export function assertGoalSnapshot(value: GoalSnapshot): void {
   if (!value.objective.trim() || !value.owner.trim()) throw new Error("goal objective and owner are required");
   if (value.observationMethod !== null && !value.observationMethod.trim()) throw new Error("goal observation method cannot be blank");

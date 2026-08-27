@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Goal execution now requires a normal readable assistant message before the separate Handoff tool call; Pi returns both channels in `TurnOutput`.
 - Removed next-wake effects from Handoff and added typed Agent-only Mail routing; future motion uses schedule_wake.
 
 - Bounded Runner protocol line size and converted in-process session initialization failures into abnormal terminal results.

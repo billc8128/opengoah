@@ -44,7 +44,7 @@ test("runner policy is external and a multi-step driver can hand off", async () 
   const now = "2026-08-18T00:00:00.000Z";
   const faux = driver([
     {},
-    { handoff: { handoff: { outcome:"progress",evidence:[1] } } },
+    { handoff: { response:{content:"Goal progress recorded."},handoff: { outcome:"progress",evidence:[1] } } },
   ]);
   const request: RunRequest = {
     ...requestBase, turn: goalTurn, context: {},

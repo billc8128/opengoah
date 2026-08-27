@@ -20,7 +20,7 @@ const piEnv = model ? {
 } : null;
 const runner = new ProcessRunner(model
   ? { command: process.execPath, args: [piWorkerPath()], cwd: repo, env: piEnv! }
-  : { command: process.execPath, args: [fauxRunnerWorkerPath()], cwd: repo, env: { GOAH_FAUX_STEPS: JSON.stringify([{rpc:{method:"schedule.set",params:{at:new Date(Date.now()+86_400_000).toISOString(),reason:"daily repository review"}}},{ handoff: { handoff: { outcome:"progress", evidence:[1] } } }]) } });
+  : { command: process.execPath, args: [fauxRunnerWorkerPath()], cwd: repo, env: { GOAH_FAUX_STEPS: JSON.stringify([{rpc:{method:"schedule.set",params:{at:new Date(Date.now()+86_400_000).toISOString(),reason:"daily repository review"}}},{ handoff: { response:{content:"Goal work recorded."},handoff: { outcome:"progress", evidence:[1] } } }]) } });
 const supervisor = new Supervisor(ledger, runner, new class { now(): Date { return new Date(); } }(), {
   retryPolicy: { maxAttempts: 2, baseDelayMs: 5_000 },
   profiles: [{

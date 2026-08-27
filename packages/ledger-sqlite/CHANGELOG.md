@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Schema v22 makes Wake-to-Turn linkage unique, restricts new direct Turns to CEO Human interactions, validates the current Goal fence at atomic Wake admission, and replays Turn/Wake state through typed transition reducers.
+- Goal completion atomically persists the readable Assistant Message before the structured Handoff and terminal Turn.
 - Schema v19 stores typed Mail Goal routes and exposes Goal-scoped latest Handoff queries.
 - Goal phase and owner transitions mechanically supersede pending Schedules while definition revisions preserve them.
 - Goal phase and owner transitions now cancel queued/claimed Goal Wakes in the same transaction as Schedule supersession.

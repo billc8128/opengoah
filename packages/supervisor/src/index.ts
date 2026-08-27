@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   assertHandoff,
+  assertTurnOutput,
   goalStream,
   goalRoute,
   goalExecutionBinding,
@@ -185,7 +186,22 @@ export class Supervisor {
   async #awaitAgentExecution(agent:string):Promise<void>{const running=this.#agentExecutions.get(agent);if(running)await running;}
 
   #humanContext(turnId: string, agent: string,mail:MailSnapshot[]): JsonValue {
-    const turn=this.ledger.turn(turnId)!;const profile=this.#profiles.get(agent)??{agent,role:"ceo" as const};const runnerProfile=this.#runnerProfiles.get(profile.runnerProfile??"default");const recent=this.ledger.turns(turn.threadId).filter((candidate)=>candidate.id!==turn.id&&candidate.status==="completed").slice(-8).flatMap((candidate)=>this.ledger.turnItems(candidate.id).filter((item)=>item.type==="user_message"||item.type==="assistant_message").map((item)=>`${item.type==="user_message"?"Human":"Assistant"}: ${String((item.data as {text?:unknown}).text??"")}`));const current=this.#turnHistory(turn.id);const sourceSeqs=[...this.ledger.readStream(`turn:${turn.id}`).filter((event)=>event.type==="item.user_message.started").map((event)=>event.seq),...this.#mailSourceSeqs(mail)];const incoming=mail.map((item)=>`- [${item.level}] ${item.id} from ${item.from}: ${boundedJson(item.body)}`);const context:TurnContext={source:{kind:"human"}};return {text:[...(recent.length?[`# Recent conversation\n\n${recent.join("\n")}`]:[]),...(incoming.length?[`# Incoming\n\n${incoming.join("\n")}`]:[]),`# Current Turn\n\n${current}`].join("\n\n"),sourceSeqs,capabilities:profile.capabilities??defaultCapabilities(profile.role),systemPrompt:profile.systemPrompt??defaultTurnPrompt(profile.role,agent,context),...(runnerProfile?{runnerProfile}:{})} as unknown as JsonValue;
+    const turn=this.ledger.turn(turnId)!;
+    const current=this.#turnHistory(turn.id);
+    const turnSourceSeqs=this.ledger.readStream(`turn:${turn.id}`).filter((event)=>event.type==="item.user_message.started").map((event)=>event.seq);
+    if(turn.bindingKind==="goal"){
+      const context:TurnContext={source:{kind:"human"},goalBinding:{goalId:turn.goalId,goalRevision:turn.goalRevision}};
+      const base=this.#loadContext({...goalExecutionBinding(agent,turn.goalId),attempt:turn.attempt},context,mail,[]) as Record<string,JsonValue>;
+      const sourceSeqs=Array.isArray(base.sourceSeqs)?base.sourceSeqs.filter((value):value is number=>typeof value==="number"):[];
+      return{...base,text:`${String(base.text??"")}\n\n# Current Turn\n\n${current}`,sourceSeqs:[...new Set([...sourceSeqs,...turnSourceSeqs])].sort((a,b)=>a-b)} as unknown as JsonValue;
+    }
+    const profile=this.#profiles.get(agent)??{agent,role:"ceo" as const};
+    const runnerProfile=this.#runnerProfiles.get(profile.runnerProfile??"default");
+    const recent=this.ledger.turns(turn.threadId).filter((candidate)=>candidate.id!==turn.id&&candidate.status==="completed").slice(-8).flatMap((candidate)=>this.ledger.turnItems(candidate.id).filter((item)=>item.type==="user_message"||item.type==="assistant_message").map((item)=>`${item.type==="user_message"?"Human":"Assistant"}: ${String((item.data as {text?:unknown}).text??"")}`));
+    const sourceSeqs=[...turnSourceSeqs,...this.#mailSourceSeqs(mail)];
+    const incoming=mail.map((item)=>`- [${item.level}] ${item.id} from ${item.from}: ${boundedJson(item.body)}`);
+    const context:TurnContext={source:{kind:"human"}};
+    return {text:[...(recent.length?[`# Recent conversation\n\n${recent.join("\n")}`]:[]),...(incoming.length?[`# Incoming\n\n${incoming.join("\n")}`]:[]),`# Current Turn\n\n${current}`].join("\n\n"),sourceSeqs,capabilities:profile.capabilities??defaultCapabilities(profile.role),systemPrompt:profile.systemPrompt??defaultTurnPrompt(profile.role,agent,context),...(runnerProfile?{runnerProfile}:{})} as unknown as JsonValue;
   }
 
   #goalContext(wake:WakeSnapshot,turn:TurnContext,turnId:string,mail:MailSnapshot[],wakeTriggers:WakeTriggerSnapshot[]):JsonValue{const base=this.#loadContext(wake,turn,mail,wakeTriggers);if(!base||typeof base!=="object"||Array.isArray(base))return base;const value=base as Record<string,JsonValue>;const history=this.#turnHistory(turnId);return {...value,...(history?{text:`${String(value.text??"")}\n\n# Current Turn retry history\n\n${history}`}:{})};}
@@ -362,7 +378,7 @@ export class Supervisor {
   #role(agent:string):AgentRole{return this.#profiles.get(agent)?.role??(agent==="ceo"?"ceo":"child");}
   #validGoalOwner(agent:string,goal:GoalSnapshot):boolean{const role=this.#role(agent);return goal.owner===agent&&(role==="ceo"?agent==="ceo"&&goal.parentId===null:role==="child"&&goal.parentId!==null);}
   #validExecution(agent:string,turn:TurnContext):boolean{const role=this.#role(agent);if(turn.goalBinding){const goal=this.ledger.goal(turn.goalBinding.goalId);return Boolean(goal&&this.#validGoalOwner(agent,goal));}if(turn.source.kind==="human")return agent==="ceo"&&role==="ceo";return role==="verifier"||role==="audit";}
-  #commitGoalTurn(turnId:string,agent:string,turn:TurnContext,raw:TurnOutput,sourceWakeId:string|null,mailIds:string[],revisionAtStart:number):void{const binding=turn.goalBinding!;const goal=this.#goal(binding.goalId);if(goal.revision!==binding.goalRevision)throw new Error("Goal revision changed during the Turn");const record=this.ledger.workRecord(goal.id);if(!record||record.recordRevision<=revisionAtStart||record.updatedInTurn!==turnId||record.goalRevision!==goal.revision)throw new Error("Goal-bound Turn must update its Work Record before handoff");const output=this.#goalTurnOutput(raw,binding);assertHandoff(output.handoff);const now=this.#now();const item:TurnItemSnapshot={id:randomUUID(),turnId,ordinal:this.ledger.turnItems(turnId).length+1,type:"handoff",status:"completed",data:output.handoff as unknown as JsonValue,createdAt:now,completedAt:now};this.ledger.commitHandoff({agent,turnId,sourceWakeId,mailIds,ts:now,output,item});}
+  #commitGoalTurn(turnId:string,agent:string,turn:TurnContext,raw:TurnOutput,sourceWakeId:string|null,mailIds:string[],revisionAtStart:number):void{const binding=turn.goalBinding!;const goal=this.#goal(binding.goalId);if(goal.revision!==binding.goalRevision)throw new Error("Goal revision changed during the Turn");const record=this.ledger.workRecord(goal.id);if(!record||record.recordRevision<=revisionAtStart||record.updatedInTurn!==turnId||record.goalRevision!==goal.revision)throw new Error("Goal-bound Turn must update its Work Record before handoff");assertTurnOutput(raw);const output=this.#goalTurnOutput(raw,binding);assertHandoff(output.handoff);const now=this.#now();const ordinal=this.ledger.turnItems(turnId).length+1;const responseItem:TurnItemSnapshot={id:randomUUID(),turnId,ordinal,type:"assistant_message",status:"completed",data:{text:output.response.content},createdAt:now,completedAt:now};const item:TurnItemSnapshot={id:randomUUID(),turnId,ordinal:ordinal+1,type:"handoff",status:"completed",data:output.handoff as unknown as JsonValue,createdAt:now,completedAt:now};this.ledger.commitHandoff({agent,turnId,sourceWakeId,mailIds,ts:now,output,responseItem,item});}
 
   #goalTurnOutput(output: TurnOutput, binding: NonNullable<TurnContext["goalBinding"]>): CommittedTurnOutput {
     const record = this.ledger.workRecord(binding.goalId);
@@ -374,7 +390,7 @@ export class Supervisor {
       outcome: output.handoff.outcome,
       evidence: output.handoff.evidence,
     };
-    return { handoff };
+    return { response: output.response, handoff };
   }
 
   #turnContext(wake:WakeSnapshot,triggers=this.ledger.wakeTriggers(wake.id).filter((trigger)=>trigger.status==="pending")):TurnContext{
@@ -383,7 +399,7 @@ export class Supervisor {
     const goal=this.#goal(wake.goalId);return{source:{kind:"goal",round:(this.ledger.workRecord(goal.id)?.recordRevision??0)+1},goalBinding:{goalId:goal.id,goalRevision:goal.revision}};
   }
 
-  #loadContext(wake: WakeSnapshot, turn: TurnContext,mail:MailSnapshot[],wakeTriggers:WakeTriggerSnapshot[]): JsonValue {
+  #loadContext(wake: ExecutionBinding&{attempt:number}, turn: TurnContext,mail:MailSnapshot[],wakeTriggers:WakeTriggerSnapshot[]): JsonValue {
     const profile = this.#profiles.get(wake.agent) ?? { agent: wake.agent, role: "child" as const };
     const role = profile.role;
     const capabilities = profile.capabilities ?? defaultCapabilities(role);

@@ -620,9 +620,9 @@ interface GoalHandoff {
 }
 ```
 
-Agent supplies `outcome` and evidence. Supervisor injects Goal and record revisions, validates them, and commits the Handoff Item. Asynchronous Mail and future scheduling remain separate tool operations. A source Wake links to the Turn and is consumed; it is not the execution identity.
+Agent supplies a readable response plus `outcome` and evidence. Supervisor injects Goal and record revisions, validates them, and atomically commits the Assistant Message and Handoff Item. Asynchronous Mail and future scheduling remain separate tool operations. A source Wake links to the Turn and is consumed; it is not the execution identity.
 
-CEO Human interactions and Verifier/Audit specialist Turns return a normal assistant response and do not create Goal Handoff. Every Child Turn is Goal-bound.
+Unbound CEO Human interactions and Verifier/Audit specialist Turns return a normal assistant response and do not create Goal Handoff. A Human interaction that becomes Goal-bound follows the readable-response plus Handoff protocol. Every Child Turn is Goal-bound.
 
 ## 13. Context construction
 
@@ -743,7 +743,7 @@ Hide by default:
 
 ## 18. Migration
 
-This development release has no external users, so schema v21 does not migrate earlier development schemas. Development workspaces are recreated. Wake, Schedule, and Turn use a discriminated Human, Goal, or Specialist execution binding; Mail uses a discriminated Goal, Human-inbox, Human-request, or Specialist-inbox route. There is no optional Goal route whose meaning is reconstructed later. Turn admission freezes the current active Goal revision.
+This development release has no external users, so schema v22 does not migrate earlier development schemas. Development workspaces are recreated. Wake, Schedule, and Turn use a discriminated Human, Goal, or Specialist execution binding; Mail uses a discriminated Goal, Human-inbox, Human-request, or Specialist-inbox route. There is no optional Goal route whose meaning is reconstructed later. Turn admission freezes the current active Goal revision, and automatic Turns can start only from a claimed Wake.
 
 ## 19. Implementation sequence
 

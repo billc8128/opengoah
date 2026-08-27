@@ -21,12 +21,9 @@ export interface TeamView {
   nextWakeAt: string | null
 }
 
-export interface WakeView {
+interface WakeViewBase {
   id: string
-  bindingKind:"human"|"goal"|"specialist"
   agent: string
-  goalId:string|null
-  specialistRole:"verifier"|"audit"|null
   triggerRef: string
   status: "queued" | "claimed" | "consumed" | "cancelled"
   attempt: number
@@ -35,9 +32,15 @@ export interface WakeView {
   consumedAt: string | null
   turnId: string | null
 }
+export type WakeView = WakeViewBase & (
+  | { bindingKind: "human"; agent: "ceo"; goalId: null; specialistRole: null }
+  | { bindingKind: "goal"; goalId: string; specialistRole: null }
+  | { bindingKind: "specialist"; goalId: null; specialistRole: "verifier" | "audit" }
+)
 export interface WakeTriggerView { wakeId:string;agent:string;triggerRef:string;source:"human"|"goal"|"system";status:"pending"|"resolved";addedAt:string;resolvedAt:string|null }
 
-export interface ScheduleView { id: string; bindingKind:"goal"|"specialist";agent: string;goalId:string|null;specialistRole:"verifier"|"audit"|null;nextWakeAt: string; reason: string; setBy: string; status: "pending" | "consumed" | "cancelled" | "superseded"; resolvedAt: string | null }
+interface ScheduleViewBase { id: string;agent: string;nextWakeAt: string; reason: string; setBy: string; status: "pending" | "consumed" | "cancelled" | "superseded"; resolvedAt: string | null }
+export type ScheduleView = ScheduleViewBase & ({ bindingKind:"goal";goalId:string;specialistRole:null } | { bindingKind:"specialist";goalId:null;specialistRole:"verifier"|"audit" })
 export interface MailView { id: string;routeKind:"goal"|"human_inbox"|"human_request"|"specialist_inbox";to: string; from: string;level: string;goalId:string|null;specialistRole:"verifier"|"audit"|null;body: JsonValue; readAt: string | null }
 export interface EventView { seq: number; streamId: string; streamSeq: number; ts: string; actor: string; type: string; data: JsonValue }
 export interface TrajectoryItemView { event: EventView; agent: string; wakeId: string | null }
@@ -49,14 +52,10 @@ export interface ThreadView {
   createdAt: string
   updatedAt: string
 }
-export interface TurnView {
+interface TurnViewBase {
   id: string
   threadId: string
   source: "human" | "goal" | "system"
-  bindingKind: "human" | "goal" | "specialist"
-  goalId: string | null
-  goalRevision: number | null
-  specialistRole: "verifier" | "audit" | null
   status: "in_progress" | "completed" | "failed" | "interrupted"
   attempt: number
   error: JsonValue | null
@@ -66,6 +65,11 @@ export interface TurnView {
   leaseToken: string | null
   runnerPid: number | null
 }
+export type TurnView = TurnViewBase & (
+  | { source: "human"; bindingKind: "human"; goalId: null; goalRevision: null; specialistRole: null }
+  | { source: "human" | "goal"; bindingKind: "goal"; goalId: string; goalRevision: number; specialistRole: null }
+  | { source: "system"; bindingKind: "specialist"; goalId: null; goalRevision: null; specialistRole: "verifier" | "audit" }
+)
 export interface TurnItemView {
   id: string
   turnId: string

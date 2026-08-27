@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Human Turns that become Goal-bound rebuild Goal prompt and Work Record context on retry; every Goal completion requires a readable response plus structured Handoff.
 - Uses typed Mail routes, reserves Human requests for CEO, commits effect-free Handoffs, scopes outcome context by Goal, and separates Team motion/outcome.
 - Child Agents now admit only owned Child Goal Turns, CEO admits only Human/owned Root Goal Turns, and unbound system execution is reserved for Verifier/Audit specialists.
 - Profile validation enforces one primary identity: exactly the `ceo` Agent has the CEO role.

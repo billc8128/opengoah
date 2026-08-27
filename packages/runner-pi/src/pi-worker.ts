@@ -6,7 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { Agent, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxText, fauxToolCall, Type, type Message } from "@earendil-works/pi-ai";
-import { TRANSCRIPT_FORMAT_VERSION, type AgentCapability, type JsonValue, type RunnerCandidateResult, type TranscriptMessage, type TurnOutput } from "goah-ledger-contract";
+import { TRANSCRIPT_FORMAT_VERSION, type AgentCapability, type AgentHandoff, type JsonValue, type RunnerCandidateResult, type TranscriptMessage } from "goah-ledger-contract";
 import { runProcessWorker, type WorkerRpc } from "./index.js";
 import { createPiModel } from "./model-provider.js";
 
@@ -50,17 +50,17 @@ export async function runPiWorker(): Promise<void> {
         const record = `# Current State\n\nFaux Goal outcome: ${outcome}.\n\n# Observations\n\nSee the cited Ledger evidence.\n\n# Work Completed\n\nExecuted the scripted faux Goal turn.\n\n# Decisions\n\nRecord the scripted result from ${request.execution.id}.\n\n# Blockers\n\n${outcome==="blocked"?"Blocked.":"None."}\n\n# Next Steps\n\nFollow the current Goal and explicit tools.\n`;
         faux.setResponses([
           fauxAssistantMessage(fauxToolCall("work_record_update", { expectedRevision: Number(current.recordRevision ?? 0), content: record, reason: "record faux Goal progress", evidence: evidence.length ? [Math.max(...evidence)] : [] }), { stopReason: "toolUse" }),
-          fauxAssistantMessage(fauxToolCall("handoff", {outcome,evidence:handoffEvidence}), { stopReason: "toolUse" }),
+          fauxAssistantMessage([fauxText(String(handoff.message??`Goal work recorded with outcome ${outcome}.`)),fauxToolCall("handoff", {outcome,evidence:handoffEvidence})], { stopReason: "toolUse" }),
         ]);
       } else if (!goalState.bound) {
         faux.setResponses([fauxAssistantMessage([fauxText(process.env.GOAH_PI_FAUX_RESPONSE ?? "Hello from Goah.")])]);
       } else {
         const handoff = JSON.parse(process.env.GOAH_PI_FAUX_HANDOFF ?? "{}") as Record<string, unknown>;
-        faux.setResponses([fauxAssistantMessage(fauxToolCall("handoff", handoff), { stopReason: "toolUse" })]);
+        const{message,...handoffData}=handoff;faux.setResponses([fauxAssistantMessage([fauxText(String(message??"Goal work recorded.")),fauxToolCall("handoff",handoffData)], { stopReason: "toolUse" })]);
       }
     }
 
-    let output: TurnOutput | null = null;
+    let output: AgentHandoff | null = null;
     let response = "";
     let responseFailure = "";
     let compactions = 0;
@@ -88,9 +88,9 @@ export async function runPiWorker(): Promise<void> {
     const sourceSeqs = Array.isArray(contextRecord.sourceSeqs) ? contextRecord.sourceSeqs.filter((value): value is number => Number.isInteger(value)) : [];
     const basePrompt = process.env.GOAH_PI_SYSTEM_PROMPT ?? suppliedPrompt ?? (request.turn?.source.kind === "human" ? "You are Goah's primary Agent. Respond naturally to the Human." : `You are Goah Agent ${request.agent}. Inspect the supplied context and respond appropriately.`);
     const systemPrompt = goalState.bound
-      ? `${basePrompt}\nThis Turn is Goal-bound. You must update its Work Record and finish by calling handoff exactly once. Treat the supplied context as authoritative.`
+      ? `${basePrompt}\nThis Turn is Goal-bound. You must update its Work Record, write a concise human-readable assistant message describing what happened, and call handoff exactly once with only machine-readable outcome and evidence. The message and Handoff are separate outputs. Treat the supplied context as authoritative.`
       : request.turn?.source.kind === "human"
-        ? `${basePrompt}\nThis Human Turn starts without a Goal binding. Finish with an ordinary response unless a Goal tool establishes a binding during this Turn; after a binding is established, update that Goal's Work Record and finish by calling handoff exactly once. Treat the supplied context as authoritative.`
+        ? `${basePrompt}\nThis Human Turn starts without a Goal binding. Finish with an ordinary response unless a Goal tool establishes a binding during this Turn; after a binding is established, update that Goal's Work Record, write a concise human-readable assistant message, and call handoff exactly once with separate machine-readable outcome and evidence. Treat the supplied context as authoritative.`
         : `${basePrompt}\nThis Turn has no Goal binding. Finish with an ordinary response and do not call handoff. Treat the supplied context as authoritative.`;
     const agent = new Agent({
       initialState: {
@@ -166,8 +166,8 @@ export async function runPiWorker(): Promise<void> {
     }
     if (!goalState.bound) return response ? { outcome: "response", response: { content: response } } : { outcome: "abnormal", reason: responseFailure || "Pi worker exited without a response" };
     if (responseFailure) return { outcome: "abnormal", reason: responseFailure };
-    if (!output) return { outcome: "abnormal", reason: "Pi worker exited without a valid handoff" };
-    return { outcome: "handoff", output };
+    if (!output||!response) return { outcome: "abnormal", reason: "Pi worker exited without a readable response and valid handoff" };
+    return { outcome: "handoff", output:{response:{content:response},handoff:output} };
   });
 }
 
@@ -191,7 +191,7 @@ function transcriptMessage(message: AgentMessage, id: string): TranscriptMessage
   return { id, role, content: (value.content ?? value) as JsonValue, ...(value.usage !== undefined ? { usage: value.usage as JsonValue } : {}), ...(typeof value.stopReason === "string" ? { stopReason: value.stopReason } : {}), ...(typeof value.errorMessage === "string" ? { errorMessage: value.errorMessage } : {}) };
 }
 
-function createTools(root: string, handoff: (output: TurnOutput) => void, rpc: WorkerRpc, capabilities: ReadonlySet<AgentCapability> | undefined, goalState: { bound: boolean; binding?: { goalId: string; goalRevision: number }; recordRevision?: number }, protectedPaths: string[] = []): AgentTool<any>[] {
+function createTools(root: string, handoff: (output: AgentHandoff) => void, rpc: WorkerRpc, capabilities: ReadonlySet<AgentCapability> | undefined, goalState: { bound: boolean; binding?: { goalId: string; goalRevision: number }; recordRevision?: number }, protectedPaths: string[] = []): AgentTool<any>[] {
   const handoffTool: AgentTool<any> = {
     name: "handoff",
     label: "Handoff",
@@ -201,8 +201,8 @@ function createTools(root: string, handoff: (output: TurnOutput) => void, rpc: W
       evidence: Type.Array(Type.Number()),
     }),
     execute: async (_id, params) => {
-      const input = params as { outcome: "progress" | "waiting" | "blocked" | "completion_proposed"; evidence: number[] };
-      const value: TurnOutput = { handoff: {outcome:input.outcome,evidence:input.evidence} };
+      const input = params as {outcome: "progress" | "waiting" | "blocked" | "completion_proposed"; evidence: number[] };
+      const value: AgentHandoff = {outcome:input.outcome,evidence:input.evidence};
       handoff(value);
       return { content: [{ type: "text", text: "handoff recorded" }], details: value, terminate: true };
     },
