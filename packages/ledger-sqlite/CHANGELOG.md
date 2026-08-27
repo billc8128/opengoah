@@ -6,8 +6,8 @@
 - Goal phase and owner transitions mechanically supersede pending Schedules while definition revisions preserve them.
 - Goal phase and owner transitions now cancel queued/claimed Goal Wakes in the same transaction as Schedule supersession.
 - Reassigning a paused or blocked Goal atomically records routed Mail without a Wake; parent and Child Goals cannot share an owner.
-- Schema v20 persists target/route discriminants with CHECK constraints, rejects mixed Wake triggers, and removes the unreachable previous-owner reassignment Mail.
-- Wake consumption validates the full execution target, while mailbox CHECK constraints preserve Human inbox/request sender-recipient boundaries during replay.
+- Schema v21 persists Turn bindings alongside Wake/Schedule binding and Mail-route discriminants; earlier development databases are intentionally recreated.
+- Wake admission validates active Goal ownership, Wake consumption validates the full execution binding, and mailbox CHECK constraints preserve Human inbox/request sender-recipient boundaries during replay.
 
 - Schema v18 removes Goal revision fences from Wake and Schedule so queued motion adopts the current revision at Turn admission.
 - Schema v17 adds replayable WakeTrigger state, derives Wake identity through canonical admission, and resolves triggers atomically on consume/cancel.

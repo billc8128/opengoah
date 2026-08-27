@@ -7,19 +7,25 @@ export type GoalPhase = "active" | "paused" | "blocked" | "complete";
 export type TurnStatus = "in_progress" | "completed" | "failed" | "interrupted";
 export type TurnSourceKind = "human" | "goal" | "system";
 export type SpecialistRole = "verifier" | "audit";
-export type ExecutionTarget =
-  | { targetKind: "human"; agent: "ceo"; goalId: null; specialistRole: null }
-  | { targetKind: "goal"; agent: string; goalId: string; specialistRole: null }
-  | { targetKind: "specialist"; agent: string; goalId: null; specialistRole: SpecialistRole };
-export type ScheduleTarget = Exclude<ExecutionTarget, { targetKind: "human" }>;
+export type ExecutionBinding =
+  | { bindingKind: "human"; agent: "ceo"; goalId: null; specialistRole: null }
+  | { bindingKind: "goal"; agent: string; goalId: string; specialistRole: null }
+  | { bindingKind: "specialist"; agent: string; goalId: null; specialistRole: SpecialistRole };
+export type ScheduleBinding = Exclude<ExecutionBinding, { bindingKind: "human" }>;
 export type MailRoute =
   | { routeKind: "goal"; goalId: string; specialistRole: null }
   | { routeKind: "human_inbox"; goalId: null; specialistRole: null }
   | { routeKind: "human_request"; goalId: null; specialistRole: null }
   | { routeKind: "specialist_inbox"; goalId: null; specialistRole: SpecialistRole };
-export function humanTarget():Extract<ExecutionTarget,{targetKind:"human"}>{return{targetKind:"human",agent:"ceo",goalId:null,specialistRole:null};}
-export function goalTarget(agent:string,goalId:string):Extract<ExecutionTarget,{targetKind:"goal"}>{return{targetKind:"goal",agent,goalId,specialistRole:null};}
-export function specialistTarget(agent:string,role:SpecialistRole):Extract<ExecutionTarget,{targetKind:"specialist"}>{return{targetKind:"specialist",agent,goalId:null,specialistRole:role};}
+export function humanBinding(): Extract<ExecutionBinding, { bindingKind: "human" }> {
+  return { bindingKind: "human", agent: "ceo", goalId: null, specialistRole: null };
+}
+export function goalExecutionBinding(agent: string, goalId: string): Extract<ExecutionBinding, { bindingKind: "goal" }> {
+  return { bindingKind: "goal", agent, goalId, specialistRole: null };
+}
+export function specialistBinding(agent: string, role: SpecialistRole): Extract<ExecutionBinding, { bindingKind: "specialist" }> {
+  return { bindingKind: "specialist", agent, goalId: null, specialistRole: role };
+}
 export function goalRoute(goalId:string):Extract<MailRoute,{routeKind:"goal"}>{return{routeKind:"goal",goalId,specialistRole:null};}
 export function humanInboxRoute():Extract<MailRoute,{routeKind:"human_inbox"}>{return{routeKind:"human_inbox",goalId:null,specialistRole:null};}
 export function humanRequestRoute():Extract<MailRoute,{routeKind:"human_request"}>{return{routeKind:"human_request",goalId:null,specialistRole:null};}
@@ -27,7 +33,33 @@ export function specialistInboxRoute(role:SpecialistRole):Extract<MailRoute,{rou
 export type TurnItemType = "user_message" | "assistant_message" | "reasoning" | "tool_call" | "tool_result" | "plan" | "handoff";
 export type TurnItemStatus = "in_progress" | "completed" | "failed";
 export interface ThreadSnapshot { id: string; agent: string; parentThreadId: string | null; createdAt: string; updatedAt: string }
-export interface TurnSnapshot { id: string; threadId: string; source: TurnSourceKind; goalId: string | null; goalRevision: number | null; status: TurnStatus; attempt: number; error: JsonValue | null; startedAt: string; endedAt: string | null; leaseUntil: string | null; leaseToken: string | null; runnerPid: number | null; runnerProfileId?: string }
+export type TurnBinding =
+  | { bindingKind: "human"; goalId: null; goalRevision: null; specialistRole: null }
+  | { bindingKind: "goal"; goalId: string; goalRevision: number; specialistRole: null }
+  | { bindingKind: "specialist"; goalId: null; goalRevision: null; specialistRole: SpecialistRole };
+export function humanTurnBinding(): Extract<TurnBinding, { bindingKind: "human" }> {
+  return { bindingKind: "human", goalId: null, goalRevision: null, specialistRole: null };
+}
+export function goalTurnBinding(goalId: string, goalRevision: number): Extract<TurnBinding, { bindingKind: "goal" }> {
+  return { bindingKind: "goal", goalId, goalRevision, specialistRole: null };
+}
+export function specialistTurnBinding(role: SpecialistRole): Extract<TurnBinding, { bindingKind: "specialist" }> {
+  return { bindingKind: "specialist", goalId: null, goalRevision: null, specialistRole: role };
+}
+export type TurnSnapshot = TurnBinding & {
+  id: string;
+  threadId: string;
+  source: TurnSourceKind;
+  status: TurnStatus;
+  attempt: number;
+  error: JsonValue | null;
+  startedAt: string;
+  endedAt: string | null;
+  leaseUntil: string | null;
+  leaseToken: string | null;
+  runnerPid: number | null;
+  runnerProfileId?: string;
+};
 export interface TurnItemSnapshot { id: string; turnId: string; ordinal: number; type: TurnItemType; status: TurnItemStatus; data: JsonValue; createdAt: string; completedAt: string | null }
 export interface GoalSnapshot { id: string; parentId: string | null; objective: string; observationMethod: string | null; verificationMethod: string | null; owner: string; phase: GoalPhase; revision: number }
 export type GoalChangeOperation="create"|"revise"|"pause"|"resume"|"block"|"complete"|"reassign";
@@ -58,8 +90,8 @@ export interface WorkRecordUpdateRequest {
   sourceWakeId?: string;
 }
 export interface WorkRecordDiff { goalId: string; fromRevision: number; toRevision: number; text: string }
-export type ScheduleSnapshot = ScheduleTarget & { id: string; nextWakeAt: string; reason: string; setBy: string; status: ScheduleStatus; resolvedAt: string | null };
-export type WakeSnapshot = ExecutionTarget & {
+export type ScheduleSnapshot = ScheduleBinding & { id: string; nextWakeAt: string; reason: string; setBy: string; status: ScheduleStatus; resolvedAt: string | null };
+export type WakeSnapshot = ExecutionBinding & {
   id: string;
   /** Initial trigger retained for display and provenance. Runtime decisions use WakeTriggerSnapshot. */
   triggerRef: string;

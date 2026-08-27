@@ -40,17 +40,17 @@ export const demoSnapshot: ConsoleSnapshot = {
     { id: "thread:web", agent: "web", parentThreadId: null, createdAt: "2026-08-20T14:14:18.000+08:00", updatedAt: "2026-08-20T14:14:18.000+08:00" },
   ],
   turns: [
-    { id: "growth-8", threadId: "thread:growth", source: "goal", goalId: "growth", goalRevision: 2, status: "in_progress", attempt:1,error: null, startedAt: "2026-08-20T14:18:02.000+08:00", endedAt: null, leaseUntil: "2026-08-20T14:19:00.000+08:00", leaseToken: "demo", runnerPid: 21874 },
-    { id: "web-4", threadId: "thread:web", source: "goal", goalId: "storefront", goalRevision: 1, status: "in_progress", attempt:1,error: null, startedAt: "2026-08-20T14:14:18.000+08:00", endedAt: null, leaseUntil: "2026-08-20T14:19:00.000+08:00", leaseToken: "demo-web", runnerPid: null },
+    { id: "growth-8", threadId: "thread:growth", source: "goal", bindingKind:"goal",goalId: "growth", goalRevision: 2,specialistRole:null, status: "in_progress", attempt:1,error: null, startedAt: "2026-08-20T14:18:02.000+08:00", endedAt: null, leaseUntil: "2026-08-20T14:19:00.000+08:00", leaseToken: "demo", runnerPid: 21874 },
+    { id: "web-4", threadId: "thread:web", source: "goal", bindingKind:"goal",goalId: "storefront", goalRevision: 1,specialistRole:null, status: "in_progress", attempt:1,error: null, startedAt: "2026-08-20T14:14:18.000+08:00", endedAt: null, leaseUntil: "2026-08-20T14:19:00.000+08:00", leaseToken: "demo-web", runnerPid: null },
   ],
   wakes: [
-    { id: "growth-8", targetKind:"goal",agent: "growth",goalId:"growth",specialistRole:null,triggerRef: "mail:decision-growth", status: "consumed", attempt:1,enqueuedSeq: 12846,claimedAt:"2026-08-20T14:18:02.000+08:00",consumedAt:"2026-08-20T14:18:02.000+08:00",turnId:"growth-8" },
-    { id: "web-4", targetKind:"goal",agent: "web",goalId:"storefront",specialistRole:null,triggerRef: "goal:storefront", status: "queued", attempt:0,enqueuedSeq: 12844,claimedAt:null,consumedAt:null,turnId:null },
+    { id: "growth-8", bindingKind:"goal",agent: "growth",goalId:"growth",specialistRole:null,triggerRef: "mail:decision-growth", status: "consumed", attempt:1,enqueuedSeq: 12846,claimedAt:"2026-08-20T14:18:02.000+08:00",consumedAt:"2026-08-20T14:18:02.000+08:00",turnId:"growth-8" },
+    { id: "web-4", bindingKind:"goal",agent: "web",goalId:"storefront",specialistRole:null,triggerRef: "goal:storefront", status: "queued", attempt:0,enqueuedSeq: 12844,claimedAt:null,consumedAt:null,turnId:null },
   ],
   wakeTriggers: [],
   schedules: [
-    { id: "schedule:operations",targetKind:"goal",agent: "operations",goalId:"operations",specialistRole:null,nextWakeAt: "2026-08-20T14:30:00.000+08:00", reason: "Check fulfillment window", setBy: "operations", status: "pending", resolvedAt: null },
-    { id: "schedule:web",targetKind:"goal",agent: "web",goalId:"storefront",specialistRole:null,nextWakeAt: "2026-08-20T14:30:00.000+08:00", reason: "Continue storefront launch", setBy: "ceo", status: "pending", resolvedAt: null },
+    { id: "schedule:operations",bindingKind:"goal",agent: "operations",goalId:"operations",specialistRole:null,nextWakeAt: "2026-08-20T14:30:00.000+08:00", reason: "Check fulfillment window", setBy: "operations", status: "pending", resolvedAt: null },
+    { id: "schedule:web",bindingKind:"goal",agent: "web",goalId:"storefront",specialistRole:null,nextWakeAt: "2026-08-20T14:30:00.000+08:00", reason: "Continue storefront launch", setBy: "ceo", status: "pending", resolvedAt: null },
   ],
   recoveries:[],
   mailbox: [{ id: "decision-growth",routeKind:"goal",to: "growth",from:"ceo",level:"decision",goalId:"growth",specialistRole:null,body:{ summary: "Increase paid acquisition carefully" },readAt:"2026-08-20T14:17:30.000+08:00" }],

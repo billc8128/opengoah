@@ -4,13 +4,13 @@ import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { goalTarget, type AssistantResponse, type RunRequest, type TurnSnapshot, type WakeSnapshot, type TurnOutput } from "goah-ledger-contract";
+import { goalExecutionBinding, type AssistantResponse, type RunRequest, type TurnSnapshot, type WakeSnapshot, type TurnOutput } from "goah-ledger-contract";
 import { PiRunnerAdapter, ProcessRunner, piWorkerPath, type PiDriver } from "./index.js";
 import { assistantResponseText, bashTimeoutMs, compactMessages, compactMessagesToTokenBudget, linuxSandboxArgs, resolveContextPolicy, runBashCommand, sandboxWorkspacePaths, scopedRunnerPath, snapshotModelConfig } from "./pi-worker.js";
 import { createPiModel, modelCatalog, providerCatalog } from "./model-provider.js";
 
-const wake: WakeSnapshot = { id: "w", ...goalTarget("a","goal"),triggerRef: "t", status: "consumed", attempt: 1, enqueuedSeq: 1, claimedAt:"2026-08-18T00:00:00.000Z",consumedAt:"2026-08-18T00:00:00.000Z",turnId:"turn" };
-const execution: TurnSnapshot = { id:"turn",threadId:"thread",source:"goal",goalId:"goal",goalRevision:0,status:"in_progress",attempt:1,error:null,startedAt:"2026-08-18T00:00:00.000Z",endedAt:null,leaseUntil:"2026-08-18T00:01:00.000Z",leaseToken:"lease",runnerPid:null };
+const wake: WakeSnapshot = { id: "w", ...goalExecutionBinding("a","goal"),triggerRef: "t", status: "consumed", attempt: 1, enqueuedSeq: 1, claimedAt:"2026-08-18T00:00:00.000Z",consumedAt:"2026-08-18T00:00:00.000Z",turnId:"turn" };
+const execution: TurnSnapshot = { id:"turn",threadId:"thread",source:"goal",bindingKind:"goal",goalId:"goal",goalRevision:0,specialistRole:null,status:"in_progress",attempt:1,error:null,startedAt:"2026-08-18T00:00:00.000Z",endedAt:null,leaseUntil:"2026-08-18T00:01:00.000Z",leaseToken:"lease",runnerPid:null };
 const requestBase = { agent:wake.agent,execution,sourceWake:wake };
 const goalTurn = { source: { kind: "goal" as const, round: 1 }, goalBinding: { goalId: "goal", goalRevision: 0 } };
 
@@ -57,7 +57,7 @@ test("runner policy is external and a multi-step driver can hand off", async () 
 });
 
 test("an unbound Turn returns a normal assistant response without handoff", async () => {
-  const request: RunRequest = { ...requestBase, execution:{...execution,source:"human",goalId:null,goalRevision:null}, turn: { source: { kind: "human" } }, context: {}, now: () => "2026-08-18T00:00:00.000Z", emit: () => undefined };
+  const request: RunRequest = { ...requestBase, execution:{...execution,source:"human",bindingKind:"human",goalId:null,goalRevision:null,specialistRole:null}, turn: { source: { kind: "human" } }, context: {}, now: () => "2026-08-18T00:00:00.000Z", emit: () => undefined };
   const handle = new PiRunnerAdapter(driver([{ response: { content: "你好" } }])).prepare(request);
   handle.begin();
   assert.deepEqual(await handle.result, { outcome: "response", response: { content: "你好" } });
@@ -154,7 +154,7 @@ test("ProcessRunner may opt into its own timeout policy", async () => {
 
 test("ProcessRunner forwards steering messages over the live worker protocol", async () => {
   const runner = new ProcessRunner({ command: process.execPath, args: [fileURLToPath(new URL("./steering-worker.test-fixture.js", import.meta.url))], steering: true });
-  const handle = runner.prepare({ ...requestBase, execution:{...execution,source:"human",goalId:null,goalRevision:null}, turn: { source: { kind: "human" } }, context: {}, now: () => new Date().toISOString(), emit: () => undefined });
+  const handle = runner.prepare({ ...requestBase, execution:{...execution,source:"human",bindingKind:"human",goalId:null,goalRevision:null,specialistRole:null}, turn: { source: { kind: "human" } }, context: {}, now: () => new Date().toISOString(), emit: () => undefined });
   handle.begin();
   await handle.steer!("correct the budget");
   assert.deepEqual(await handle.result, { outcome: "response", response: { content: "correct the budget" } });
@@ -162,7 +162,7 @@ test("ProcessRunner forwards steering messages over the live worker protocol", a
 
 test("ProcessRunner rejects steering that the worker no longer accepts", async () => {
   const runner = new ProcessRunner({ command: process.execPath, args: [fileURLToPath(new URL("./steering-reject.test-fixture.js", import.meta.url))], steering: true });
-  const handle = runner.prepare({ ...requestBase, execution:{...execution,source:"human",goalId:null,goalRevision:null}, turn: { source: { kind: "human" } }, context: {}, now: () => new Date().toISOString(), emit: () => undefined });
+  const handle = runner.prepare({ ...requestBase, execution:{...execution,source:"human",bindingKind:"human",goalId:null,goalRevision:null,specialistRole:null}, turn: { source: { kind: "human" } }, context: {}, now: () => new Date().toISOString(), emit: () => undefined });
   handle.begin();
   await assert.rejects(handle.steer!("too late"), /no longer accepting/);
   assert.deepEqual(await handle.result, { outcome: "response", response: { content: "finished" } });
@@ -170,7 +170,7 @@ test("ProcessRunner rejects steering that the worker no longer accepts", async (
 
 test("ProcessRunner bounds steering acknowledgement waits", async () => {
   const runner = new ProcessRunner({ command: process.execPath, args: [fileURLToPath(new URL("./steering-no-ack.test-fixture.js", import.meta.url))], steering: true, steerAckTimeoutMs: 50, killGraceMs: 25 });
-  const handle = runner.prepare({ ...requestBase, execution:{...execution,source:"human",goalId:null,goalRevision:null}, turn: { source: { kind: "human" } }, context: {}, now: () => new Date().toISOString(), emit: () => undefined });
+  const handle = runner.prepare({ ...requestBase, execution:{...execution,source:"human",bindingKind:"human",goalId:null,goalRevision:null,specialistRole:null}, turn: { source: { kind: "human" } }, context: {}, now: () => new Date().toISOString(), emit: () => undefined });
   handle.begin();
   await assert.rejects(handle.steer!("ignored"), /in time/);
   await handle.terminate();
@@ -189,7 +189,7 @@ test("the Pi worker accepts a pre-0.11 daemon request without Turn metadata", as
 
 test("the Pi worker preserves provider error messages from empty assistant responses", async () => {
   const runner = new ProcessRunner({ command: process.execPath, args: [piWorkerPath()], env: { GOAH_PI_PROVIDER: "faux", GOAH_PI_MODEL: "faux-goah", GOAH_PI_FAUX_ERROR: "provider rejected the request" } });
-  const handle = runner.prepare({ ...requestBase, execution:{...execution,source:"human",goalId:null,goalRevision:null}, turn: { source: { kind: "human" } }, context: {}, now: () => "2026-08-18T00:00:00.000Z", emit: () => undefined });
+  const handle = runner.prepare({ ...requestBase, execution:{...execution,source:"human",bindingKind:"human",goalId:null,goalRevision:null,specialistRole:null}, turn: { source: { kind: "human" } }, context: {}, now: () => "2026-08-18T00:00:00.000Z", emit: () => undefined });
   handle.begin();
   assert.deepEqual(await handle.result, { outcome: "abnormal", reason: "provider rejected the request" });
 });

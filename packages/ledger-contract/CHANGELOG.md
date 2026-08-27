@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Inactive reassignment results may contain no Wake because paused/blocked Goals cannot schedule execution.
-- Added discriminated `ExecutionTarget`, `ScheduleTarget`, and `MailRoute` contracts plus constructors; removed optional execution routing.
+- Added discriminated `ExecutionBinding`, `ScheduleBinding`, `TurnBinding`, and `MailRoute` contracts plus constructors; removed optional and inferred execution routing.
 
 - Contract 0.13 adds typed Mail Goal routing, removes all Handoff effect fields, and splits Team motion from lastOutcome.
 

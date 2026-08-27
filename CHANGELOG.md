@@ -17,7 +17,8 @@
 - Closed Agent execution admission: CEO owns Root Goals, Child Agents run only their distinctly owned Child Goals, and Verifier/Audit retain the only unbound system path.
 - Required Goal-routed Agent Mail, scoped delivery by Goal, kept inactive reassignment Mail dormant until resume, and rejected unbound CEO/Child system Wakes before Runner admission.
 - Centralized legal prompt selection and recovery reduction in Supervisor, including retry escalation, failed retries, and strict Schedule/Wake identity.
-- Replaced optional Wake/Schedule/Mail Goal fields with schema-v20 discriminated execution targets and Mail routes; nested retry exhaustion now escalates to the direct parent, Specialist recovery is visible, and manual wake/stop accept a Goal target.
+- Persisted schema-v21 `ExecutionBinding` discriminants on Wake, Schedule, and Turn; recovery, Verification, Wake consumption, and stop now use the canonical binding instead of inferring execution from `goalId`, source, or Agent names.
+- Replaced optional Wake/Schedule/Mail Goal fields with discriminated execution bindings and Mail routes; nested retry exhaustion now escalates to the direct parent, Specialist recovery is visible, and manual wake/stop accept a Goal binding.
 - Rechecked Human admission after Runner barriers, coalesced scheduled motion with queued Goal Wakes, normalized Schedule timestamps, enforced immutable Wake/Mail identity, and delivered atomic verification results through bounded acknowledged Mail.
 - Made `commitHandoff` the only successful Goal-Turn terminal path, validated every duplicated Handoff representation against canonical TurnOutput, and preserved non-Mail triggers when acknowledging Mail.
 - Closed the remaining fail-closed boundaries for projection replay, Goal provenance/idempotency, stale Goal Turns, ancestor definition fences, and loopback Console Host authorization.
