@@ -6,6 +6,7 @@ import {
   type AgentHandoff,
   type Clock,
   type JsonValue,
+  type HandoffValidationResult,
   type Ledger,
   type RunRequest,
 } from "goah-ledger-contract";
@@ -30,7 +31,7 @@ export interface FauxStep {
   handoff?: {response:{content:string};handoff:AgentHandoff};
   stop?: boolean;
   crash?: string;
-  effect?: (request: RunRequest) => void;
+  effect?: (request: RunRequest,feedback:Exclude<HandoffValidationResult,{accepted:true}>|null) => void;
 }
 
 export class FauxPiDriver implements PiDriver {
@@ -39,7 +40,7 @@ export class FauxPiDriver implements PiDriver {
   constructor(readonly clock: SimulatedClock, runnerSessions: FauxStep[][], readonly directory = process.cwd()) { this.#runnerSessions = runnerSessions.map((steps) => [...steps]); }
   async createRunnerSession(request: RunRequest): Promise<PiRunnerSession> {
     this.requests.push(request);
-    const steps = this.#runnerSessions.shift() ?? [];
+    const steps = this.#runnerSessions.shift() ?? [];let validationFeedback:Exclude<HandoffValidationResult,{accepted:true}>|null=null;
     return {
       step: async () => {
         const step = steps.shift();
@@ -50,11 +51,11 @@ export class FauxPiDriver implements PiDriver {
           mkdirSync(dirname(path), { recursive: true });
           writeFileSync(path, step.write.content);
         }
-        step.effect?.(request);
+        const feedback=validationFeedback;validationFeedback=null;step.effect?.(request,feedback);
         if (step.crash) throw new Error(step.crash);
         return { ...(step.trace ? { trace: step.trace } : {}), ...(step.response !== undefined ? { response: { content: step.response } } : {}), ...(step.handoff ? { handoff: step.handoff } : {}), ...(step.stop ? { stopped: true } : {}) };
       },
-      close: async () => undefined,
+      feedback:async(value)=>{validationFeedback=value;},close: async () => undefined,
     };
   }
 }

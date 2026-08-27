@@ -429,7 +429,7 @@ function applyFrame(frame: ChatFrame, setLive: Dispatch<SetStateAction<LiveChat 
   if (!event) return
   if (event.type === "message.assistant.completed") {
     const message=record(event.data).message;const text = messageContent(message)
-    if(hasToolCall(message,"handoff"))setLive((current)=>current&&{...current,text:""});else if (text) setLive((current) => current && { ...current, text })
+    if(record(event.data).completionIntent==="handoff")setLive((current)=>current&&{...current,text:""});else if (text) setLive((current) => current && { ...current, text })
   } else if(event.type==="response.committed"){
     const text=record(event.data).text;if(typeof text==="string")setLive((current)=>current&&{...current,text});
   } else if (event.type === "message.assistant.delta") {
@@ -540,5 +540,4 @@ function demoThreadDetail(snapshot: ConsoleSnapshot, thread: ThreadView): Thread
   return { thread, turns }
 }
 function summarize(value: unknown): string { const text = typeof value === "string" ? value : JSON.stringify(value); return text.length > 110 ? `${text.slice(0, 107)}…` : text }
-function hasToolCall(message:unknown,name:string):boolean{const content=record(message).content;return Array.isArray(content)&&content.some((item)=>{const value=record(item);return value.type==="toolCall"&&value.name===name;});}
 function formatPayload(value: unknown): string { return typeof value === "string" ? value : JSON.stringify(value, null, 2) }

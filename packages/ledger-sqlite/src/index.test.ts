@@ -29,8 +29,8 @@ test("Turn failure atomically repairs open Items and commits its Transcript term
 
 test("Goal completion requires non-empty evidence",()=>{const ledger=new SqliteLedger(":memory:",{clock:new FixedClock()});ledger.putGoal({id:"g",parentId:null,objective:"ship",observationMethod:"inspect",verificationMethod:"verify",owner:"ceo",phase:"active",revision:0},"human");assert.throws(()=>ledger.completeGoal({goalId:"g",revision:0,reason:"done",evidence:[]},"human"),/evidence is required/);ledger.close();});
 
-test("pre-v23 development schemas are rejected explicitly", () => {
-  for(const version of [1,6,9,10,11,15,16,17,18,19,20,21,22]){const path=join(mkdtempSync(join(tmpdir(),`goah-retired-${version}-`)),"ledger.sqlite");const raw=new DatabaseSync(path);raw.exec(`PRAGMA user_version=${version}`);raw.close();assert.throws(()=>new SqliteLedger(path,{clock:new FixedClock()}),/predates runtime schema 23/);}
+test("pre-v24 development schemas are rejected explicitly", () => {
+  for(const version of [1,6,9,10,11,15,16,17,18,19,20,21,22,23]){const path=join(mkdtempSync(join(tmpdir(),`goah-retired-${version}-`)),"ledger.sqlite");const raw=new DatabaseSync(path);raw.exec(`PRAGMA user_version=${version}`);raw.close();assert.throws(()=>new SqliteLedger(path,{clock:new FixedClock()}),/predates runtime schema 24/);}
 });
 
 test("event and projection roll back together at the injected transaction boundary", () => {

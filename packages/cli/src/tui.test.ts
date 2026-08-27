@@ -44,7 +44,7 @@ test("TUI renders streamed assistant text and tool completion", () => {
   assert.equal(lines.at(-1), "final answer");
 });
 
-test("TUI keeps a Handoff response provisional until Supervisor commits it",()=>{const committed:string[]=[];let cleared=0;const render=(frame:Parameters<typeof renderFrame>[0])=>renderFrame(frame,()=>undefined,()=>undefined,(text)=>committed.push(text),()=>undefined,()=>undefined,()=>undefined,()=>undefined,()=>{cleared+=1;});const message={content:[{type:"text",text:"Goal completed."},{type:"toolCall",name:"handoff",id:"h",arguments:{outcome:"progress",evidence:[1]}}]};render({type:"event",event:{type:"message.assistant.completed",data:{message}}});assert.deepEqual(committed,[]);assert.equal(cleared,1);render({type:"event",event:{type:"response.committed",data:{text:"Goal completed.",messageItemId:"m"}}});assert.deepEqual(committed,["Goal completed."]);});
+test("TUI keeps a normalized Handoff response provisional until Supervisor commits it",()=>{const committed:string[]=[];let cleared=0;const render=(frame:Parameters<typeof renderFrame>[0])=>renderFrame(frame,()=>undefined,()=>undefined,(text)=>committed.push(text),()=>undefined,()=>undefined,()=>undefined,()=>undefined,()=>{cleared+=1;});const message={content:[{type:"text",text:"Goal completed."}]};render({type:"event",event:{type:"message.assistant.completed",data:{message,completionIntent:"handoff",commitState:"provisional"}}});assert.deepEqual(committed,[]);assert.equal(cleared,1);render({type:"event",event:{type:"response.committed",data:{text:"Goal completed.",messageItemId:"m"}}});assert.deepEqual(committed,["Goal completed."]);});
 
 test("TUI discards assistant text from a failed completed message", () => {
   const committed: string[] = []; let cleared = 0;

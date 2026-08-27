@@ -387,7 +387,7 @@ export function renderFrame(frame: ControlFrame, push: (line: string) => void, a
     const message = data.message && typeof data.message === "object" ? data.message as Record<string, unknown> : {};
     if (message.stopReason === "error" || message.stopReason === "aborted") { clearLive(); return; }
     const text = messageText(message.content);
-    if(hasToolCall(message.content,"handoff")){clearLive();return;}
+    if(data.completionIntent==="handoff"){clearLive();return;}
     if (text) commitLive(text);
   } else if(record.type==="response.committed"){
     if(typeof data.text==="string"&&data.text.trim())commitLive(data.text.trim());
@@ -410,7 +410,6 @@ function toolDetail(value: unknown): string {
   const oneLine = candidate.replace(/\s+/g, " ").trim();
   return oneLine.length > 72 ? `${oneLine.slice(0, 69)}…` : oneLine;
 }
-function hasToolCall(value:unknown,name:string):boolean{return Array.isArray(value)&&value.some((item)=>item&&typeof item==="object"&&!Array.isArray(item)&&(item as {type?:unknown;name?:unknown}).type==="toolCall"&&(item as {name?:unknown}).name===name);}
 
 function toolActivityLine(activity: ToolActivity): string {
   const state = activity.status === "running" ? tuiTheme.accent("running") : activity.status === "failed" ? tuiTheme.error("failed") : tuiTheme.success("done");

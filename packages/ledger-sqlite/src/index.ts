@@ -43,7 +43,7 @@ type FaultInjector = (point: FaultPoint) => void;
 type Row = Record<string, unknown>;
 type ProjectionName = "threads" | "turns" | "turn_items" | "goals" | "schedule" | "wakes" | "wake_triggers" | "mailbox" | "work_records";
 
-export const SQLITE_SCHEMA_VERSION = 23;
+export const SQLITE_SCHEMA_VERSION = 24;
 
 const createThreads = `CREATE TABLE IF NOT EXISTS threads (
   id TEXT PRIMARY KEY,

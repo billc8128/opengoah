@@ -743,7 +743,7 @@ Hide by default:
 
 ## 18. Migration
 
-This development release has no external users, so schema v23 does not migrate earlier development schemas. Development workspaces are recreated. Wake, Schedule, and Turn use a discriminated Human, Goal, or Specialist execution binding; Mail uses a discriminated Goal, Human-inbox, Human-request, or Specialist-inbox route. There is no optional Goal route whose meaning is reconstructed later. Turn admission freezes the current active Goal revision, and automatic Turns can start only from a claimed Wake.
+This development release has no external users, so schema v24 does not migrate earlier development schemas. Development workspaces are recreated. Wake, Schedule, and Turn use a discriminated Human, Goal, or Specialist execution binding; Mail uses a discriminated Goal, Human-inbox, Human-request, or Specialist-inbox route. There is no optional Goal route whose meaning is reconstructed later. Turn admission freezes the current active Goal revision, and automatic Turns can start only from a claimed Wake.
 
 ## 19. Implementation sequence
 

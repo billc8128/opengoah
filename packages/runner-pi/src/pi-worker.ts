@@ -61,7 +61,7 @@ export async function runPiWorker(): Promise<void> {
     }
 
     let output: TurnOutput | null = null;
-    let acceptedHandoff:{token:string;handoff:AgentHandoff}|null=null;
+    let acceptedHandoff:{attemptId:number;token:string;handoff:AgentHandoff}|null=null;
     let revokedReason="";
     let response = "";
     let responseFailure = "";
@@ -82,7 +82,7 @@ export async function runPiWorker(): Promise<void> {
       ? new Set(contextRecord.capabilities.filter((value): value is AgentCapability => typeof value === "string"))
       : undefined;
     if (contextRecord.workRecord && typeof contextRecord.workRecord === "object" && !Array.isArray(contextRecord.workRecord) && typeof contextRecord.workRecord.recordRevision === "number") goalState.recordRevision = contextRecord.workRecord.recordRevision;
-    const tools = createTools(root, (value) => {if(!acceptedHandoff||!sameHandoff(acceptedHandoff.handoff,value))throw new Error("Handoff tool executed without accepted validation");output={validationToken:acceptedHandoff.token,handoff:value};}, rpc, capabilities, goalState, protectedPaths);
+    const tools = createTools(root, (value) => {if(!acceptedHandoff||!sameHandoff(acceptedHandoff.handoff,value))throw new Error("Handoff tool executed without accepted validation");output={validationAttemptId:acceptedHandoff.attemptId,validationToken:acceptedHandoff.token,handoff:value};}, rpc, capabilities, goalState, protectedPaths);
     const contextPolicy = resolveContextPolicy(model.contextWindow, process.env);
     emit({ type: "transcript.started", data: { formatVersion: TRANSCRIPT_FORMAT_VERSION, provider, model: modelId, runner: "pi", contextWindowTokens: model.contextWindow, maxOutputTokensPerTurn: model.maxTokens } });
     const suppliedPrompt = typeof contextRecord.systemPrompt === "string" ? contextRecord.systemPrompt : undefined;
@@ -132,7 +132,7 @@ export async function runPiWorker(): Promise<void> {
         }
         return view;
       },
-      beforeToolCall:async({assistantMessage,toolCall,args})=>{if(revokedReason)return{block:true,reason:`Turn authority was revoked: ${revokedReason}`,terminate:true};if(toolCall.name!=="handoff")return;acceptedHandoff=null;output=null;const handoff=args as AgentHandoff;try{const result=await rpc("goal.handoff.validate",{handoff,candidateMessage:assistantResponseText(assistantMessage)} as unknown as JsonValue) as unknown as HandoffValidationResult;if(result.accepted){acceptedHandoff={token:result.token,handoff};return;}const reason=result.issues.map((issue)=>`- ${issue.message}`).join("\n");if(result.fatal)revokedReason=reason;return{block:true,reason:`Handoff was not accepted:\n${reason}`,terminate:result.fatal};}catch(error){revokedReason=error instanceof Error?error.message:String(error);return{block:true,reason:`Handoff validation could not continue: ${revokedReason}`,terminate:true};}},
+      beforeToolCall:async({assistantMessage,toolCall,args})=>{if(revokedReason)return{block:true,reason:`Turn authority was revoked: ${revokedReason}`,terminate:true};if(toolCall.name!=="handoff")return;acceptedHandoff=null;output=null;const handoff=args as AgentHandoff;try{const result=await rpc("goal.handoff.validate",{handoff,candidateMessage:assistantResponseText(assistantMessage)} as unknown as JsonValue) as unknown as HandoffValidationResult;if(result.accepted){acceptedHandoff={attemptId:result.attemptId,token:result.token,handoff};return;}const reason=result.issues.map((issue)=>`- ${issue.message}`).join("\n");if(result.fatal)revokedReason=reason;return{block:true,reason:`Handoff was not accepted:\n${reason}`,terminate:result.fatal};}catch(error){revokedReason=error instanceof Error?error.message:String(error);return{block:true,reason:`Handoff validation could not continue: ${revokedReason}`,terminate:true};}},
       shouldStopAfterTurn: () => output !== null||Boolean(revokedReason),
       toolExecution: "sequential",
     });
@@ -152,7 +152,7 @@ export async function runPiWorker(): Promise<void> {
       } else if (event.type === "message_end" && event.message.role === "assistant") {
         response = assistantResponseText(event.message);
         if ((event.message.stopReason === "error" || event.message.stopReason === "aborted") && event.message.errorMessage) responseFailure = event.message.errorMessage;
-        emit({ type: "message.assistant.completed", data: { message: transcriptMessage(event.message, idFor(event.message)) as unknown as JsonValue } });
+        const handoffIntent=hasAgentToolCall(event.message,"handoff");emit({ type: "message.assistant.completed", data: { message: transcriptMessage(event.message, idFor(event.message)) as unknown as JsonValue,...(handoffIntent?{completionIntent:"handoff",commitState:"provisional"}:{completionIntent:"ordinary",commitState:"committed"}) } });
       } else if (event.type === "tool_execution_start") emit({ type: "tool.called", data: { callId: event.toolCallId, name: event.toolName, arguments: JSON.parse(JSON.stringify(event.args)) as JsonValue } });
       else if (event.type === "tool_execution_end") emit({ type: "tool.completed", data: { callId: event.toolCallId, messageId: `tool:${event.toolCallId}`, name: event.toolName, result: JSON.parse(JSON.stringify(event.result)) as JsonValue, isError: event.isError } });
       else if (event.type === "turn_end") emit({ type: "turn.completed", data: {} });
@@ -474,4 +474,5 @@ export function assistantResponseText(message: AgentMessage): string {
     .trim();
 }
 function sameHandoff(left:AgentHandoff,right:AgentHandoff):boolean{return left.outcome===right.outcome&&left.evidence.length===right.evidence.length&&left.evidence.every((value,index)=>value===right.evidence[index]);}
+function hasAgentToolCall(message:AgentMessage,name:string):boolean{return message.role==="assistant"&&message.content.some((item)=>item.type==="toolCall"&&item.name===name);}
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) await runPiWorker();

@@ -144,10 +144,10 @@ export interface GoalHandoff extends AgentHandoff { goalId: string; goalRevision
 export type Handoff = GoalHandoff;
 export interface HandoffValidationIssue { code:string;message:string;details?:JsonValue }
 export type HandoffValidationResult=
-  | {accepted:true;fatal:false;token:string;goalId:string;goalRevision:number}
-  | {accepted:false;fatal:boolean;issues:HandoffValidationIssue[]};
+  | {accepted:true;fatal:false;attemptId:number;token:string;goalId:string;goalRevision:number}
+  | {accepted:false;fatal:boolean;attemptId:number;issues:HandoffValidationIssue[]};
 export interface HandoffValidationRequest {handoff:AgentHandoff;candidateMessage:string}
-export interface TurnOutput { validationToken:string;handoff: AgentHandoff }
+export interface TurnOutput { validationAttemptId:number;validationToken:string;handoff: AgentHandoff }
 export interface CommittedTurnOutput { handoff: GoalHandoff }
 export interface RunnerTraceEvent { type: string; data: JsonValue }
 
@@ -262,7 +262,7 @@ export function assertHandoff(value: Handoff): void {
   if (!value.goalId.trim() || !Number.isInteger(value.goalRevision) || value.goalRevision<0 || !Number.isInteger(value.recordRevision) || value.recordRevision<1) throw new Error("invalid Goal handoff");
 }
 export function assertAgentHandoff(value:AgentHandoff):void{if(!["progress", "waiting", "blocked", "completion_proposed"].includes(value.outcome)||!Array.isArray(value.evidence)||value.evidence.length===0)throw new Error("invalid Agent handoff");}
-export function assertTurnOutput(value:TurnOutput):void{if(typeof value.validationToken!=="string"||!value.validationToken.trim())throw new Error("Goal Turn requires an accepted Handoff validation token");assertAgentHandoff(value.handoff);}
+export function assertTurnOutput(value:TurnOutput):void{if(!Number.isInteger(value.validationAttemptId)||value.validationAttemptId<=0||typeof value.validationToken!=="string"||!value.validationToken.trim())throw new Error("Goal Turn requires an accepted Handoff validation attempt and token");assertAgentHandoff(value.handoff);}
 export function assertGoalSnapshot(value: GoalSnapshot): void {
   if (!value.objective.trim() || !value.owner.trim()) throw new Error("goal objective and owner are required");
   if (value.observationMethod !== null && !value.observationMethod.trim()) throw new Error("goal observation method cannot be blank");
