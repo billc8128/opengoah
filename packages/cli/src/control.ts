@@ -27,7 +27,7 @@ export type ControlRequest =
   | { op: "work.record"; goalId: string }
   | { op: "work.history"; goalId: string }
   | { op: "work.diff"; goalId: string; fromRevision: number; toRevision: number }
-  | { op: "wake.stop"; agent: string }
+  | { op: "wake.stop"; agent: string; goalId?:string }
   | { op: "daemon.stop" }
   | { op: "daemon.version" }
   | { op: "config.reload"; configPath: string };
@@ -146,7 +146,7 @@ async function dispatch(request: ControlRequest, socket: Socket, supervisor: Sup
   else if (request.op === "work.record") value = ledger.workRecord(request.goalId);
   else if (request.op === "work.history") value = ledger.workRecordHistory(request.goalId);
   else if (request.op === "work.diff") value = ledger.workRecordDiff(request.goalId, request.fromRevision, request.toRevision);
-  else if (request.op === "wake.stop") value = await supervisor.stopAgentWake(request.agent);
+  else if (request.op === "wake.stop") value = await supervisor.stopAgentWake(request.agent,request.goalId);
   else if (request.op === "turn.interrupt") value = await supervisor.interruptTurn(request.turnId);
   else if (request.op === "turn.steer") value = await supervisor.startHumanTurn(request.message);
   else value = { unknown: String(request) };

@@ -8,6 +8,7 @@
 - Console recovery warnings now consume a backend Goal-aware recovery view instead of reconstructing lifecycle state in the browser.
 - Console now consumes Supervisor's canonical retry/escalation reducer, including superseded failures and CEO escalation, without matching free-form Schedule reasons.
 - Low-level Goal commands now enforce CEO-owned Roots and require `--parent` for non-CEO Goals; lifecycle authority defaults to the parent owner.
+- `goah wake` accepts `--goal`, and Console types expose schema-v20 execution and Mail-route discriminants.
 
 - Removed Action approval commands and Console surfaces; snapshots now expose the closed Schedule lifecycle instead.
 - Local Console rejects non-canonical Host headers before setting its auth cookie; generic goal-update no longer bypasses atomic ownership reassignment.

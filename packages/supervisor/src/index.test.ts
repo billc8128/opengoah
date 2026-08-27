@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { RunRequest, Runner, RunnerCandidateResult, WakeSnapshot } from "goah-ledger-contract";
+import { humanTarget,type RunRequest,type Runner,type RunnerCandidateResult,type WakeSnapshot } from "goah-ledger-contract";
 import { RunnerRouter, Supervisor } from "./index.js";
 
-const wake: WakeSnapshot = { id: "w", agent: "ceo", triggerRef: "test", status: "consumed", attempt: 1, enqueuedSeq: 1, claimedAt:null,consumedAt:null,turnId:"turn" };
+const wake: WakeSnapshot = { id: "w",...humanTarget(),triggerRef: "test", status: "consumed", attempt: 1, enqueuedSeq: 1, claimedAt:null,consumedAt:null,turnId:"turn" };
 
 function taggedRunner(tag: string): Runner {
   return {

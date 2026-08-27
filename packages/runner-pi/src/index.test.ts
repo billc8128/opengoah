@@ -4,12 +4,12 @@ import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AssistantResponse, RunRequest, TurnSnapshot, WakeSnapshot, TurnOutput } from "goah-ledger-contract";
+import { goalTarget, type AssistantResponse, type RunRequest, type TurnSnapshot, type WakeSnapshot, type TurnOutput } from "goah-ledger-contract";
 import { PiRunnerAdapter, ProcessRunner, piWorkerPath, type PiDriver } from "./index.js";
 import { assistantResponseText, bashTimeoutMs, compactMessages, compactMessagesToTokenBudget, linuxSandboxArgs, resolveContextPolicy, runBashCommand, sandboxWorkspacePaths, scopedRunnerPath, snapshotModelConfig } from "./pi-worker.js";
 import { createPiModel, modelCatalog, providerCatalog } from "./model-provider.js";
 
-const wake: WakeSnapshot = { id: "w", agent: "a", triggerRef: "t", status: "consumed", attempt: 1, enqueuedSeq: 1, claimedAt:"2026-08-18T00:00:00.000Z",consumedAt:"2026-08-18T00:00:00.000Z",turnId:"turn" };
+const wake: WakeSnapshot = { id: "w", ...goalTarget("a","goal"),triggerRef: "t", status: "consumed", attempt: 1, enqueuedSeq: 1, claimedAt:"2026-08-18T00:00:00.000Z",consumedAt:"2026-08-18T00:00:00.000Z",turnId:"turn" };
 const execution: TurnSnapshot = { id:"turn",threadId:"thread",source:"goal",goalId:"goal",goalRevision:0,status:"in_progress",attempt:1,error:null,startedAt:"2026-08-18T00:00:00.000Z",endedAt:null,leaseUntil:"2026-08-18T00:01:00.000Z",leaseToken:"lease",runnerPid:null };
 const requestBase = { agent:wake.agent,execution,sourceWake:wake };
 const goalTurn = { source: { kind: "goal" as const, round: 1 }, goalBinding: { goalId: "goal", goalRevision: 0 } };

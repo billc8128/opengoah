@@ -20,4 +20,4 @@ The unified Turn runtime left four mismatched boundaries: Schedule had no termin
 - Preemption revokes Ledger authority immediately without allowing overlapping local processes.
 - Replay authority is structurally separate from business payload naming.
 - The core runtime is smaller: User Message → Turn → Tool Call/Result → optional Goal Work Record/Handoff.
-- Existing development workspaces use schema v19 and are recreated rather than migrated.
+- Existing development workspaces use schema v20 and are recreated rather than migrated.

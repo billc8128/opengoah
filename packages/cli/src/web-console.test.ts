@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { request } from "node:http"
 import test from "node:test"
+import { goalTarget,humanInboxRoute } from "goah-ledger-contract"
 import { deriveRecoveryViews } from "goah-supervisor"
 import { createRuntime, defaultConfig, loadConfig } from "./index.js"
 import { consoleMetadataPath, readConsoleMetadata, runWebConsole } from "./web-console.js"
@@ -14,7 +15,7 @@ test("local Console serves assets, redacted snapshots, and CEO control through S
   const config = { ...defaultConfig(root, { provider: "faux" }), stateDir: join(root, "state") }
   writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`)
   const runtime = createRuntime(loadConfig(configPath))
-  runtime.ledger.putMail({ id: "secret-mail", to: "ceo", from: "human", level: "decision", body: { apiKey: "sk-do-not-expose-123456789" }, readAt: null }, "human")
+  runtime.ledger.putMail({ id: "secret-mail", to: "ceo", from: "human", level: "decision", ...humanInboxRoute(),body: { apiKey: "sk-do-not-expose-123456789" }, readAt: null }, "human")
   await assert.rejects(()=>runWebConsole(runtime.supervisor,runtime.ledger,config.stateDir,new AbortController().signal,{host:"0.0.0.0"}),/loopback/)
 
   const controller = new AbortController()
@@ -152,13 +153,12 @@ test("Console recovery state follows the current Goal lifecycle", () => {
   runtime.ledger.finishTurn("failed-turn", "failed", { message: "failed" }, now, "supervisor")
   runtime.ledger.putSchedule({
     id: "recovery:failed-turn:1",
-    agent: "ceo",
+    ...goalTarget("ceo",started.goal.id),
     nextWakeAt: new Date(Date.parse(now) + 60_000).toISOString(),
     reason: "recovery:failed-turn",
     setBy: "supervisor",
     status: "pending",
     resolvedAt: null,
-    goalId: started.goal.id,
   }, "supervisor")
 
   assert.deepEqual(deriveRecoveryViews(runtime.ledger), [{ turnId: "failed-turn", agent: "ceo", state: "scheduled", actionable: false }])
@@ -180,11 +180,11 @@ test("recovery state distinguishes escalation, unrelated schedules, and failed r
   failGoalWake(runtime, "child-escalated", "worker-a", "source-a", "failed-a", "goal:child-escalated")
   failGoalWake(runtime, "child-retried", "worker-b", "source-b", "failed-b", "goal:child-retried")
   const now = new Date().toISOString()
-  runtime.ledger.putSchedule({ id: "ordinary", agent: "ceo", nextWakeAt: new Date(Date.parse(now) + 60_000).toISOString(), reason: "recovery:failed-b", setBy: "ceo", status: "pending", resolvedAt: null, goalId: "root" }, "ceo")
+  runtime.ledger.putSchedule({ id: "ordinary", ...goalTarget("ceo","root"),nextWakeAt: new Date(Date.parse(now) + 60_000).toISOString(), reason: "recovery:failed-b", setBy: "ceo", status: "pending", resolvedAt: null }, "ceo")
   assert.equal(deriveRecoveryViews(runtime.ledger).find((view) => view.turnId === "failed-b")?.state, "needed")
 
   failGoalWake(runtime, "child-retried", "worker-b", "retry-b", "failed-retry-b", "recovery:failed-b:1")
-  runtime.ledger.enqueueWake({ id: "escalation-a", agent: "ceo", triggerRef: "child-retry-exhausted:failed-a", status: "queued", attempt: 0, enqueuedSeq: 0, claimedAt: null, consumedAt: null, turnId: null, goalId: "root" }, "supervisor")
+  runtime.ledger.enqueueWake({ id: "escalation-a", ...goalTarget("ceo","root"),triggerRef: "child-retry-exhausted:failed-a", status: "queued", attempt: 0, enqueuedSeq: 0, claimedAt: null, consumedAt: null, turnId: null }, "supervisor")
   const views = deriveRecoveryViews(runtime.ledger)
   assert.equal(views.find((view) => view.turnId === "failed-a")?.state, "escalated")
   assert.equal(views.find((view) => view.turnId === "failed-b")?.state, "superseded")
@@ -195,7 +195,7 @@ test("recovery state distinguishes escalation, unrelated schedules, and failed r
 function failGoalWake(runtime: ReturnType<typeof createRuntime>, goalId: string, agent: string, wakeId: string, turnId: string, triggerRef: string): void {
   const now = new Date().toISOString()
   const thread = runtime.supervisor.threadFor(agent)
-  runtime.ledger.enqueueWake({ id: wakeId, agent, triggerRef, status: "queued", attempt: 0, enqueuedSeq: 0, claimedAt: null, consumedAt: null, turnId: null, goalId }, "supervisor")
+  runtime.ledger.enqueueWake({ id: wakeId, ...goalTarget(agent,goalId),triggerRef, status: "queued", attempt: 0, enqueuedSeq: 0, claimedAt: null, consumedAt: null, turnId: null }, "supervisor")
   assert.equal(runtime.ledger.claimNextWake(now)?.id, wakeId)
   runtime.ledger.startTurnFromWake(wakeId, { id: turnId, threadId: thread.id, source: "goal", goalId, goalRevision: runtime.ledger.goal(goalId)!.revision, status: "in_progress", attempt: 1, error: null, startedAt: now, endedAt: null, leaseUntil: new Date(Date.parse(now) + 60_000).toISOString(), leaseToken: turnId, runnerPid: null }, now)
   runtime.ledger.finishTurn(turnId, "failed", { message: "failed" }, now, "supervisor")

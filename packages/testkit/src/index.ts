@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  specialistTarget,
   type Clock,
   type JsonValue,
   type Ledger,
@@ -75,9 +76,9 @@ export function assertLedgerConformance(create: LedgerConformanceFactory): void 
   let reopened = false;
   try { ledger.putGoal({ id: "root", parentId: null, objective: "test", observationMethod, verificationMethod: observationMethod, owner: "a", phase: "active", revision: 4 }, "human"); } catch { reopened = true; }
   if (!reopened) throw new Error("ledger conformance: completed goal was reopened");
-  const first = ledger.enqueueWake({ id: "z", agent: "a", triggerRef: "first", status: "queued", attempt: 0, enqueuedSeq: 0, claimedAt:null,consumedAt:null,turnId:null }, "supervisor");
+  const first = ledger.enqueueWake({ id: "z", ...specialistTarget("a","verifier"), triggerRef: "first", status: "queued", attempt: 0, enqueuedSeq: 0, claimedAt:null,consumedAt:null,turnId:null }, "supervisor");
   if(ledger.wakeTriggers("z").length!==1||ledger.wakeTriggers("z")[0]?.status!=="pending")throw new Error("ledger conformance: initial Wake trigger is missing");
-  ledger.enqueueWake({ id: "a", agent: "b", triggerRef: "second", status: "queued", attempt: 0, enqueuedSeq: 0, claimedAt:null,consumedAt:null,turnId:null }, "supervisor");
+  ledger.enqueueWake({ id: "a", ...specialistTarget("b","audit"), triggerRef: "second", status: "queued", attempt: 0, enqueuedSeq: 0,claimedAt:null,consumedAt:null,turnId:null }, "supervisor");
   const claimed = ledger.claimNextWake(clock.now().toISOString());
   if (claimed?.id !== "z") throw new Error("ledger conformance: wakes are not FIFO");
   ledger.putThread({id:"thread:a",agent:"a",parentThreadId:null,createdAt:clock.now().toISOString(),updatedAt:clock.now().toISOString()},"supervisor");const turn={id:"turn:a",threadId:"thread:a",source:"system" as const,goalId:null,goalRevision:null,status:"in_progress" as const,attempt:1,error:null,startedAt:clock.now().toISOString(),endedAt:null,leaseUntil:"2030-01-01T00:10:00.000Z",leaseToken:"lease",runnerPid:null};ledger.startTurnFromWake("z",turn,clock.now().toISOString());

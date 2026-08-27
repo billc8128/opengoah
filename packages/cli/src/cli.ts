@@ -131,7 +131,7 @@ async function main(): Promise<void> {
       console.log(JSON.stringify({ wake: await supervisor.tick() }, null, 2));
     } else if (command === "wake") {
       const agent = requiredPositional(1, "agent");
-      const wake = supervisor.planWake(agent, new Date().toISOString(), option("--reason") ?? "manual wake", "supervisor");
+      const goalId=option("--goal");const wake = supervisor.planWake(agent, new Date().toISOString(), option("--reason") ?? "manual wake", "supervisor",goalId?{goalId}:undefined);
       console.log(JSON.stringify({ wake }, null, 2));
     } else if (command === "status") {
       console.log(JSON.stringify(statusSnapshot(ledger), null, 2));
@@ -286,7 +286,7 @@ goah goal-show ID | goal-list
 goah goal-update ID [--objective TEXT] [--observation-method TEXT] [--actor ACTOR]
 goah goal-pause|goal-resume ID [--actor ACTOR]
 goah goal-complete ID --reason TEXT --evidence SEQ[,SEQ] [--actor ACTOR]
-goah wake AGENT [--reason TEXT]
+goah wake AGENT [--goal GOAL_ID] [--reason TEXT]
 goah run-once
 goah thread list
 goah thread show|replay|export THREAD_ID [--output FILE] [--raw]

@@ -743,7 +743,7 @@ Hide by default:
 
 ## 18. Migration
 
-This development release has no external users, so schema v19 does not migrate earlier development schemas. Development workspaces are recreated. Mail has a typed optional Goal route, but Agent-to-Agent Mail requires it; only Human and specialist inbox facts may be unbound. Wake and Schedule retain only `goalId`, and Turn admission binds the current active revision. Goal and Work Record semantics remain the target schema; authoritative Goal changes, private projection metadata, closed Schedule and Wake-trigger lifecycles, execution ownership, Goal-targeted scheduling, and conversation storage are replaced together.
+This development release has no external users, so schema v20 does not migrate earlier development schemas. Development workspaces are recreated. Wake/Schedule use a discriminated Human, Goal, or Specialist execution target; Mail uses a discriminated Goal, Human-inbox, Human-request, or Specialist-inbox route. There is no optional Goal route whose meaning is reconstructed later. Turn admission binds the current active Goal revision.
 
 ## 19. Implementation sequence
 

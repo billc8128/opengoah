@@ -2,6 +2,12 @@ import { randomUUID } from "node:crypto";
 import {
   assertHandoff,
   goalStream,
+  goalRoute,
+  goalTarget,
+  humanInboxRoute,
+  humanRequestRoute,
+  humanTarget,
+  specialistTarget,
   type AgentCapability,
   type AgentProfile,
   type AgentRole,
@@ -189,7 +195,7 @@ export class Supervisor {
   async #terminateHandle(turnId:string,handle:RunnerHandle):Promise<void>{try{await handle.terminate();}catch(error){this.#recordCleanupFailure(turnId,error);}}
   #recordCleanupFailure(turnId:string,error:unknown):void{this.ledger.appendEvent({streamId:`turn:${turnId}`,ts:this.#now(),actor:"supervisor",type:"runner.cleanup_failed",data:{message:error instanceof Error?error.message:String(error)},ignorable:true});}
 
-  #scheduleTurnRecovery(sourceWake:WakeSnapshot|null,triggers:WakeTriggerSnapshot[],turnId:string,agent:string):void{if(!sourceWake)return;const prior=Math.max(0,...triggers.map((trigger)=>parseRecoveryTrigger(trigger.triggerRef)?.attempt??0));const next=prior+1;const goal=sourceWake.goalId?this.ledger.goal(sourceWake.goalId):null;const role=this.#role(agent);if(!goal&&role!=="verifier"&&role!=="audit")return;if(next<this.#retryPolicy.maxAttempts){const delay=this.#retryPolicy.baseDelayMs*2**prior;this.ledger.putSchedule({id:recoveryScheduleId(turnId,next),agent:goal?.owner??agent,nextWakeAt:new Date(this.clock.now().getTime()+delay).toISOString(),reason:recoveryRef(turnId),setBy:"supervisor",status:"pending",resolvedAt:null,...(goal&&goal.phase==="active"?{goalId:goal.id}:{})},"supervisor",sourceWake.id);}else if(role==="child"&&this.#hasActiveRoot()){const root=this.#activeRoot();if(root)this.#enqueueTrigger("ceo",childRetryExhaustedRef(turnId),{goalId:root.id});}}
+  #scheduleTurnRecovery(sourceWake:WakeSnapshot|null,triggers:WakeTriggerSnapshot[],turnId:string,agent:string):void{if(!sourceWake)return;const prior=Math.max(0,...triggers.map((trigger)=>parseRecoveryTrigger(trigger.triggerRef)?.attempt??0));const next=prior+1;const goal=sourceWake.targetKind==="goal"?this.ledger.goal(sourceWake.goalId):null;const role=this.#role(agent);if(!goal&&role!=="verifier"&&role!=="audit")return;if(next<this.#retryPolicy.maxAttempts){const delay=this.#retryPolicy.baseDelayMs*2**prior;const target=goal&&goal.phase==="active"?goalTarget(goal.owner,goal.id):specialistTarget(agent,role as "verifier"|"audit");this.ledger.putSchedule({id:recoveryScheduleId(turnId,next),...target,nextWakeAt:new Date(this.clock.now().getTime()+delay).toISOString(),reason:recoveryRef(turnId),setBy:"supervisor",status:"pending",resolvedAt:null},"supervisor",sourceWake.id);}else if(role==="child"&&goal?.parentId){const parent=this.ledger.goal(goal.parentId);if(parent?.phase==="active")this.#enqueueTrigger(parent.owner,childRetryExhaustedRef(turnId),{goalId:parent.id});}}
 
   #closeStreamingItems(turnId:string):void{const open=this.ledger.turnItems(turnId).filter((item)=>item.status==="in_progress");if(open.some((item)=>item.type==="tool_call"||item.type==="user_message"))throw new Error("Runner returned while an input or tool call was still open");for(const item of open)this.ledger.putTurnItem({...item,status:"completed",completedAt:this.#now()},"supervisor");}
 
@@ -208,7 +214,7 @@ export class Supervisor {
     else if (type === "tool.completed") { const input = data as { callId?: unknown; result?: JsonValue; isError?: unknown };const turn=this.ledger.turn(turnId)!;const id=`${turnId}:attempt:${turn.attempt}:tool:${String(input.callId)}`; const existing = this.ledger.turnItems(turnId).find((item) => item.id === id);if(!existing)throw new Error("tool result has no matching call in Turn attempt");this.ledger.putTurnItem({ ...existing, status: input.isError ? "failed" : "completed", completedAt: this.#now() }, actor); this.#appendTurnItem(turnId, "tool_result", { callId: String(input.callId), result: input.result ?? null }, actor); }
   }
   sendToCeo(body: JsonValue, level: "fyi" | "decision" | "emergency" = "decision"): { mail: MailSnapshot; wake: WakeSnapshot } {
-    const mail = { id: randomUUID(), to: "ceo", from: "human", level, body, readAt: null };
+    const mail:MailSnapshot = { id: randomUUID(), to: "ceo", from: "human", level, ...humanInboxRoute(), body, readAt: null };
     this.ledger.putMail(mail, "human");
     const wake = this.#enqueueTrigger("ceo", `mail:${mail.id}`);
     if (!wake) throw new Error("CEO wake was not admitted");
@@ -263,15 +269,13 @@ export class Supervisor {
   }
 
   planWake(agent: string, at: string, reason: string, setBy = agent,target?:{goalId:string}): WakeSnapshot | null {
-    const parsed=Date.parse(at);if(!Number.isFinite(parsed))throw new Error("schedule time is invalid");const nextWakeAt=new Date(parsed).toISOString();const binding=target??this.#singleActiveGoalTarget(agent);const role=this.#role(agent);if(!binding&&role!=="verifier"&&role!=="audit")throw new Error("Goal-owning Agent schedules require an active Goal target");
-    const schedule: ScheduleSnapshot = { id: `schedule:${agent}${binding?`:${binding.goalId}`:""}:${randomUUID()}`, agent, nextWakeAt, reason, setBy,status:"pending",resolvedAt:null,...(binding??{}) };
+    const parsed=Date.parse(at);if(!Number.isFinite(parsed))throw new Error("schedule time is invalid");const nextWakeAt=new Date(parsed).toISOString();const binding=target??this.#singleActiveGoalTarget(agent);const role=this.#role(agent);if(!binding&&role!=="verifier"&&role!=="audit")throw new Error("Goal-owning Agent schedules require an active Goal target");if(binding){const goal=this.ledger.goal(binding.goalId);if(!goal||goal.phase!=="active"||!this.#validGoalOwner(agent,goal))throw new Error("schedule target is not an active Goal owned by this Agent");}
+    const executionTarget=binding?goalTarget(agent,binding.goalId):specialistTarget(agent,role as "verifier"|"audit");const schedule: ScheduleSnapshot = { id: `schedule:${agent}${binding?`:${binding.goalId}`:""}:${randomUUID()}`, ...executionTarget, nextWakeAt, reason, setBy,status:"pending",resolvedAt:null };
     this.ledger.putSchedule(schedule, setBy);
     return nextWakeAt <= this.#now() ? this.#enqueueSchedule(schedule) : null;
   }
 
-  async stopAgentWake(agent: string): Promise<WakeSnapshot | null> {
-    const wake=this.ledger.wakes().find((item)=>item.agent===agent&&(item.status==="queued"||item.status==="claimed"));if(wake)this.ledger.cancelWake(wake.id,this.#now());const thread=this.ledger.threads().find((item)=>item.agent===agent);const turn=thread?this.ledger.activeTurn(thread.id):null;if(turn)await this.interruptTurn(turn.id);return wake?this.#wake(wake.id):null;
-  }
+  async stopAgentWake(agent:string,goalId?:string):Promise<WakeSnapshot|null>{const role=this.#role(agent);const binding=role==="verifier"||role==="audit"?null:goalId?{goalId}:this.#singleActiveGoalTarget(agent);if(role!=="verifier"&&role!=="audit"&&!binding)throw new Error("Goal stop requires an explicit Goal target");const wake=this.ledger.wakes().find((item)=>item.agent===agent&&(item.status==="queued"||item.status==="claimed")&&(binding?item.targetKind==="goal"&&item.goalId===binding.goalId:item.targetKind==="specialist"));if(wake)this.ledger.cancelWake(wake.id,this.#now());const thread=this.ledger.threads().find((item)=>item.agent===agent);const turn=thread?this.ledger.activeTurn(thread.id):null;if(turn&&(!binding||turn.goalId===binding.goalId))await this.interruptTurn(turn.id);return wake?this.#wake(wake.id):null;}
 
   async recover(): Promise<void> {
     for(const wake of this.ledger.wakes().filter((candidate)=>candidate.status==="claimed"))this.ledger.releaseWake(wake.id,this.#now());
@@ -300,7 +304,7 @@ export class Supervisor {
       for (const schedule of this.ledger.dueSchedules(this.#now())) this.#enqueueSchedule(schedule);
       for (const mail of this.ledger.triggeringMail()) {
         const thread=this.ledger.threads().find((candidate)=>candidate.agent===mail.to);if(thread&&this.ledger.activeTurn(thread.id))continue;
-        const goal=mail.goalId?this.ledger.goal(mail.goalId):null;const target=goal&&goal.owner===mail.to&&goal.phase==="active"&&this.#validGoalOwner(mail.to,goal)?{goalId:goal.id}:undefined;const humanInteraction=!mail.goalId&&mail.from==="human"&&mail.to==="ceo";if(!target&&!humanInteraction)continue;const base=`mail:${mail.id}`;const related=this.ledger.wakeTriggersForAgent(mail.to).map((trigger)=>({trigger,attempt:mailDeliveryAttempt(trigger.triggerRef,base)})).filter((entry):entry is {trigger:WakeTriggerSnapshot;attempt:number}=>entry.attempt!==null);const pending=related.filter((entry)=>entry.trigger.status==="pending").sort((a,b)=>b.attempt-a.attempt)[0];const next=related.reduce((highest,entry)=>Math.max(highest,entry.attempt),-1)+1;const trigger=pending?.trigger.triggerRef??(next===0?base:`${base}@redelivery:${next}`);this.#enqueueTrigger(mail.to,trigger,target);
+        const goal=mail.routeKind==="goal"?this.ledger.goal(mail.goalId):null;const target=goal&&goal.owner===mail.to&&goal.phase==="active"&&this.#validGoalOwner(mail.to,goal)?{goalId:goal.id}:undefined;const humanInteraction=mail.routeKind==="human_inbox"&&mail.to==="ceo"&&mail.from==="human";if(!target&&!humanInteraction)continue;const base=`mail:${mail.id}`;const related=this.ledger.wakeTriggersForAgent(mail.to).map((trigger)=>({trigger,attempt:mailDeliveryAttempt(trigger.triggerRef,base)})).filter((entry):entry is {trigger:WakeTriggerSnapshot;attempt:number}=>entry.attempt!==null);const pending=related.filter((entry)=>entry.trigger.status==="pending").sort((a,b)=>b.attempt-a.attempt)[0];const next=related.reduce((highest,entry)=>Math.max(highest,entry.attempt),-1)+1;const trigger=pending?.trigger.triggerRef??(next===0?base:`${base}@redelivery:${next}`);this.#enqueueTrigger(mail.to,trigger,target);
       }
       return this.ledger.claimNextWake(this.#now());
     } finally {
@@ -322,7 +326,7 @@ export class Supervisor {
     if(schedule.status!=="pending")return null;
     if(schedule.goalId){const goal=this.ledger.goal(schedule.goalId);if(!goal||goal.owner!==schedule.agent||goal.phase!=="active"||!this.#validGoalOwner(schedule.agent,goal)){this.ledger.supersedeSchedule(schedule.id,this.#now());return null;}}
     else if(!["verifier","audit"].includes(this.#role(schedule.agent))){this.ledger.cancelSchedule(schedule.id,this.#now());return null;}
-    const wake:WakeSnapshot={id:`wake:${schedule.id}`,agent:schedule.agent,triggerRef:`${schedule.id}@${schedule.nextWakeAt}`,status:"queued",attempt:0,enqueuedSeq:0,claimedAt:null,consumedAt:null,turnId:null,...(schedule.goalId?{goalId:schedule.goalId}:{})};
+    const wake:WakeSnapshot={id:`wake:${schedule.id}`,...(schedule.targetKind==="goal"?goalTarget(schedule.agent,schedule.goalId):specialistTarget(schedule.agent,schedule.specialistRole)),triggerRef:`${schedule.id}@${schedule.nextWakeAt}`,status:"queued",attempt:0,enqueuedSeq:0,claimedAt:null,consumedAt:null,turnId:null};
     return this.ledger.consumeSchedule(schedule.id,wake,this.#now()).wake;
   }
 
@@ -336,7 +340,7 @@ export class Supervisor {
       this.ledger.addWakeTrigger(pending.id,triggerRef,"supervisor");
       return pending;
     }
-    const wake: WakeSnapshot = { id: randomUUID(), agent, triggerRef, status: "queued", attempt: 0, enqueuedSeq: 0, claimedAt:null,consumedAt:null,turnId:null,...(target??{}) };
+    const executionTarget=target?goalTarget(agent,target.goalId):this.#role(agent)==="ceo"?humanTarget():specialistTarget(agent,this.#role(agent) as "verifier"|"audit");const wake: WakeSnapshot = { id: randomUUID(), ...executionTarget, triggerRef, status: "queued", attempt: 0, enqueuedSeq: 0, claimedAt:null,consumedAt:null,turnId:null };
     const result = this.ledger.enqueueWake(wake, "supervisor");
     if (result.created) return this.#wake(wake.id);
     const existing = this.ledger.wakeByTrigger(agent, triggerRef);
@@ -366,10 +370,10 @@ export class Supervisor {
     return { handoff };
   }
 
-  #turnContext(wake: WakeSnapshot,triggers=this.ledger.wakeTriggers(wake.id).filter((trigger)=>trigger.status==="pending")): TurnContext {
-    const human=triggers.some((trigger)=>trigger.source==="human");
-    const goal=wake.goalId?this.#goal(wake.goalId):null;
-    return { source: human ? { kind: "human" } : goal?{kind:"goal",round:(this.ledger.workRecord(goal.id)?.recordRevision??0)+1}:{kind:"system",reason:triggers.map((trigger)=>trigger.triggerRef).join(", ")}, ...(goal?{goalBinding:{goalId:goal.id,goalRevision:goal.revision}}:{}) };
+  #turnContext(wake:WakeSnapshot,triggers=this.ledger.wakeTriggers(wake.id).filter((trigger)=>trigger.status==="pending")):TurnContext{
+    if(wake.targetKind==="human")return{source:{kind:"human"}};
+    if(wake.targetKind==="specialist")return{source:{kind:"system",reason:triggers.map((trigger)=>trigger.triggerRef).join(", ")}};
+    const goal=this.#goal(wake.goalId);return{source:{kind:"goal",round:(this.ledger.workRecord(goal.id)?.recordRevision??0)+1},goalBinding:{goalId:goal.id,goalRevision:goal.revision}};
   }
 
   #loadContext(wake: WakeSnapshot, turn: TurnContext,mail:MailSnapshot[],wakeTriggers:WakeTriggerSnapshot[]): JsonValue {
@@ -428,8 +432,8 @@ export class Supervisor {
     if (method === "goal.revise") return this.reviseChildGoal(String(input.goalId),String(input.objective),String(input.observationMethod),String(input.verificationMethod),agent,String(input.reason),numberArray(input.evidence),sourceWakeId,turnId) as unknown as JsonValue;
     if (method === "goal.pause" || method === "goal.resume") { const goal=this.#goal(String(input.goalId)); const directRoot=!context.goalBinding&&context.source.kind==="human"&&goal.parentId===null; if(!context.goalBinding&&!directRoot) throw new Error(`${method} requires a Goal-bound Turn`); const next=this.transitionGoal(goal.id,method==="goal.pause"?"paused":"active",directRoot?"human":agent,!directRoot,turnId); if(method==="goal.resume"&&directRoot){context.goalBinding={goalId:next.id,goalRevision:next.revision};this.ledger.putTurn({...this.ledger.turn(turnId)!,goalId:next.id,goalRevision:next.revision},"supervisor");return {goal:next,goalBinding:context.goalBinding} as unknown as JsonValue;} return next as unknown as JsonValue; }
     if (method === "goal.complete") { const goal=this.#goal(String(input.goalId)); const directRoot=!context.goalBinding&&context.source.kind==="human"&&goal.parentId===null; if(!context.goalBinding&&!directRoot) throw new Error("goal.complete requires a Goal-bound Turn"); return this.completeGoal({goalId:goal.id,revision:Number(input.revision),reason:String(input.reason),evidence:numberArray(input.evidence),sourceTurnId:turnId},directRoot?"human":agent,sourceWakeId) as unknown as JsonValue; }
-    if (method === "mail.send") {const to=String(input.to);if(to==="human")throw new Error("Human communication requires human.request");if(!this.#knownAgent(to))throw new Error(`unknown Agent recipient: ${to}`);const goalId=String(input.goalId??"").trim();if(!goalId)throw new Error("Agent Mail requires a Goal route");const goal=this.#goal(goalId);if(!this.#validGoalOwner(to,goal))throw new Error("Agent Mail Goal route does not match the recipient role and ownership");const mail: MailSnapshot = { id:randomUUID(),to,from:agent,level:String(input.level) as MailSnapshot["level"],goalId,body:(input.body??null) as JsonValue,readAt:null }; this.ledger.putMail(mail,agent,sourceWakeId); return mail as unknown as JsonValue; }
-    if (method === "human.request") {if(agent!=="ceo")throw new Error("only CEO may request Human input");const evidence=numberArray(input.evidence);if(!evidence.length)throw new Error("evidence is required");for(const seq of evidence)if(!this.ledger.eventsSince(seq-1).some((event)=>event.seq===seq))throw new Error(`evidence event does not exist: ${seq}`);const mail: MailSnapshot = { id:randomUUID(),to:"human",from:agent,level:"decision",body:{ type:String(input.type),message:input.message??null,evidence },readAt:null }; this.ledger.putMail(mail,agent,sourceWakeId); return mail as unknown as JsonValue; }
+    if (method === "mail.send") {const to=String(input.to);if(to==="human")throw new Error("Human communication requires human.request");if(!this.#knownAgent(to))throw new Error(`unknown Agent recipient: ${to}`);const goalId=String(input.goalId??"").trim();if(!goalId)throw new Error("Agent Mail requires a Goal route");const goal=this.#goal(goalId);if(!this.#validGoalOwner(to,goal))throw new Error("Agent Mail Goal route does not match the recipient role and ownership");const mail: MailSnapshot = { id:randomUUID(),to,from:agent,level:String(input.level) as MailSnapshot["level"],...goalRoute(goalId),body:(input.body??null) as JsonValue,readAt:null }; this.ledger.putMail(mail,agent,sourceWakeId); return mail as unknown as JsonValue; }
+    if (method === "human.request") {if(agent!=="ceo")throw new Error("only CEO may request Human input");const evidence=numberArray(input.evidence);if(!evidence.length)throw new Error("evidence is required");for(const seq of evidence)if(!this.ledger.eventsSince(seq-1).some((event)=>event.seq===seq))throw new Error(`evidence event does not exist: ${seq}`);const mail: MailSnapshot = { id:randomUUID(),to:"human",from:agent,level:"decision",...humanRequestRoute(),body:{ type:String(input.type),message:input.message??null,evidence },readAt:null }; this.ledger.putMail(mail,agent,sourceWakeId); return mail as unknown as JsonValue; }
     if (method === "schedule.set") return (this.planWake(agent,String(input.at),String(input.reason),agent,context.goalBinding)??{scheduled:true}) as unknown as JsonValue;
     if (method === "goal.put") {const next=input.goal as unknown as GoalSnapshot;if(!this.#validGoalOwner(next.owner,next))throw new Error("Goal owner role does not match Root/Child position");const current=this.ledger.goal(next.id);const operation=!current?"create":current.phase!==next.phase?(next.phase==="paused"?"pause":next.phase==="active"?"resume":next.phase==="blocked"?"block":"complete"):current.owner!==next.owner?"reassign":"revise";this.ledger.putGoal(next,agent,sourceWakeId,{operation,reason:String(input.reason??"Advanced Goal mutation"),evidence:numberArray(input.evidence??[]),sourceTurnId:turnId,...(sourceWakeId?{sourceWakeId}:{})}); return input.goal as JsonValue; }
     if (method === "memory.append") { const note=String(input.note??"").trim(); if(!note) throw new Error("memory note cannot be empty"); const event=this.ledger.appendEvent({streamId:memoryStream(agent),ts:this.#now(),actor:agent,type:"memory.appended",data:{note,turnId}}); return {seq:event.seq} as unknown as JsonValue; }
@@ -484,21 +488,25 @@ export function deriveRecoveryViews(ledger: Ledger): RecoveryView[] {
   const schedules = ledger.schedules();
   const triggers = wakes.flatMap((wake) => ledger.wakeTriggers(wake.id));
   for (const turn of ledger.turns()) {
-    if (turn.status !== "failed" || !turn.goalId) continue;
+    if (turn.status !== "failed") continue;
     const sourceWake = wakes.find((wake) => wake.turnId === turn.id);
     const thread = ledger.thread(turn.threadId);
-    const goal = ledger.goal(turn.goalId);
-    if (!sourceWake || !thread || !goal || goal.phase !== "active" || goal.owner !== thread.agent) continue;
+    const goal = turn.goalId ? ledger.goal(turn.goalId) : null;
+    const goalFailure=Boolean(sourceWake?.targetKind==="goal"&&thread&&goal&&goal.phase==="active"&&goal.owner===thread.agent);
+    const specialistFailure=Boolean(sourceWake?.targetKind==="specialist"&&thread&&sourceWake.agent===thread.agent);
+    if (!sourceWake || !thread || !goalFailure&&!specialistFailure) continue;
     const base = { turnId: turn.id, agent: thread.agent };
     const scheduled = schedules.some((schedule) => {
       const recovery = parseRecoveryTrigger(schedule.id);
-      return schedule.status === "pending" && schedule.setBy === "supervisor" && schedule.agent === thread.agent && schedule.goalId === goal.id && schedule.reason === recoveryRef(turn.id) && recovery?.turnId === turn.id && recovery.attempt > 0;
+      const sameTarget=goalFailure?schedule.targetKind==="goal"&&schedule.goalId===goal!.id:schedule.targetKind==="specialist"&&schedule.specialistRole===sourceWake.specialistRole;
+      return schedule.status === "pending" && schedule.setBy === "supervisor" && schedule.agent === thread.agent && sameTarget && schedule.reason === recoveryRef(turn.id) && recovery?.turnId === turn.id && recovery.attempt > 0;
     });
     if (scheduled) { views.push({ ...base, state: "scheduled", actionable: false }); continue; }
     const recoveryWake = triggers.flatMap((trigger) => {
       const recovery = parseRecoveryTrigger(trigger.triggerRef);
       const wake = recovery?.turnId === turn.id ? wakes.find((candidate) => candidate.id === trigger.wakeId) : null;
-      return wake?.agent === thread.agent && wake.goalId === goal.id ? [wake] : [];
+      const sameTarget=goalFailure?wake?.targetKind==="goal"&&wake.goalId===goal!.id:wake?.targetKind==="specialist"&&wake.specialistRole===sourceWake.specialistRole;
+      return wake?.agent === thread.agent && sameTarget ? [wake] : [];
     }).sort((left, right) => right.enqueuedSeq - left.enqueuedSeq)[0];
     if (recoveryWake?.status === "queued" || recoveryWake?.status === "claimed") { views.push({ ...base, state: "queued", actionable: false }); continue; }
     if (recoveryWake?.status === "consumed" && recoveryWake.turnId) {
@@ -507,10 +515,10 @@ export function deriveRecoveryViews(ledger: Ledger): RecoveryView[] {
       views.push({ ...base, state, actionable: false });
       continue;
     }
+    const parent=goalFailure&&goal!.parentId?ledger.goal(goal!.parentId):null;
     const escalation = triggers.flatMap((trigger) => {
       const wake = trigger.triggerRef === childRetryExhaustedRef(turn.id) ? wakes.find((candidate) => candidate.id === trigger.wakeId) : null;
-      const target = wake?.goalId ? ledger.goal(wake.goalId) : null;
-      return wake && wake.agent === "ceo" && target?.parentId === null && target.owner === "ceo" && target.phase === "active" ? [wake] : [];
+      return wake?.targetKind==="goal"&&parent&&wake.agent===parent.owner&&wake.goalId===parent.id&&parent.phase==="active"?[wake]:[];
     }).find((wake) => wake.status === "queued" || wake.status === "claimed" || wake.status === "consumed");
     if (escalation) { views.push({ ...base, state: "escalated", actionable: false }); continue; }
     views.push({ ...base, state: "needed", actionable: true });

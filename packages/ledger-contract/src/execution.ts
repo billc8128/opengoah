@@ -6,6 +6,24 @@ export type ScheduleStatus = "pending" | "consumed" | "cancelled" | "superseded"
 export type GoalPhase = "active" | "paused" | "blocked" | "complete";
 export type TurnStatus = "in_progress" | "completed" | "failed" | "interrupted";
 export type TurnSourceKind = "human" | "goal" | "system";
+export type SpecialistRole = "verifier" | "audit";
+export type ExecutionTarget =
+  | { targetKind: "human"; agent: "ceo"; goalId: null; specialistRole: null }
+  | { targetKind: "goal"; agent: string; goalId: string; specialistRole: null }
+  | { targetKind: "specialist"; agent: string; goalId: null; specialistRole: SpecialistRole };
+export type ScheduleTarget = Exclude<ExecutionTarget, { targetKind: "human" }>;
+export type MailRoute =
+  | { routeKind: "goal"; goalId: string; specialistRole: null }
+  | { routeKind: "human_inbox"; goalId: null; specialistRole: null }
+  | { routeKind: "human_request"; goalId: null; specialistRole: null }
+  | { routeKind: "specialist_inbox"; goalId: null; specialistRole: SpecialistRole };
+export function humanTarget():Extract<ExecutionTarget,{targetKind:"human"}>{return{targetKind:"human",agent:"ceo",goalId:null,specialistRole:null};}
+export function goalTarget(agent:string,goalId:string):Extract<ExecutionTarget,{targetKind:"goal"}>{return{targetKind:"goal",agent,goalId,specialistRole:null};}
+export function specialistTarget(agent:string,role:SpecialistRole):Extract<ExecutionTarget,{targetKind:"specialist"}>{return{targetKind:"specialist",agent,goalId:null,specialistRole:role};}
+export function goalRoute(goalId:string):Extract<MailRoute,{routeKind:"goal"}>{return{routeKind:"goal",goalId,specialistRole:null};}
+export function humanInboxRoute():Extract<MailRoute,{routeKind:"human_inbox"}>{return{routeKind:"human_inbox",goalId:null,specialistRole:null};}
+export function humanRequestRoute():Extract<MailRoute,{routeKind:"human_request"}>{return{routeKind:"human_request",goalId:null,specialistRole:null};}
+export function specialistInboxRoute(role:SpecialistRole):Extract<MailRoute,{routeKind:"specialist_inbox"}>{return{routeKind:"specialist_inbox",goalId:null,specialistRole:role};}
 export type TurnItemType = "user_message" | "assistant_message" | "reasoning" | "tool_call" | "tool_result" | "plan" | "handoff";
 export type TurnItemStatus = "in_progress" | "completed" | "failed";
 export interface ThreadSnapshot { id: string; agent: string; parentThreadId: string | null; createdAt: string; updatedAt: string }
@@ -40,10 +58,9 @@ export interface WorkRecordUpdateRequest {
   sourceWakeId?: string;
 }
 export interface WorkRecordDiff { goalId: string; fromRevision: number; toRevision: number; text: string }
-export interface ScheduleSnapshot { id: string; agent: string; nextWakeAt: string; reason: string; setBy: string; status: ScheduleStatus; resolvedAt: string | null; goalId?: string }
-export interface WakeSnapshot {
+export type ScheduleSnapshot = ScheduleTarget & { id: string; nextWakeAt: string; reason: string; setBy: string; status: ScheduleStatus; resolvedAt: string | null };
+export type WakeSnapshot = ExecutionTarget & {
   id: string;
-  agent: string;
   /** Initial trigger retained for display and provenance. Runtime decisions use WakeTriggerSnapshot. */
   triggerRef: string;
   status: WakeStatus;
@@ -52,11 +69,10 @@ export interface WakeSnapshot {
   claimedAt: string | null;
   consumedAt: string | null;
   turnId: string | null;
-  goalId?: string;
-}
+};
 export interface WakeTriggerSnapshot { wakeId: string; agent: string; triggerRef: string; source: TurnSourceKind; status: WakeTriggerStatus; addedAt: string; resolvedAt: string | null }
 export type MailLevel = "fyi" | "decision" | "emergency";
-export interface MailSnapshot { id: string; to: string; from: string; level: MailLevel; goalId?: string; body: JsonValue; readAt: string | null }
+export type MailSnapshot = MailRoute & { id: string; to: string; from: string; level: MailLevel; body: JsonValue; readAt: string | null };
 export interface DelegationRequest {
   id: string;
   parentGoalId: string;

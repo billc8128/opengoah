@@ -36,7 +36,7 @@ Implemented and tested today:
 - Real runner subprocess boundary with sliding lease renewal, process-group termination, per-Agent exit barriers, optional runner-specific timeout, and stale-event rejection
 - Ordinary Human Turns return normal responses; Goal-bound Turns require a current Work Record revision and compact Goal Handoff
 - Goal Mail is acknowledged atomically with its successful Handoff; ordinary Human conversation never uses Mail or Wake
-- Injected clocks, schema v19 typed Mail routing, durable Wake trigger sets, revision-neutral Goal scheduling, and Turn-owned revision fencing, with indexed bounded queries and a public ledger conformance suite; earlier development schemas are intentionally rejected
+- Injected clocks, schema v20 discriminated execution/Mail routing, durable Wake trigger sets, revision-neutral Goal scheduling, and Turn-owned revision fencing, with indexed bounded queries and a public ledger conformance suite; earlier development schemas are intentionally rejected
 - Textual observation and verification methods executed by Agents with ordinary tools, plus trigger coalescing and FTS5 fact search
 - Official Pi 0.84.2 worker binding with `read`, `write`, `edit`, and `bash` for every Agent plus model-view-only mid-turn compaction
 - Durable textual Goal observation methods with root human confirmation, atomic child assignment, revision invalidation, replay, and evidence-backed completion
@@ -111,7 +111,7 @@ goah goal-complete first-goal --reason "observation passed" --evidence <seq>
 goah status
 ```
 
-`goah` starts the resident Supervisor when necessary and attaches the interactive CEO. `/model` opens the scoped model picker; `/login` and `/logout` manage credentials without replaying onboarding; `/setup` opens returning-user settings with `model`, `auth`, and `runner` sections. Unknown slash commands fail locally and never wake the CEO. `/goal ...` revises the active root and invalidates its old observation method; `/observe ...` confirms the replacement through human authority. `goah start` remains the explicit daemon command and `goah wake <agent>` queues a manual wake. `goah daemon status|logs|restart|stop` manages the resident process.
+`goah` starts the resident Supervisor when necessary and attaches the interactive CEO. `/model` opens the scoped model picker; `/login` and `/logout` manage credentials without replaying onboarding; `/setup` opens returning-user settings with `model`, `auth`, and `runner` sections. Unknown slash commands fail locally and never wake the CEO. `/goal ...` revises the active root and invalidates its old observation method; `/observe ...` confirms the replacement through human authority. `goah start` remains the explicit daemon command and `goah wake <agent> --goal <goalId>` targets manual Goal motion. `goah daemon status|logs|restart|stop` manages the resident process.
 
 Goah Core knows only Runner Profiles. Each Runner owns its provider/model/auth semantics. OAuth credentials stay in the Runner credential store; only the selected Turn's scoped credential crosses the private worker pipe, never Agent context or the Ledger.
 
@@ -203,7 +203,7 @@ Not guaranteed, by design honesty:
 
 | Milestone | Scope |
 |---|---|
-| v2 ledger kernel | ✅ stream-aware event schema, private projection metadata, required/ignorable events, SQLite schema v19, transaction fault injection |
+| v2 ledger kernel | ✅ stream-aware event schema, private projection metadata, required/ignorable events, SQLite schema v20, transaction fault injection |
 | resumable Thread + Turn transcript | ✅ durable Thread/Turn/Item projections, normalized Pi messages/tools/requests, compaction facts, replay and interrupted-tool repair |
 | Active Context | ✅ deterministic Markdown composition with evidence source sequences |
 | execution modules | ✅ Goal/Wake/Schedule/Mailbox/Handoff contracts are layered above the generic kernel; Schedule has a closed lifecycle and Action is deliberately deferred |
