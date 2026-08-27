@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Pi uses `beforeToolCall` to validate Handoff with Supervisor; blocked drafts become model-visible Tool errors, accepted drafts terminate with a token, and the original Assistant Message remains the sole readable-message fact.
+- Pi uses `beforeToolCall` to validate Handoff with Supervisor; blocked drafts become model-visible Tool errors, fatal revocation fences later batch tools, and PiRunnerAdapter feeds correctable issues back into its session instead of terminating.
 - Removed next-wake effects from Handoff and added typed Agent-only Mail routing; future motion uses schedule_wake.
 
 - Bounded Runner protocol line size and converted in-process session initialization failures into abnormal terminal results.

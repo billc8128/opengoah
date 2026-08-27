@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Added runner-agnostic Handoff validation issues/tokens and internal Runner control RPC; `TurnOutput` carries only an accepted token plus structured Handoff, and the duplicate `consumeWake` transition has been removed.
+- Added runner-agnostic Handoff validation issues/tokens and internal Runner control RPC; tokens omit transient Work Record revision, `TurnOutput` carries only the accepted token plus structured Handoff, and the duplicate `consumeWake` transition has been removed.
 - Inactive reassignment results may contain no Wake because paused/blocked Goals cannot schedule execution.
 - Added discriminated `ExecutionBinding`, `ScheduleBinding`, `TurnBinding`, and `MailRoute` contracts plus constructors; removed optional and inferred execution routing.
 

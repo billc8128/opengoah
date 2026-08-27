@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Made Goal output dual-channel without duplicate message authority: Pi validates Handoff drafts through `beforeToolCall`, correctable issues return to the live Agent, and successful commit references the existing readable Message via `response.committed`; Human-to-Goal retries rebuild Goal context.
+- Made Goal output dual-channel without duplicate message authority: all Runner adapters continue after correctable Handoff feedback, Pi blocks every post-revocation tool in the batch, and successful commit references the existing readable Message via `response.committed`; validation tokens allow later Work Record refinement.
 - Closed Turn admission under schema v23: removed the duplicate `consumeWake` API, restricted direct Turn creation to CEO Human Turns, fenced current Goal revision/owner/phase transactionally, enforced one Wake per Turn, and added typed Turn/Wake replay reducers.
 - Removed the unused Action/Connector aggregate so Runner Tool Calls are the sole execution vocabulary; simplified verification, CLI, TUI, Console, examples, and testkit accordingly.
 - Added terminal Schedule states with atomic Wake creation and Goal-revision supersession, plus a per-Agent Runner-exit barrier that prevents replacement Turn overlap.

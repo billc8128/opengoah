@@ -48,13 +48,17 @@ test("runner policy is external and a multi-step driver can hand off", async () 
   ]);
   const request: RunRequest = {
     ...requestBase, turn: goalTurn, context: {},
-    now: () => now, emit: () => undefined,rpc:async(method)=>method==="goal.handoff.validate"?{accepted:true,fatal:false,token:"accepted",goalId:"goal",goalRevision:0,recordRevision:1}:null,
+    now: () => now, emit: () => undefined,rpc:async(method)=>method==="goal.handoff.validate"?{accepted:true,fatal:false,token:"accepted",goalId:"goal",goalRevision:0}:null,
   };
   const handle = new PiRunnerAdapter(faux).prepare(request);
   handle.begin();
   const result = await handle.result;
   assert.equal(result.outcome, "handoff");
 });
+
+test("PiRunnerAdapter feeds correctable Handoff issues back and continues the session",async()=>{let steps=0;const feedback:string[]=[];let validations=0;const runner=new PiRunnerAdapter({createRunnerSession:async()=>({step:async()=>{steps+=1;return{handoff:{response:{content:`attempt ${steps}`},handoff:{outcome:"progress",evidence:[1]}}}},feedback:async(result)=>{feedback.push(result.issues[0]?.code??"");},close:async()=>undefined})});const request:RunRequest={...requestBase,turn:goalTurn,context:{},now:()=>execution.startedAt,emit:()=>undefined,rpc:async(method)=>{if(method!=="goal.handoff.validate")return null;validations+=1;return validations===1?{accepted:false,fatal:false,issues:[{code:"repair",message:"repair it"}]}:{accepted:true,fatal:false,token:"accepted",goalId:"goal",goalRevision:0};}};const handle=runner.prepare(request);handle.begin();const result=await handle.result;assert.equal(result.outcome,"handoff");assert.deepEqual({steps,validations,feedback},{steps:2,validations:2,feedback:["repair"]});});
+
+test("PiRunnerAdapter stops a revoked session without requesting another step",async()=>{let steps=0;let feedback=0;const runner=new PiRunnerAdapter({createRunnerSession:async()=>({step:async()=>{steps+=1;return{handoff:{response:{content:"stale"},handoff:{outcome:"progress",evidence:[1]}}}},feedback:async()=>{feedback+=1;},close:async()=>undefined})});const handle=runner.prepare({...requestBase,turn:goalTurn,context:{},now:()=>execution.startedAt,emit:()=>undefined,rpc:async()=>({accepted:false,fatal:true,issues:[{code:"revoked",message:"Goal changed"}]})});handle.begin();assert.equal((await handle.result).outcome,"abnormal");assert.deepEqual({steps,feedback},{steps:1,feedback:0});});
 
 test("an unbound Turn returns a normal assistant response without handoff", async () => {
   const request: RunRequest = { ...requestBase, execution:{...execution,source:"human",bindingKind:"human",goalId:null,goalRevision:null,specialistRole:null}, turn: { source: { kind: "human" } }, context: {}, now: () => "2026-08-18T00:00:00.000Z", emit: () => undefined };
@@ -186,6 +190,8 @@ test("the Pi worker rejects a legacy Goal request without live Handoff validatio
   const result = await handle.result;
   assert.equal(result.outcome, "abnormal");
 });
+
+test("fatal Handoff validation blocks later local tools in the same batch",async()=>{const root=mkdtempSync(join(tmpdir(),"goah-fatal-batch-"));const events:Array<{type:string;data:unknown}>=[];const runner=new ProcessRunner({command:process.execPath,args:[piWorkerPath()],cwd:root,env:{GOAH_PI_PROVIDER:"faux",GOAH_PI_MODEL:"faux-goah",GOAH_PI_FAUX_FATAL_BATCH:"1"}});const handle=runner.prepare({...requestBase,turn:goalTurn,context:{},now:()=>execution.startedAt,emit:(event)=>events.push(event),rpc:async(method)=>method==="goal.handoff.validate"?{accepted:false,fatal:true,issues:[{code:"goal_fence_changed",message:"Goal revision changed."}]}:null});handle.begin();const result=await handle.result;assert.equal(result.outcome,"abnormal");assert.equal(existsSync(join(root,"fatal.txt")),false);const write=events.find((event)=>event.type==="tool.completed"&&(event.data as {name?:unknown}).name==="write");assert.equal((write?.data as {isError?:unknown}|undefined)?.isError,true);});
 
 test("the Pi worker preserves provider error messages from empty assistant responses", async () => {
   const runner = new ProcessRunner({ command: process.execPath, args: [piWorkerPath()], env: { GOAH_PI_PROVIDER: "faux", GOAH_PI_MODEL: "faux-goah", GOAH_PI_FAUX_ERROR: "provider rejected the request" } });

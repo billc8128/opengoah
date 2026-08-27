@@ -97,7 +97,7 @@ export class Supervisor {
   readonly #handles = new Map<string, RunnerHandle>();
   readonly #executions=new Map<string,Promise<void>>();
   readonly #agentExecutions=new Map<string,Promise<void>>();
-  readonly #handoffValidations=new Map<string,{turnId:string;agent:string;attempt:number;leaseToken:string;goalId:string;goalRevision:number;recordRevision:number;message:string;handoff:AgentHandoff}>();
+  readonly #handoffValidations=new Map<string,{turnId:string;agent:string;attempt:number;leaseToken:string;goalId:string;goalRevision:number;message:string;handoff:AgentHandoff}>();
 
   #runner: Runner;
   constructor(readonly ledger: Ledger, runner: Runner, readonly clock: Clock, options: SupervisorOptions = {}) {
@@ -483,7 +483,7 @@ export class Supervisor {
     const record=this.ledger.workRecord(goal.id);if(!record||record.updatedInTurn!==turnId||record.goalRevision!==goal.revision)issues.push({code:"work_record_not_updated",message:"Update this Goal's Work Record in the current Turn before Handoff.",details:{goalId:goal.id,recordRevision:record?.recordRevision??null}});
     const evidence=Array.isArray(request.handoff?.evidence)?request.handoff.evidence:[];for(const seq of evidence)if(!Number.isInteger(seq)||!this.ledger.eventsSince(seq-1).some((event)=>event.seq===seq))issues.push({code:"evidence_not_found",message:`Evidence event ${String(seq)} does not exist in the Ledger.`,details:{seq}});
     if(issues.length)return{accepted:false,fatal:false,issues};
-    const token=randomUUID();this.#clearHandoffValidations(turnId);this.#handoffValidations.set(token,{turnId,agent,attempt:execution.attempt,leaseToken:execution.leaseToken!,goalId:goal.id,goalRevision:goal.revision,recordRevision:record!.recordRevision,message,handoff:{outcome:request.handoff.outcome,evidence:[...request.handoff.evidence]}});return{accepted:true,fatal:false,token,goalId:goal.id,goalRevision:goal.revision,recordRevision:record!.recordRevision};
+    const token=randomUUID();this.#clearHandoffValidations(turnId);this.#handoffValidations.set(token,{turnId,agent,attempt:execution.attempt,leaseToken:execution.leaseToken!,goalId:goal.id,goalRevision:goal.revision,message,handoff:{outcome:request.handoff.outcome,evidence:[...request.handoff.evidence]}});return{accepted:true,fatal:false,token,goalId:goal.id,goalRevision:goal.revision};
   }
   #clearHandoffValidations(turnId:string):void{for(const[token,value]of this.#handoffValidations)if(value.turnId===turnId)this.#handoffValidations.delete(token);}
 

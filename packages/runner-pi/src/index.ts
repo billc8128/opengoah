@@ -28,7 +28,7 @@ export interface PiStep {
   handoff?: {response:AssistantResponse;handoff:AgentHandoff};
   stopped?: boolean;
 }
-export interface PiRunnerSession { step(): Promise<PiStep>; close(): Promise<void> }
+export interface PiRunnerSession { step(): Promise<PiStep>; feedback?(validation:Exclude<HandoffValidationResult,{accepted:true}>):Promise<void>;close(): Promise<void> }
 export interface PiDriver { createRunnerSession(request: RunRequest): Promise<PiRunnerSession> }
 
 /** In-process adapter for tests and for use inside a ProcessRunner worker. */
@@ -61,7 +61,7 @@ export class PiRunnerAdapter {
         for (const trace of step.trace ?? []) request.emit(trace);
         if (step.response) return { outcome: "response", response: step.response };
         if (step.handoff) {
-          const validation=await request.rpc?.("goal.handoff.validate",{handoff:step.handoff.handoff,candidateMessage:step.handoff.response.content} as unknown as JsonValue) as unknown as HandoffValidationResult|undefined;if(!validation?.accepted)return{outcome:"abnormal",reason:validation&&!validation.accepted?validation.issues.map((issue)=>issue.message).join("; "):"Handoff validation is unavailable"};request.emit({type:"message.assistant.completed",data:{message:{id:`adapter:${request.execution.id}`,role:"assistant",content:[{type:"text",text:step.handoff.response.content}],stopReason:"toolUse"}}});const output:TurnOutput={validationToken:validation.token,handoff:step.handoff.handoff};assertTurnOutput(output);return { outcome: "handoff", output };
+          const validation=await request.rpc?.("goal.handoff.validate",{handoff:step.handoff.handoff,candidateMessage:step.handoff.response.content} as unknown as JsonValue) as unknown as HandoffValidationResult|undefined;if(!validation)return{outcome:"abnormal",reason:"Handoff validation is unavailable"};if(!validation.accepted){if(validation.fatal)return{outcome:"abnormal",reason:validation.issues.map((issue)=>issue.message).join("; ")};await runnerSession.feedback?.(validation);request.emit({type:"runner.handoff_rejected",data:{issues:validation.issues} as unknown as JsonValue});continue;}request.emit({type:"message.assistant.completed",data:{message:{id:`adapter:${request.execution.id}`,role:"assistant",content:[{type:"text",text:step.handoff.response.content}],stopReason:"toolUse"}}});const output:TurnOutput={validationToken:validation.token,handoff:step.handoff.handoff};assertTurnOutput(output);return { outcome: "handoff", output };
         }
         if (step.stopped) return { outcome: "abnormal", reason: request.turn.goalBinding ? "runner stopped without a readable response and valid handoff" : "runner stopped without a response" };
       }

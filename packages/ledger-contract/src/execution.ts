@@ -144,7 +144,7 @@ export interface GoalHandoff extends AgentHandoff { goalId: string; goalRevision
 export type Handoff = GoalHandoff;
 export interface HandoffValidationIssue { code:string;message:string;details?:JsonValue }
 export type HandoffValidationResult=
-  | {accepted:true;fatal:false;token:string;goalId:string;goalRevision:number;recordRevision:number}
+  | {accepted:true;fatal:false;token:string;goalId:string;goalRevision:number}
   | {accepted:false;fatal:boolean;issues:HandoffValidationIssue[]};
 export interface HandoffValidationRequest {handoff:AgentHandoff;candidateMessage:string}
 export interface TurnOutput { validationToken:string;handoff: AgentHandoff }
