@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Separated active Goal visibility from Turn commitment, made user priority trigger-based, removed Human Wakes, and moved explicit Goal control onto a directly committed CEO user Turn.
 - Human Turns that become Goal-bound rebuild Goal context on retry; live Handoff validation returns correctable issues to the Agent and binds accepted drafts to one-use tokens.
 - Uses typed Mail routes, reserves Human requests for CEO, commits effect-free Handoffs, scopes outcome context by Goal, and separates Team motion/outcome.
 - Child Agents now admit only owned Child Goal Turns, CEO admits only Human/owned Root Goal Turns, and unbound system execution is reserved for Verifier/Audit specialists.

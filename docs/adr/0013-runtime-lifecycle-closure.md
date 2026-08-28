@@ -1,6 +1,6 @@
 # ADR 0013: Runtime lifecycle closure
 
-Status: accepted
+Status: accepted; schema version statement superseded by ADR 0015
 Date: 2026-08-26
 
 ## Context

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Replaced Turn source/binding discriminants with Thread role, Turn trigger, visible Goal context, and optional Goal commitment; unified successful Runner results as response plus optional Handoff.
 - Added runner-agnostic Handoff attempts/issues/tokens and internal Runner control RPC; each result carries an attemptId, `TurnOutput` binds the current attempt/token plus Handoff, tokens omit transient Work Record revision, and the duplicate `consumeWake` transition has been removed.
 - Inactive reassignment results may contain no Wake because paused/blocked Goals cannot schedule execution.
 - Added discriminated `ExecutionBinding`, `ScheduleBinding`, `TurnBinding`, and `MailRoute` contracts plus constructors; removed optional and inferred execution routing.

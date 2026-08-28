@@ -1,7 +1,9 @@
 # ADR 0012: Unified Thread, Turn, and Item runtime
 
-Status: accepted
+Status: accepted; Turn source/binding fields superseded by ADR 0015
 Date: 2026-08-25
+
+ADR 0015 retains this ADR's unified execution identity while replacing `source` plus discriminated Turn binding with `triggerKind`, Thread role, visible Goal context, and optional Goal commitment.
 
 ## Context
 

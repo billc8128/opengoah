@@ -10,6 +10,7 @@
 
 ## Unreleased
 
+- TUI reconnect follows `user_message` Turns, provisional messages use commit state without completion-type inference, and `/goal` starts a directly committed CEO Turn.
 - Goal responses containing Handoff stay provisional in TUI until `response.committed`; failed drafts disappear from the main transcript while remaining durable in Turn history.
 - Removed `silencePolicy`; organizational waiting and follow-up are Agent decisions expressed with Handoff, Mail, and Schedule tools.
 - Updated terminal and welcome Handoff presentation to the declarative outcome/evidence contract.

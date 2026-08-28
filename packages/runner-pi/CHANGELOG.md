@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Pi now receives active Goal context independently from Goal commitment and returns one successful shape containing a readable response plus optional Handoff.
 - Pi uses `beforeToolCall` to validate Handoff with Supervisor; blocked drafts become model-visible Tool errors, fatal revocation fences later batch tools, and mandatory PiRunnerSession feedback carries correctable issues. Every adapter emits normalized provisional Handoff message metadata.
 - Removed next-wake effects from Handoff and added typed Agent-only Mail routing; future motion uses schedule_wake.
 

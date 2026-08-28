@@ -5,26 +5,22 @@ export type WakeTriggerStatus = "pending" | "resolved";
 export type ScheduleStatus = "pending" | "consumed" | "cancelled" | "superseded";
 export type GoalPhase = "active" | "paused" | "blocked" | "complete";
 export type TurnStatus = "in_progress" | "completed" | "failed" | "interrupted";
-export type TurnSourceKind = "human" | "goal" | "system";
+export type TurnTriggerKind = "user_message" | "wake";
 export type SpecialistRole = "verifier" | "audit";
-export type ExecutionBinding =
-  | { bindingKind: "human"; agent: "ceo"; goalId: null; specialistRole: null }
-  | { bindingKind: "goal"; agent: string; goalId: string; specialistRole: null }
-  | { bindingKind: "specialist"; agent: string; goalId: null; specialistRole: SpecialistRole };
-export type ScheduleBinding = Exclude<ExecutionBinding, { bindingKind: "human" }>;
+export type AgentRole = "child" | "ceo" | "verifier" | "audit";
+export type AutomaticTarget =
+  | { targetKind: "goal"; agent: string; goalId: string; specialistRole: null }
+  | { targetKind: "specialist"; agent: string; goalId: null; specialistRole: SpecialistRole };
 export type MailRoute =
   | { routeKind: "goal"; goalId: string; specialistRole: null }
   | { routeKind: "human_inbox"; goalId: null; specialistRole: null }
   | { routeKind: "human_request"; goalId: null; specialistRole: null }
   | { routeKind: "specialist_inbox"; goalId: null; specialistRole: SpecialistRole };
-export function humanBinding(): Extract<ExecutionBinding, { bindingKind: "human" }> {
-  return { bindingKind: "human", agent: "ceo", goalId: null, specialistRole: null };
+export function goalAutomaticTarget(agent: string, goalId: string): Extract<AutomaticTarget, { targetKind: "goal" }> {
+  return { targetKind: "goal", agent, goalId, specialistRole: null };
 }
-export function goalExecutionBinding(agent: string, goalId: string): Extract<ExecutionBinding, { bindingKind: "goal" }> {
-  return { bindingKind: "goal", agent, goalId, specialistRole: null };
-}
-export function specialistBinding(agent: string, role: SpecialistRole): Extract<ExecutionBinding, { bindingKind: "specialist" }> {
-  return { bindingKind: "specialist", agent, goalId: null, specialistRole: role };
+export function specialistAutomaticTarget(agent: string, role: SpecialistRole): Extract<AutomaticTarget, { targetKind: "specialist" }> {
+  return { targetKind: "specialist", agent, goalId: null, specialistRole: role };
 }
 export function goalRoute(goalId:string):Extract<MailRoute,{routeKind:"goal"}>{return{routeKind:"goal",goalId,specialistRole:null};}
 export function humanInboxRoute():Extract<MailRoute,{routeKind:"human_inbox"}>{return{routeKind:"human_inbox",goalId:null,specialistRole:null};}
@@ -32,24 +28,16 @@ export function humanRequestRoute():Extract<MailRoute,{routeKind:"human_request"
 export function specialistInboxRoute(role:SpecialistRole):Extract<MailRoute,{routeKind:"specialist_inbox"}>{return{routeKind:"specialist_inbox",goalId:null,specialistRole:role};}
 export type TurnItemType = "user_message" | "assistant_message" | "reasoning" | "tool_call" | "tool_result" | "plan" | "handoff";
 export type TurnItemStatus = "in_progress" | "completed" | "failed";
-export interface ThreadSnapshot { id: string; agent: string; parentThreadId: string | null; createdAt: string; updatedAt: string }
-export type TurnBinding =
-  | { bindingKind: "human"; goalId: null; goalRevision: null; specialistRole: null }
-  | { bindingKind: "goal"; goalId: string; goalRevision: number; specialistRole: null }
-  | { bindingKind: "specialist"; goalId: null; goalRevision: null; specialistRole: SpecialistRole };
-export function humanTurnBinding(): Extract<TurnBinding, { bindingKind: "human" }> {
-  return { bindingKind: "human", goalId: null, goalRevision: null, specialistRole: null };
-}
-export function goalTurnBinding(goalId: string, goalRevision: number): Extract<TurnBinding, { bindingKind: "goal" }> {
-  return { bindingKind: "goal", goalId, goalRevision, specialistRole: null };
-}
-export function specialistTurnBinding(role: SpecialistRole): Extract<TurnBinding, { bindingKind: "specialist" }> {
-  return { bindingKind: "specialist", goalId: null, goalRevision: null, specialistRole: role };
-}
-export type TurnSnapshot = TurnBinding & {
+export interface ThreadSnapshot { id: string; agent: string; role: AgentRole; parentThreadId: string | null; createdAt: string; updatedAt: string }
+export interface GoalCommitment { goalId: string; goalRevision: number }
+export function noGoalCommitment(): { goalId: null; goalRevision: null } { return { goalId: null, goalRevision: null }; }
+export function goalCommitment(goalId: string, goalRevision: number): GoalCommitment { return { goalId, goalRevision }; }
+export type TurnSnapshot = {
   id: string;
   threadId: string;
-  source: TurnSourceKind;
+  triggerKind: TurnTriggerKind;
+  goalId: string | null;
+  goalRevision: number | null;
   status: TurnStatus;
   attempt: number;
   error: JsonValue | null;
@@ -90,8 +78,8 @@ export interface WorkRecordUpdateRequest {
   sourceWakeId?: string;
 }
 export interface WorkRecordDiff { goalId: string; fromRevision: number; toRevision: number; text: string }
-export type ScheduleSnapshot = ScheduleBinding & { id: string; nextWakeAt: string; reason: string; setBy: string; status: ScheduleStatus; resolvedAt: string | null };
-export type WakeSnapshot = ExecutionBinding & {
+export type ScheduleSnapshot = AutomaticTarget & { id: string; nextWakeAt: string; reason: string; setBy: string; status: ScheduleStatus; resolvedAt: string | null };
+export type WakeSnapshot = AutomaticTarget & {
   id: string;
   /** Initial trigger retained for display and provenance. Runtime decisions use WakeTriggerSnapshot. */
   triggerRef: string;
@@ -102,7 +90,7 @@ export type WakeSnapshot = ExecutionBinding & {
   consumedAt: string | null;
   turnId: string | null;
 };
-export interface WakeTriggerSnapshot { wakeId: string; agent: string; triggerRef: string; source: TurnSourceKind; status: WakeTriggerStatus; addedAt: string; resolvedAt: string | null }
+export interface WakeTriggerSnapshot { wakeId: string; agent: string; triggerRef: string; source: "goal" | "system"; status: WakeTriggerStatus; addedAt: string; resolvedAt: string | null }
 export type MailLevel = "fyi" | "decision" | "emergency";
 export type MailSnapshot = MailRoute & { id: string; to: string; from: string; level: MailLevel; body: JsonValue; readAt: string | null };
 export interface DelegationRequest {
@@ -151,7 +139,6 @@ export interface TurnOutput { validationAttemptId:number;validationToken:string;
 export interface CommittedTurnOutput { handoff: GoalHandoff }
 export interface RunnerTraceEvent { type: string; data: JsonValue }
 
-export type AgentRole = "child" | "ceo" | "verifier" | "audit";
 export type AgentCapability = "ledger.search" | "mail.send" | "schedule.set" | "goal.put"
   | "team.list" | "goal.get" | "goal.create" | "goal.work" | "goal.delegate" | "goal.reassign" | "goal.revise" | "goal.pause" | "goal.resume" | "goal.complete" | "human.request"
   | "work_record.list" | "work_record.read" | "work_record.history" | "work_record.diff" | "work_record.search" | "work_record.update"
@@ -180,12 +167,11 @@ export interface RunnerConfigurator {
   summarize?(config: JsonValue): Array<{ label: string; value: string }>;
   runCommand?(command: string, args: string[], config: JsonValue, interaction: RunnerSetupInteraction): Promise<RunnerCommandResult>;
 }
-export type TurnSource = { kind: "human" } | { kind: "goal"; round: number } | { kind: "system"; reason: string };
-export interface GoalBinding { goalId: string; goalRevision: number }
-export interface TurnContext { source: TurnSource; goalBinding?: GoalBinding }
+export type TurnTrigger = { kind: "user_message" } | { kind: "wake"; reasons: string[] };
+export interface TurnContext { trigger: TurnTrigger; activeGoal: GoalSnapshot | null; goalCommitment: GoalCommitment | null }
 export interface AssistantResponse { content: string }
 export interface RunRequest { agent: string; execution: TurnSnapshot; sourceWake?: WakeSnapshot; sourceWakeTriggers?: WakeTriggerSnapshot[]; turn: TurnContext; context: JsonValue; now(): string; emit(event: RunnerTraceEvent): void; rpc?(method: RunnerRpcMethod, params: JsonValue): Promise<JsonValue> }
-export type RunnerCandidateResult = { outcome: "response"; response: AssistantResponse } | { outcome: "handoff"; output: TurnOutput } | { outcome: "abnormal"; reason: string };
+export type RunnerCandidateResult = { outcome: "completed"; response: AssistantResponse; handoff?: TurnOutput } | { outcome: "abnormal"; reason: string };
 export interface RunnerHandle { pid: number | null; begin(): void; result: Promise<RunnerCandidateResult>; steer?(message: string): Promise<void>; terminate(): Promise<void> }
 export interface Runner { readonly isolation: "process"; prepare(request: RunRequest): RunnerHandle; terminateProcess(pid: number, runnerProfileId?: string): Promise<void> }
 
@@ -195,6 +181,7 @@ export interface HandoffCommit { agent: string; turnId: string; sourceWakeId: st
 export interface Ledger extends EventStore {
   putThread(thread: ThreadSnapshot, actor: string): EventRecord;
   putTurn(turn: TurnSnapshot, actor: string): EventRecord;
+  commitTurnToGoal(turnId: string, goal: GoalCommitment, actor: string): TurnSnapshot;
   putTurnItem(item: TurnItemSnapshot, actor: string): EventRecord;
   thread(id: string): ThreadSnapshot | null;
   threads(): ThreadSnapshot[];
@@ -262,7 +249,7 @@ export function assertHandoff(value: Handoff): void {
   if (!value.goalId.trim() || !Number.isInteger(value.goalRevision) || value.goalRevision<0 || !Number.isInteger(value.recordRevision) || value.recordRevision<1) throw new Error("invalid Goal handoff");
 }
 export function assertAgentHandoff(value:AgentHandoff):void{if(!["progress", "waiting", "blocked", "completion_proposed"].includes(value.outcome)||!Array.isArray(value.evidence)||value.evidence.length===0)throw new Error("invalid Agent handoff");}
-export function assertTurnOutput(value:TurnOutput):void{if(!Number.isInteger(value.validationAttemptId)||value.validationAttemptId<=0||typeof value.validationToken!=="string"||!value.validationToken.trim())throw new Error("Goal Turn requires an accepted Handoff validation attempt and token");assertAgentHandoff(value.handoff);}
+export function assertTurnOutput(value:TurnOutput):void{if(!Number.isInteger(value.validationAttemptId)||value.validationAttemptId<=0||typeof value.validationToken!=="string"||!value.validationToken.trim())throw new Error("committed Turn requires an accepted Handoff validation attempt and token");assertAgentHandoff(value.handoff);}
 export function assertGoalSnapshot(value: GoalSnapshot): void {
   if (!value.objective.trim() || !value.owner.trim()) throw new Error("goal objective and owner are required");
   if (value.observationMethod !== null && !value.observationMethod.trim()) throw new Error("goal observation method cannot be blank");

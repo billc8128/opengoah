@@ -16,6 +16,7 @@ export type ControlRequest =
   | { op: "turn.steer"; message: string }
   | { op: "turn.interrupt"; turnId: string }
   | { op: "goal.start"; objective: string; id?: string }
+  | { op: "goal.interact"; objective: string; id?: string }
   | { op: "goal.update"; id: string; objective?: string; observationMethod?: string | null; verificationMethod?: string | null }
   | { op: "goal.observe"; id: string; observationMethod: string }
   | { op: "goal.transition"; id: string; phase: "paused" | "active" }
@@ -127,6 +128,7 @@ async function serve(socket: Socket, supervisor: Supervisor, ledger: Ledger, rel
 
 async function dispatch(request: ControlRequest, socket: Socket, supervisor: Supervisor, ledger: Ledger, reloadRuntime?: (configPath: string) => Promise<RuntimeSwap | undefined>, stop?: () => void): Promise<void> {
   if (request.op === "interact") { await interact(request.message, socket, supervisor, ledger); return; }
+  if (request.op === "goal.interact") { const accepted=await supervisor.startHumanGoalTurn(request.objective,request.id);write(socket,{type:"accepted",turnId:accepted.turnId,value:accepted as unknown as JsonValue});for await(const frame of turnFrames(accepted.turnId,ledger,()=>!socket.destroyed))write(socket,frame);socket.end();return; }
   if (request.op === "turn.attach") { for await (const frame of turnFrames(request.turnId, ledger, () => !socket.destroyed)) write(socket, frame); socket.end(); return; }
   let value: unknown;
   if (request.op === "daemon.stop") {
@@ -144,7 +146,7 @@ async function dispatch(request: ControlRequest, socket: Socket, supervisor: Sup
   else if (request.op === "goal.observe") value = supervisor.confirmObservationMethod(request.id, request.observationMethod);
   else if (request.op === "goal.transition") value = supervisor.transitionGoal(request.id, request.phase, "human");
   else if (request.op === "goal.complete") value = supervisor.completeGoal({ goalId: request.id, revision: requiredGoal(ledger, request.id).revision, reason: request.reason, evidence: request.evidence }, "human");
-  else if (request.op === "ceo.send") value = supervisor.sendToCeo({ message: request.message });
+  else if (request.op === "ceo.send") value = await supervisor.sendToCeo({ message: request.message });
   else if (request.op === "ceo.status") value = ceoStatus(ledger, supervisor);
   else if (request.op === "ceo.inbox") value = ledger.unreadMail("human");
   else if (request.op === "work.records") value = ledger.workRecords();

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { goalRoute,goalExecutionBinding,type EventRecord } from "goah-ledger-contract";
+import { goalRoute,goalAutomaticTarget,type EventRecord } from "goah-ledger-contract";
 import { composeActiveContext, selectRecoveryEvents, selectWorkingMemory } from "./context-view.js";
 
 function event(streamSeq: number, type: string, data: EventRecord["data"] = {}): EventRecord {
@@ -22,7 +22,7 @@ test("recovery context selects semantic failure facts instead of raw transcript 
   const selected = selectRecoveryEvents(events);
   assert.deepEqual(selected.map((item) => item.type), ["tool.called", "tool.completed", "transcript.interrupted"]);
   const view = composeActiveContext({
-    role: "child", capabilities: ["ledger.search"], systemPrompt: "worker", wake: { id: "retry", ...goalExecutionBinding("worker","goal"),triggerRef: "retry:failed", status: "consumed", attempt: 1, enqueuedSeq: 1, claimedAt:"2030-01-01T00:00:00.000Z",consumedAt:"2030-01-01T00:00:00.000Z",turnId:"turn" },wakeTriggers:[],
+    role: "child", capabilities: ["ledger.search"], systemPrompt: "worker", wake: { id: "retry", ...goalAutomaticTarget("worker","goal"),triggerRef: "retry:failed", status: "consumed", attempt: 1, enqueuedSeq: 1, claimedAt:"2030-01-01T00:00:00.000Z",consumedAt:"2030-01-01T00:00:00.000Z",turnId:"turn" },wakeTriggers:[],
     goals: [], mail: [], lastHandoff: null, teamHandoffs: [], team: [], recoveryEvents: selected,
   });
   assert.ok(view.text.length < 1_000);
@@ -45,11 +45,11 @@ test("working memory keeps the newest notes inside the budget without compacting
 test("active context renders working memory with evidence sequences", () => {
   const note = event(7, "memory.appended", { note: "integration tests fake-fail when the clock is mocked; approach A rejected: metric freshness" });
   const view = composeActiveContext({
-    role: "child", capabilities: ["memory.append"], systemPrompt: "worker", wake: { id: "w2", ...goalExecutionBinding("worker","goal"),triggerRef: "schedule:worker", status: "consumed", attempt: 1, enqueuedSeq: 1, claimedAt:"2030-01-01T00:00:00.000Z",consumedAt:"2030-01-01T00:00:00.000Z",turnId:"turn" },wakeTriggers:[],
+    role: "child", capabilities: ["memory.append"], systemPrompt: "worker", wake: { id: "w2", ...goalAutomaticTarget("worker","goal"),triggerRef: "schedule:worker", status: "consumed", attempt: 1, enqueuedSeq: 1, claimedAt:"2030-01-01T00:00:00.000Z",consumedAt:"2030-01-01T00:00:00.000Z",turnId:"turn" },wakeTriggers:[],
     goals: [], mail: [], lastHandoff: null, teamHandoffs: [], team: [], recoveryEvents: [], workingMemory: [note],
   });
   assert.match(view.text, /# Working memory\n\n- integration tests fake-fail[^\n]*\[event:7\]/);
   assert.equal(view.sourceSeqs.includes(7), true);
 });
 
-test("verification Mail is delivered through the bounded Incoming section",()=>{const view=composeActiveContext({role:"child",capabilities:["ledger.search"],systemPrompt:"worker",wake:{id:"w",...goalExecutionBinding("worker","goal"),triggerRef:"review",status:"consumed",attempt:1,enqueuedSeq:1,claimedAt:"2030-01-01T00:00:00.000Z",consumedAt:"2030-01-01T00:00:00.000Z",turnId:"turn"},wakeTriggers:[],goals:[],mail:[{id:"verification",to:"worker",from:"verifier",level:"decision",...goalRoute("goal"),body:{type:"verification_result",findings:[{body:{issue:"unsupported claim"}}]},readAt:null}],lastHandoff:null,teamHandoffs:[],team:[],recoveryEvents:[]});assert.match(view.text,/# Incoming[\s\S]*unsupported claim/);});
+test("verification Mail is delivered through the bounded Incoming section",()=>{const view=composeActiveContext({role:"child",capabilities:["ledger.search"],systemPrompt:"worker",wake:{id:"w",...goalAutomaticTarget("worker","goal"),triggerRef:"review",status:"consumed",attempt:1,enqueuedSeq:1,claimedAt:"2030-01-01T00:00:00.000Z",consumedAt:"2030-01-01T00:00:00.000Z",turnId:"turn"},wakeTriggers:[],goals:[],mail:[{id:"verification",to:"worker",from:"verifier",level:"decision",...goalRoute("goal"),body:{type:"verification_result",findings:[{body:{issue:"unsupported claim"}}]},readAt:null}],lastHandoff:null,teamHandoffs:[],team:[],recoveryEvents:[]});assert.match(view.text,/# Incoming[\s\S]*unsupported claim/);});

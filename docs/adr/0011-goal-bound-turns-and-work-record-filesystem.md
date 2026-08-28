@@ -1,6 +1,6 @@
 # ADR 0011: Goal-bound Turns and the Work Record filesystem
 
-Status: accepted; interaction transport superseded by ADR 0012
+Status: accepted; interaction transport superseded by ADR 0012 and Turn binding terminology superseded by ADR 0015
 Date: 2026-08-25
 
 ## Context

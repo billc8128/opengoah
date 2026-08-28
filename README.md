@@ -34,15 +34,15 @@ Implemented and tested today:
 - FIFO Wake scheduling with per-agent claim exclusion; Schedule has durable terminal states and atomically creates one Wake
 - Runner-owned local execution: non-software goals need no Git, while coding agents can use ordinary Git and worktree commands through their skills
 - Real runner subprocess boundary with sliding lease renewal, process-group termination, per-Agent exit barriers, optional runner-specific timeout, and stale-event rejection
-- Ordinary Human Turns return normal responses; Goal-bound Turns require both a readable assistant response and a current Work Record revision plus compact Goal Handoff
+- Every Turn uses one Runner loop; visible Goal context stays advisory until a Turn acquires a Goal commitment, which requires a readable response, current Work Record revision, and compact Goal Handoff
 - Goal Mail is acknowledged atomically with its successful Handoff; ordinary Human conversation never uses Mail or Wake
-- Injected clocks, schema v24 persisted execution bindings/Mail routing, one canonical Wake-to-Turn transition, durable Wake trigger sets, revision-neutral Goal scheduling, and Turn-owned revision fencing, with indexed bounded queries and a public ledger conformance suite; earlier development schemas are intentionally rejected
+- Injected clocks, schema v25 persisted Thread roles, unified Turn triggers/commitments, automatic targets and Mail routing, one canonical Wake-to-Turn transition, durable Wake trigger sets, revision-neutral Goal scheduling, and Turn-owned revision fencing, with indexed bounded queries and a public ledger conformance suite; earlier development schemas are intentionally rejected
 - Textual observation and verification methods executed by Agents with ordinary tools, plus trigger coalescing and FTS5 fact search
 - Official Pi 0.84.2 worker binding with `read`, `write`, `edit`, and `bash` for every Agent plus model-view-only mid-turn compaction
 - Durable textual Goal observation methods with root human confirmation, atomic child assignment, revision invalidation, replay, and evidence-backed completion
 - Interactive `goah` CEO shell over a resident Supervisor local control socket, including live goal revisions while Supervisor remains the only SQLite writer
 - Event-sourced Work Record filesystem: one versioned semantic document per Goal, organization-wide reads, ownership-checked CAS updates, history, diff, search, and deterministic migration from legacy Handoff/memory
-- CEO sole-entry interaction with explicit Human-authorized Goal binding, filesystem-first Goal onboarding, ledger-derived team roster, atomic delegation/reassignment, motion validation, concurrent Goal-owning Agents, and a read-only team dashboard
+- CEO sole-entry interaction with explicit Human-authorized Goal commitment, filesystem-first Goal onboarding, ledger-derived team roster, atomic delegation/reassignment, motion validation, concurrent Goal-owning Agents, and a read-only team dashboard
 - Transcript verifier plus global audit interfaces, atomic Mail delivery of findings to Agents/CEO, and precision/risk-weighted-recall evaluation
 - Repo-guardian reference application, systemd/launchd templates, and an accelerated 30-day replay/continuity soak
 - Bidirectional fenced RPC with role capabilities, executable CEO/verifier/audit prompts, versioned configuration, and singleton CLI controls
@@ -110,7 +110,7 @@ npm install --global @goah/cli --ignore-scripts && goah --version
 
 The global CLI is the default product path: after installation, `goah` works from any directory and initializes that directory as its local workspace. For TypeScript library integration instead, install `@goah/cli` in the project and use its documented subpath exports.
 
-The normal product flow is an ordinary CEO interaction. Greetings, questions, and bounded work do not create a Goal. Durable Human intent may be translated by CEO into `create_goal`, or created explicitly with `/goal`; from that point the Turn follows strict Goal, Work Record, observation, verification, and Handoff policy. Lower-level Goal controls remain available for inspection, extensions, and Human root authority:
+The normal product flow is an ordinary CEO interaction. Greetings, questions, and bounded work do not create a Goal. Every CEO Turn can see the active Root Goal as advisory context. Durable Human intent may be translated by CEO into `create_goal`, or created explicitly with `/goal`; once the Turn acquires a Goal commitment it follows strict Goal, Work Record, observation, verification, and Handoff policy. Lower-level Goal controls remain available for inspection, extensions, and Human root authority:
 
 ```bash
 goah goal-create --id root --owner ceo --objective "Coordinate the verified outcome"
@@ -123,7 +123,7 @@ goah goal-complete first-goal --reason "observation passed" --evidence <seq>
 goah status
 ```
 
-`goah` starts the resident Supervisor when necessary and attaches the interactive CEO. `/model` opens the scoped model picker; `/login` and `/logout` manage credentials without replaying onboarding; `/setup` opens returning-user settings with `model`, `auth`, and `runner` sections. Unknown slash commands fail locally and never wake the CEO. `/goal ...` revises the active root and invalidates its old observation method; `/observe ...` confirms the replacement through human authority. `goah start` remains the explicit daemon command and `goah wake <agent> --goal <goalId>` targets manual Goal motion. `goah daemon status|logs|restart|stop` manages the resident process.
+`goah` starts the resident Supervisor when necessary and attaches the interactive CEO. `/model` opens the scoped model picker; `/login` and `/logout` manage credentials without replaying onboarding; `/setup` opens returning-user settings with `model`, `auth`, and `runner` sections. Unknown slash commands fail locally and never wake the CEO. With no Root, `/goal ...` creates a committed user Turn directly in the CEO Thread; with an existing Root it revises that Root and invalidates its old observation method. `/observe ...` confirms the replacement through Human authority. `goah start` remains the explicit daemon command and `goah wake <agent> --goal <goalId>` targets manual Goal motion. `goah daemon status|logs|restart|stop` manages the resident process.
 
 Goah Core knows only Runner Profiles. Each Runner owns its provider/model/auth semantics. OAuth credentials stay in the Runner credential store; only the selected Turn's scoped credential crosses the private worker pipe, never Agent context or the Ledger.
 
@@ -155,9 +155,9 @@ Ark is not a built-in special case. If needed later, configure it as a Pi custom
 ```
             ┌──────────────────────────── supervisor (only resident process) ───────────────────────────┐
             │                                                                                           │
-  Human ────┼──────────────────────▶ Human Turn ─────────┬─▶ normal response                         │
-            │                                            └─▶ optional Goal binding                   │
-  Goal ─────┼─▶ Wake queued ─▶ claimed ─▶ Goal Turn ───────▶ Work Record + Handoff                    │
+  Human ────┼──────────────────────▶ user-message Turn ──┬─▶ normal response                         │
+            │                                            └─▶ optional Goal commitment                │
+  Goal ─────┼─▶ Wake queued ─▶ claimed ─▶ committed Turn ──▶ Work Record + Handoff                    │
             │       │                     │ lease / PID / fencing / retry / recovery                   │
             │       │ dedupe trigger      ▼                                                            │
             │       └──────────────▶ Wake consumed (`turnId`)                                          │
@@ -170,11 +170,11 @@ Ark is not a built-in special case. If needed later, configure it as a Pi custom
 
 One Goal Wake, step by step:
 
-1. A due pending `schedule` atomically becomes `consumed` while creating one queued `wake`; stale Goal bindings become `superseded`.
-2. Claiming it creates one Goal-bound Turn in the owner Agent's Thread. Human input starts or steers a Turn directly and never creates Wake or Mail.
+1. A due pending `schedule` atomically becomes `consumed` while creating one queued `wake`; unavailable Goal targets become `superseded`.
+2. Claiming it creates one Wake-triggered Turn in the owner Agent's Thread, with a Goal commitment when the target is a Goal. Human input starts or steers a Turn directly and never creates Wake or Mail.
 3. Turn owns Runner lease, fencing, PID, transcript, retry, interruption, and terminal state. `sourceWake` is provenance only.
-4. The Goal Turn receives Goal/Work Record context and runs the same Runner agent loop as a Human Turn.
-5. A successful Goal Turn must contain a readable Assistant Message, a current-Turn Work Record update, and an accepted compact Handoff; their working order is Agent-controlled.
+4. Every CEO Turn sees the active Root Goal as context; only a committed Turn receives the full Goal/Work Record operating context.
+5. A successful committed Turn must contain a readable Assistant Message, a current-Turn Work Record update, and an accepted compact Handoff; their working order is Agent-controlled.
 6. Future scheduling creates another Wake and therefore another Turn. Mail remains asynchronous communication only.
 7. Invalid execution fails the Turn; interrupted open Tool Calls receive explicit unknown results. A replacement Turn waits until the old Runner process exits. Committed Work Record history survives.
 
@@ -215,7 +215,7 @@ Not guaranteed, by design honesty:
 
 | Milestone | Scope |
 |---|---|
-| v2 ledger kernel | ✅ stream-aware event schema, typed replay reducers, private projection metadata, required/ignorable events, SQLite schema v24, transaction fault injection |
+| v2 ledger kernel | ✅ stream-aware event schema, typed replay reducers, private projection metadata, required/ignorable events, SQLite schema v25, transaction fault injection |
 | resumable Thread + Turn transcript | ✅ durable Thread/Turn/Item projections, normalized Pi messages/tools/requests, compaction facts, replay and interrupted-tool repair |
 | Active Context | ✅ deterministic Markdown composition with evidence source sequences |
 | execution modules | ✅ Goal/Wake/Schedule/Mailbox/Handoff contracts are layered above the generic kernel; Schedule has a closed lifecycle and Action is deliberately deferred |

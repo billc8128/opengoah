@@ -1,9 +1,9 @@
 # Goah Architecture
 
 Status: current
-Date: 2026-08-26
+Date: 2026-08-28
 
-Goah is a Goal-oriented Agent Harness with a normal interactive CEO surface. The complete Goal operating model is defined in [Goal-bound Agent Operating Model](./proposals/goal-bound-agent-operating-model.md). [ADR 0012](./adr/0012-unified-thread-turn-item-runtime.md) defines the unified Thread/Turn/Item runtime; [ADR 0013](./adr/0013-runtime-lifecycle-closure.md) closes Schedule, Runner-exit, projection, and external-effect boundaries.
+Goah is a Goal-oriented Agent Harness with a normal interactive CEO surface. The complete Goal operating model is defined in [Goal-bound Agent Operating Model](./proposals/goal-bound-agent-operating-model.md). [ADR 0012](./adr/0012-unified-thread-turn-item-runtime.md) defines the unified Thread/Turn/Item runtime; [ADR 0015](./adr/0015-goal-context-and-turn-commitment.md) separates visible Goal context from Turn commitment.
 
 ## Product boundary
 
@@ -17,17 +17,17 @@ CEO Thread
     └── Turn
         ├── user / reasoning / assistant Items
         ├── tool call / result Items
-        └── optional Goal binding
+        └── optional Goal commitment
               ├── Work Record revision
               ├── Child Goal organization
               └── compact Goal Handoff
 
-Goal ── Wake ──► Goal-bound Turn in the owner's Thread
+Goal ── Wake ──► committed Turn in the owner's Thread
 
 Supervisor + Ledger ──► Runner-owned agent loop
 ```
 
-Ordinary interaction is not weakened Goal execution; it is an unbound surface. Once a Turn acquires a Goal binding, strict Goal invariants apply.
+Ordinary interaction is not weakened Goal execution. Every CEO Turn can see the active Root Goal, but strict Goal invariants apply only after the Turn acquires an explicit Goal commitment.
 
 ## Layers
 
@@ -52,7 +52,7 @@ Current projections are rebuilt from events:
 - Wakes
 - Mailbox
 
-Handoff remains an event-level control result rather than a current-state projection. It never replaces user-readable prose: the Agent writes the Assistant Message, while Handoff carries only outcome and evidence. Each validation creates a monotonically increasing Turn-local `attemptId` and invalidates every older token before it can return accepted, rejected, or fatal. Pi intercepts Handoff with `beforeToolCall`; every Goal-capable Runner session must implement feedback-and-continue. Supervisor returns correctable invariant violations as Tool feedback and reserves hard termination for authority/fencing loss; once revoked, all later tools in that batch are blocked. Runner traces explicitly mark `completionIntent` and `commitState`, so UI never infers protocol state from provider content blocks. A successful commit atomically marks the existing Message committed, records Handoff, acknowledges Mail, and closes the Turn without imposing a working-order policy. Tokens bind attempt, Turn/lease, Goal fence, Message, and Handoff—not a transient Work Record revision; commit injects the final current-Turn record revision.
+Handoff remains an event-level control result rather than a current-state projection. It never replaces user-readable prose: the Agent writes the Assistant Message, while Handoff carries only outcome and evidence. Each validation creates a monotonically increasing Turn-local `attemptId` and invalidates every older token before it can return accepted, rejected, or fatal. Pi intercepts Handoff with `beforeToolCall`; every Goal-capable Runner session must implement feedback-and-continue. Supervisor returns correctable invariant violations as Tool feedback and reserves hard termination for authority/fencing loss; once revoked, all later tools in that batch are blocked. Runner traces explicitly mark Message `commitState`, so UI never infers protocol state from provider content blocks. A successful commit atomically marks the existing Message committed, records Handoff, acknowledges Mail, and closes the Turn without imposing a working-order policy. Tokens bind attempt, Turn/lease, Goal fence, Message, and Handoff—not a transient Work Record revision; commit injects the final current-Turn record revision.
 
 Every Goal lifecycle mutation has exactly one authoritative `goal.changed` event. The event carries operation, previous revision, complete next snapshot, reason, evidence, authority, and optional source Turn/Wake/idempotency key; the Goal table is rebuilt directly from those same events. Only the projection name is stored in private SQLite metadata; each typed event carries one authoritative snapshot. Raw and Runner events cannot carry projection writes, even when their business data contains fields named `projection` or `snapshot`. Replay validates event type, revision chain, evidence order, authority, causal Turn/Wake binding, and idempotency keys before applying a snapshot.
 
@@ -64,15 +64,15 @@ Supervisor is a control plane, not the organization's decision maker. It may rec
 
 Rejected Goal mutations have no execution side effects. A successful revision or reassignment commits its new fence before the old Turn is interrupted; reassignment also holds a Goal-level termination barrier so the new owner cannot start before the old Runner physically exits. The canonical current Root is the sole non-complete CEO Root returned by Supervisor read models—TUI and Console never infer it from Goal array order.
 
-Supervisor admits only three execution classes: CEO Human interaction, an owner executing its own Goal, and an unbound Verifier/Audit specialist run. Exactly the `ceo` Agent has the CEO role. CEO owns Root Goals and never Child Goals; every Child owner is distinct from its parent owner and every Child Turn is Goal-bound. Invalid combinations such as Child+Human, Child+unbound system, CEO+Child Goal, or specialist+Goal are cancelled before a Runner starts. A configured Agent prompt replaces the default for its legal class. Runners append only their output-protocol constraint; they do not select a second organizational role.
+Supervisor admits one Turn model under stable Thread roles. Exactly the `ceo` Agent has the CEO role and is the only direct user-facing Thread. CEO owns Root Goals and never Child Goals; every Child owner is distinct from its parent owner and every Child Turn starts with a commitment to its owned Child Goal. Verifier/Audit Threads are Wake-triggered and uncommitted. Invalid combinations such as Child+user trigger, Child+uncommitted Wake, CEO+Child commitment, or specialist+Goal commitment are cancelled before a Runner starts. A configured Agent prompt replaces the default for its legal role; commitment adds only the Goal output constraint.
 
-Wake status is scheduling-only: `queued → claimed → consumed`, with `cancelled` as the pending terminal path. Each Wake owns a durable trigger set; every trigger records source (`human|goal|system`) and `pending|resolved` state. Goal motion carries only `goalId`; queued motion survives Goal revisions, and Turn admission reads the current active Goal and freezes its current `goalRevision`. Coalescing never crosses Goal ids. Turn source and authority are derived only from pending triggers. Claiming is blocked while any Human Turn is active. Once the Turn is durably created, Wake records its `turnId` and resolves its triggers.
+Wake status is scheduling-only: `queued → claimed → consumed`, with `cancelled` as the pending terminal path. Each Wake owns a durable trigger set; every trigger records source (`goal|system`) and `pending|resolved` state. Goal motion carries only `goalId`; queued motion survives Goal revisions, and Turn admission reads the current active Goal and freezes its current `goalRevision`. Coalescing never crosses Goal ids. Human input never creates a Wake. Claiming is blocked while any `user_message` Turn is active. Once the Turn is durably created, Wake records its `turnId` and resolves its triggers.
 
-Execution routing is explicit rather than inferred from optional fields, source strings, or Agent names. Schema v24 stores the same discriminated `ExecutionBinding` on Wake, Schedule, and the admitted Turn: `human(ceo)`, `goal(agent, goalId)`, or `specialist(agent, verifier|audit)`. A Goal Turn additionally freezes `goalRevision`; a Human Turn may atomically become Goal-bound when CEO creates, resumes, or selects a Root Goal. Every other Turn binding is immutable. New automatic Turns have exactly one admission path, `startTurnFromWake`; direct `putTurn` creation is limited to CEO Human Turns. Recovery, Verification, stop, replay, and Wake consumption read this persisted binding instead of reconstructing intent from `goalId` or conventional names. Mail separately stores one `MailRoute`: `goal`, `human_inbox`, `human_request`, or `specialist_inbox`. SQLite CHECK/UNIQUE constraints, typed replay reducers, Ledger admission, and Supervisor profile admission validate the relevant discriminants and current Goal fence.
+Turn routing is explicit without classifying Turns. Schema v25 stores Agent role on Thread, `user_message|wake` trigger on Turn, and an optional immutable Goal commitment fence on Turn. Wake and Schedule keep a discriminated automatic target of `goal(agent, goalId)` or `specialist(agent, verifier|audit)`; Human input starts or steers a CEO Turn directly and never creates a Wake. Goal-targeted admission freezes the current `goalRevision`. Recovery, Verification, stop, replay, and Wake consumption read Thread role, Turn trigger, commitment, and automatic target rather than reconstructing intent from Agent names. Mail separately stores one `MailRoute`: `goal`, `human_inbox`, `human_request`, or `specialist_inbox`.
 
 Schedule has its own durable lifecycle: `pending → consumed|cancelled|superseded`. Creating the Wake and consuming the Schedule is one transaction. Goal revisions do not invalidate future motion: a due Schedule targets the current Goal. Moving a Goal out of active phase or changing its owner mechanically cancels its queued/claimed Wakes and supersedes its pending Schedules in the same Goal-change transaction.
 
-Mail routing is envelope metadata, never business JSON. Agent-to-Agent Mail requires `goalId`; the route must name a Goal currently owned by the recipient, and a Goal Turn receives only Mail routed to that Goal. Active routed Mail may trigger that owner's Goal Turn. Routed Mail for a paused/blocked Goal remains unread without motion until the parent explicitly resumes the Goal. Unrouted Human Mail may open a CEO Human interaction; unrouted Verification/Audit results remain in the CEO inbox for the next legal interaction and do not create a CEO system Turn. Unknown recipients are rejected, and Agent Mail cannot address Human. Handoff contains only declarative outcome/evidence, while Mail and Schedule effects are explicit Ledger facts. Reassigning an inactive Goal changes ownership and records routed decision Mail atomically, but returns no Wake.
+Mail routing is envelope metadata, never business JSON. Agent-to-Agent Mail requires `goalId`; the route must name a Goal currently owned by the recipient, and a committed Turn receives only Mail routed to that Goal. Active routed Mail may trigger that owner's next committed Turn. Routed Mail for a paused/blocked Goal remains unread without motion until the parent explicitly resumes the Goal. Verification/Audit results remain in the CEO inbox for the next direct interaction and do not create a CEO system Turn. Unknown recipients are rejected, and Agent Mail cannot address Human. Handoff contains only declarative outcome/evidence, while Mail and Schedule effects are explicit Ledger facts. Reassigning an inactive Goal changes ownership and records routed decision Mail atomically, but returns no Wake.
 
 Team read models keep mechanical `motion` separate from declarative `lastOutcome`; neither field drives Supervisor policy.
 
@@ -82,12 +82,12 @@ Each Agent has one execution lane. A terminal Turn revokes Ledger authority imme
 
 ### Runner
 
-Receives a `RunRequest` containing Turn identity, source, optional Goal binding, bounded context, Runner Profile, trace sink, and role-scoped RPC. It emits normalized Turn Items and runner terminal events. Supervisor validates policy and commits the Turn terminal status.
+Receives a `RunRequest` containing Turn identity, trigger, visible Goal, optional Goal commitment, bounded context, Runner Profile, trace sink, and role-scoped RPC. It emits normalized Turn Items and runner terminal events. Every successful result has a readable response and may carry a Handoff; Supervisor requires Handoff exactly when the Turn is committed.
 
 ## Core invariants
 
 1. Ledger is the only durable fact authority; projections are disposable.
-2. Every Goal-bound Turn updates its Goal Work Record under the current Goal revision.
+2. Every committed Turn updates its Goal Work Record under the current Goal revision.
 3. Every Child Agent owns a Child Goal with observation and verification methods.
 4. CEO owns Root Goals only; parent and Child Goals always have distinct owners.
 5. Every Child Turn is Goal-bound to a Child Goal currently owned by that Agent.
@@ -95,7 +95,7 @@ Receives a `RunRequest` containing Turn identity, source, optional Goal binding,
 7. Human authorizes Root purpose and final completion.
 8. CEO controls Child Goal decomposition, ownership, verification, and completion through parent authority, not Child ownership.
 9. Goal Handoff points to Work Record revision instead of duplicating semantic prose.
-10. An in-progress Human Turn prevents new automatic Goal Turns from starting.
+10. An in-progress `user_message` Turn prevents new automatic Turns from starting.
 11. A single Agent never has overlapping Runner processes, including during preemption.
 12. Provider/model/auth and ordinary tool permission semantics stay inside each Runner.
 
@@ -115,7 +115,7 @@ Legacy narrative Handoffs and `memory.appended` facts remain readable. Schema v9
 
 - A stale Goal or Work Record revision is rejected.
 - Every Goal-bound RPC revalidates current phase, owner, revision, Agent Thread, and Turn binding; a Human or parent Goal mutation fences an older active Turn before it can perform more tools.
-- A Goal Turn without a current-Turn Work Record update is abnormal.
+- A committed Turn without a current-Turn Work Record update is abnormal.
 - Failed/interrupted Turns do not consume undelivered asynchronous Mail.
 - Reading Mail cancels a pending Wake only when every direct or coalesced trigger on that Wake is a now-resolved Mail; Schedule, Goal, and unread-Mail motion is preserved.
 - Committed Work Record versions survive later Turn failure.

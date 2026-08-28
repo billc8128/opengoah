@@ -138,7 +138,7 @@ async function main(): Promise<void> {
     } else if (command === "goal-start") {
       console.log(JSON.stringify(supervisor.startGoal(required("--objective"), option("--id") ?? undefined), null, 2));
     } else if (command === "ceo-send") {
-      console.log(JSON.stringify(supervisor.sendToCeo({ message: required("--message") }, "decision"), null, 2));
+      console.log(JSON.stringify(await supervisor.sendToCeo({ message: required("--message") }), null, 2));
     } else if (command === "ceo-status") {
       console.log(JSON.stringify({
         root:supervisor.currentRoot(),

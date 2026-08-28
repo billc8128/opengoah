@@ -1,6 +1,6 @@
 /** Full-screen goah TUI: streaming CEO transcript over the resident Supervisor control socket. */
 import { TuiAltScreen, Text, Markdown, Editor, ProcessTerminal, ScrollView, VStack, type Component, type MarkdownTheme } from "@earendil-works/pi-tui";
-import { controlAvailable, requestControl, streamControl, type ControlFrame } from "./control.js";
+import { controlAvailable, requestControl, streamControl, type ControlFrame, type ControlRequest } from "./control.js";
 import { loadConfig, readConsoleMetadata, readDefaultRunnerProfile } from "./index.js";
 import { switchModel, reloadDaemon, readRunnerDisplay } from "./live-config.js";
 import { welcomeSnapshot, renderWelcome } from "./welcome.js";
@@ -168,13 +168,13 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   const updateThinking = (activity: ThinkingActivity): void => { transcriptView.updateThinking(activity); tui.requestRender(); };
   const setWakeState = (mode: "queued" | "working"): void => { statusView.setText(statusText(mode, mode === "queued" ? 1 : queued.length)); tui.requestRender(); };
 
-  const send = async (message: string, showUser = true): Promise<void> => {
+  const send = async (message: string, showUser = true,request:ControlRequest={op:"interact",message}): Promise<void> => {
     busy.active = true;
     const controller = new AbortController(); activeStream = controller;
     statusView.setText(statusText("working", queued.length));
     if (showUser) { transcriptView.addUser(message); tui.requestRender(); }
     try {
-      await streamControl(stateDir, { op: "interact", message }, (frame) => { if (frame.type === "accepted") activeInteractionTurnId = frame.turnId; if (frame.type === "result" || frame.type === "error") activeInteractionTurnId = null; renderFrame(frame, push, appendLive, commitLive, pushResponse, updateTool, updateThinking, setWakeState, () => commitLive("")); }, controller.signal);
+      await streamControl(stateDir, request, (frame) => { if (frame.type === "accepted") activeInteractionTurnId = frame.turnId; if (frame.type === "result" || frame.type === "error") activeInteractionTurnId = null; renderFrame(frame, push, appendLive, commitLive, pushResponse, updateTool, updateThinking, setWakeState, () => commitLive("")); }, controller.signal);
     } catch (error) {
       transcriptView.clearLiveMarkdown();
       transcriptView.updateThinking({ phase: "clear", text: "" });
@@ -283,7 +283,7 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
     if (action === "login") { void launchRunnerCommand("auth", ["login", text.slice("/login".length).trim()].filter(Boolean)); return; }
     if (action === "logout") { void launchRunnerCommand("auth", ["logout", text.slice("/logout".length).trim()].filter(Boolean)); return; }
     if (action === "setup") { void launchSetup(text); return; }
-    if (action === "goal") { void slashGoal(text, stateDir, push).finally(() => refreshGoalBar(stateDir, goalView, tui)); return; }
+    if (action === "goal") { void slashGoal(text, stateDir, push,(objective)=>send(`/goal ${objective}`,true,{op:"goal.interact",objective})).finally(() => refreshGoalBar(stateDir, goalView, tui)); return; }
     if (action === "unknown") { push(errorLine(`Unknown command: ${text.split(/\s+/, 1)[0]}. Use /help to list commands.`)); return; }
     if (action === "steer") { submitSteer(text); return; }
     if (action === "send") void send(text);
@@ -306,7 +306,7 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
 }
 
 export function findLiveTurnId(turns: Array<Record<string, unknown>>): string | null {
-  const id = [...turns].reverse().find((turn) => turn.status === "in_progress" && turn.source === "human")?.id;
+  const id = [...turns].reverse().find((turn) => turn.status === "in_progress" && turn.triggerKind === "user_message")?.id;
   return typeof id === "string" ? id : null;
 }
 
@@ -387,7 +387,7 @@ export function renderFrame(frame: ControlFrame, push: (line: string) => void, a
     const message = data.message && typeof data.message === "object" ? data.message as Record<string, unknown> : {};
     if (message.stopReason === "error" || message.stopReason === "aborted") { clearLive(); return; }
     const text = messageText(message.content);
-    if(data.completionIntent==="handoff"){clearLive();return;}
+    if(data.commitState==="provisional"){clearLive();return;}
     if (text) commitLive(text);
   } else if(record.type==="response.committed"){
     if(typeof data.text==="string"&&data.text.trim())commitLive(data.text.trim());
@@ -462,7 +462,7 @@ async function stopCeoWake(stateDir: string, push: (line: string) => void): Prom
   } catch (error) { push(errorLine(error)); }
 }
 
-async function slashGoal(text: string, stateDir: string, push: (line: string) => void): Promise<void> {
+async function slashGoal(text: string, stateDir: string, push: (line: string) => void,startGoal?:(objective:string)=>Promise<void>): Promise<void> {
   const isGoal = text.startsWith("/goal ");
   const value = text.slice(isGoal ? 6 : 9).trim();
   try {
@@ -470,7 +470,8 @@ async function slashGoal(text: string, stateDir: string, push: (line: string) =>
     const root = status && typeof status === "object" && !Array.isArray(status) && (status as Record<string,unknown>).root && typeof (status as Record<string,unknown>).root === "object" ? (status as Record<string,unknown>).root as Record<string,unknown> : undefined;
     if (!root) {
       if (!isGoal) throw new Error("no active root goal");
-      const created = await requestControl(stateDir, { op: "goal.start", objective: value });
+      if(startGoal){await startGoal(value);return;}
+      const created = await requestControl(stateDir, { op: "goal.interact", objective: value });
       const goal = created && typeof created === "object" && !Array.isArray(created) ? (created as Record<string, unknown>).goal as Record<string, unknown> | undefined : undefined;
       push(`${tuiTheme.success("goal created")}  ${String(goal?.objective ?? value)}\n`);
       return;
