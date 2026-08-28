@@ -169,6 +169,7 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   const setWakeState = (mode: "queued" | "working"): void => { statusView.setText(statusText(mode, mode === "queued" ? 1 : queued.length)); tui.requestRender(); };
 
   const send = async (message: string, showUser = true,request:ControlRequest={op:"interact",message}): Promise<void> => {
+    activeStream?.abort();
     busy.active = true;
     const controller = new AbortController(); activeStream = controller;
     statusView.setText(statusText("working", queued.length));
@@ -176,11 +177,13 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
     try {
       await streamControl(stateDir, request, (frame) => { if (frame.type === "accepted") activeInteractionTurnId = frame.turnId; if (frame.type === "result" || frame.type === "error") activeInteractionTurnId = null; renderFrame(frame, push, appendLive, commitLive, pushResponse, updateTool, updateThinking, setWakeState, () => commitLive("")); }, controller.signal);
     } catch (error) {
+      if(activeStream!==controller)return;
       transcriptView.clearLiveMarkdown();
       transcriptView.updateThinking({ phase: "clear", text: "" });
       if (!controller.signal.aborted) push(errorLine(error));
     } finally {
-      if (activeStream === controller) activeStream = null;
+      if(activeStream!==controller)return;
+      activeStream = null;
       busy.active = false;
       await refreshGoalBar(stateDir, goalView, tui);
       statusView.setText(statusText(queuedTurnIds.length || queued.length ? "queued" : "ready", queuedTurnIds.length + queued.length));
@@ -193,9 +196,10 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
     const controller = new AbortController(); activeStream = controller;
     statusView.setText(statusText("queued", 1));
     try { await streamControl(stateDir, { op: "turn.attach", turnId }, (frame) => { if (frame.type === "result" || frame.type === "error") activeInteractionTurnId = null; renderFrame(frame, push, appendLive, commitLive, pushResponse, updateTool, updateThinking, setWakeState, () => commitLive("")); }, controller.signal); }
-    catch (error) { if (!controller.signal.aborted) push(errorLine(error)); }
+    catch (error) { if(activeStream===controller&&!controller.signal.aborted)push(errorLine(error)); }
     finally {
-      if (activeStream === controller) activeStream = null;
+      if(activeStream!==controller)return;
+      activeStream = null;
       busy.active = false;
       await refreshGoalBar(stateDir, goalView, tui);
       statusView.setText(statusText("ready"));
