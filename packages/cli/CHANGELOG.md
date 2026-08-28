@@ -8,8 +8,6 @@
 - Added one canonical current Root read model for TUI and Console, and bounded local control-protocol requests to 1 MB.
 - Documented install-failure recovery in the README: clearing leftover global state, refreshing the npm cache, and the `--ignore-scripts` last resort.
 
-## Unreleased
-
 - One Stream Coordinator now owns `/goal`, steering rollover, reconnect fencing, and transient transcript cleanup; rejected candidates preserve the active Turn while accepted replacement clears superseded text/thinking and closes orphaned running-tool rows.
 - TUI reconnect follows `user_message` Turns, provisional messages use commit state without completion-type inference, and `/goal` starts a directly committed CEO Turn.
 - Goal responses containing Handoff stay provisional in TUI until `response.committed`; failed drafts disappear from the main transcript while remaining durable in Turn history.
