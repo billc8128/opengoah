@@ -6,7 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { Agent, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxText, fauxToolCall, Type, type Message, type Provider } from "@earendil-works/pi-ai";
-import { TRANSCRIPT_FORMAT_VERSION, type AgentCapability, type AgentHandoff, type HandoffValidationResult, type JsonValue, type RunnerCandidateResult, type TranscriptMessage, type TurnOutput } from "goah-ledger-contract";
+import { normalizeAssistantText, TRANSCRIPT_FORMAT_VERSION, type AgentCapability, type AgentHandoff, type HandoffValidationResult, type JsonValue, type RunnerCandidateResult, type TranscriptMessage, type TurnOutput } from "goah-ledger-contract";
 import { runProcessWorker, type WorkerRpc } from "./index.js";
 import { createPiModel } from "./model-provider.js";
 
@@ -469,9 +469,9 @@ export function assistantResponseText(message: AgentMessage): string {
   if (value.role !== "assistant") return messageText(message);
   return value.content
     .filter((item) => item.type === "text")
-    .map((item) => item.text)
-    .join("\n")
-    .trim();
+    .map((item) => normalizeAssistantText(item.text))
+    .filter(Boolean)
+    .join("\n");
 }
 function sameHandoff(left:AgentHandoff,right:AgentHandoff):boolean{return left.outcome===right.outcome&&left.evidence.length===right.evidence.length&&left.evidence.every((value,index)=>value===right.evidence[index]);}
 function hasAgentToolCall(message:AgentMessage,name:string):boolean{return message.role==="assistant"&&message.content.some((item)=>item.type==="toolCall"&&item.name===name);}

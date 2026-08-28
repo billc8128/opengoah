@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifyTuiInput, findLiveTurnId, renderFrame, renderTuiHeader, renderUserMessage } from "./tui.js";
+import { classifyTuiInput, ConversationView, findLiveTurnId, renderFrame, renderTuiHeader, renderUserMessage, StreamCoordinator } from "./tui.js";
 import { stripAnsi } from "./tui-theme.js";
 
 test("TUI routes ordinary text, queued follow-ups, and commands", () => {
@@ -44,6 +44,8 @@ test("TUI renders streamed assistant text and tool completion", () => {
   assert.equal(lines.at(-1), "final answer");
 });
 
+test("TUI commits canonical assistant blocks instead of raw provider whitespace",()=>{let committed="";renderFrame({type:"event",event:{type:"message.assistant.completed",data:{message:{content:[{type:"text",text:"  first\r\n"},{type:"text",text:" second  \n"}]},commitState:"committed"}}},()=>undefined,()=>undefined,(text)=>{committed=text;});assert.equal(committed,"first\nsecond");});
+
 test("TUI keeps a normalized Handoff response provisional until Supervisor commits it",()=>{const committed:string[]=[];let cleared=0;const render=(frame:Parameters<typeof renderFrame>[0])=>renderFrame(frame,()=>undefined,()=>undefined,(text)=>committed.push(text),()=>undefined,()=>undefined,()=>undefined,()=>undefined,()=>{cleared+=1;});const message={content:[{type:"text",text:"Goal completed."}]};render({type:"event",event:{type:"message.assistant.completed",data:{message,commitState:"provisional"}}});assert.deepEqual(committed,[]);assert.equal(cleared,1);render({type:"event",event:{type:"response.committed",data:{text:"Goal completed.",messageItemId:"m"}}});assert.deepEqual(committed,["Goal completed."]);});
 
 test("TUI discards assistant text from a failed completed message", () => {
@@ -79,3 +81,20 @@ test("user messages render as unlabeled full-width background blocks", () => {
   assert.deepEqual(rendered.map(stripAnsi), [" ".repeat(30), `  你好${" ".repeat(24)}`, " ".repeat(30)]);
   assert.doesNotMatch(rendered.join("\n"), /you/i);
 });
+
+test("stream takeover marks orphaned running tools as failed", () => {
+  const view = new ConversationView([]);
+  view.updateTool({ kind: "tool", callId: "old", name: "read", detail: "src/index.ts", status: "running" });
+  view.updateTool({ kind: "tool", callId: "done", name: "write", detail: "out.txt", status: "done" });
+  view.stopRunningTools();
+  const rendered = stripAnsi(view.render(80).join("\n"));
+  assert.match(rendered, /failed\s+read/);
+  assert.match(rendered, /done\s+write/);
+  assert.doesNotMatch(rendered, /running\s+read/);
+});
+
+test("stream ownership preserves the active stream on rejection and fences it after acceptance",()=>{const streams=new StreamCoordinator();const first=new AbortController();const rejected=new AbortController();const accepted=new AbortController();assert.equal(streams.begin(first).owns,true);assert.equal(streams.begin(rejected).owns,false);streams.reject(rejected);assert.equal(streams.isCurrent(first),true);assert.equal(first.signal.aborted,false);assert.equal(streams.begin(accepted).owns,false);streams.accept(accepted);assert.equal(first.signal.aborted,true);assert.equal(streams.isCurrent(first),false);assert.equal(streams.isCurrent(accepted),true);streams.retire();assert.equal(accepted.signal.aborted,true);assert.equal(streams.active,null);});
+
+test("a newer durable Turn supersedes both active and pending streams before attach",()=>{const streams=new StreamCoordinator();const active=new AbortController();const pending=new AbortController();const attached=new AbortController();streams.begin(active);streams.begin(pending);streams.supersede();assert.equal(active.signal.aborted,true);assert.equal(pending.signal.aborted,true);assert.equal(streams.hasPending,false);assert.equal(streams.begin(attached).owns,true);assert.equal(streams.isCurrent(attached),true);});
+
+test("ending a transient Turn clears partial prose and thinking while closing running tools",()=>{const view=new ConversationView([]);view.appendLiveMarkdown("partial answer");view.updateThinking({phase:"delta",text:"private"});view.updateTool({kind:"tool",callId:"call",name:"read",detail:"file",status:"running"});view.endTransientTurn();const rendered=stripAnsi(view.render(80).join("\n"));assert.doesNotMatch(rendered,/partial answer|private|running/);assert.match(rendered,/failed\s+read/);});

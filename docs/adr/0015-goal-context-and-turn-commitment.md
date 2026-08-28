@@ -75,13 +75,13 @@ Supervisor requires Handoff exactly when the persisted Turn has a Goal commitmen
 
 ## Consequences
 
-- User priority derives from `triggerKind`, not Goal commitment.
+- User priority derives from `triggerKind`, while recovery responsibility derives from Goal commitment.
 - Root Human authority derives from a direct user-triggered CEO Turn, not a Human Turn class.
 - Prompt selection is role-first. Goal protocol is an additive commitment constraint.
 - Goal queries can see the active Goal without accidentally entering Goal execution.
 - Child Agents remain Goal-only and Specialists remain unbound without creating separate Turn kinds.
 - Wake, Schedule, Mail, Work Record, Goal revision fencing, Handoff validation, leases, recovery, and one-Agent execution lanes remain in force.
-- Development schema v25 is rebuilt rather than migrated.
+- Development schema v27 is rebuilt rather than migrated; it makes the persisted Thread role canonical, reserves `ceo` bidirectionally for the canonical CEO Agent, admits Human replacement as one transaction, and retains terminal Runner cleanup ownership until release.
 
 ## Superseded decisions
 

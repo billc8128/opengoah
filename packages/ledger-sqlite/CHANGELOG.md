@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Schema v25 persists Thread role, unified Turn trigger/commitment, and Goal/Specialist automatic targets; Human input no longer has a Wake representation.
+- Schema v27 atomically admits Human Turn replacement, retains terminal Runner cleanup ownership until explicit release, persists canonical Thread role, reserves the unique CEO identity, and keeps Human input free of Wake representation.
 - Schema v24 makes Wake-to-Turn linkage unique, restricts new direct Turns to CEO Human interactions, validates the current Goal fence at atomic Wake admission, and replays Turn/Wake state through typed transition reducers.
 - Goal completion atomically marks an existing readable Assistant Item committed, records the exact Handoff, acknowledges Mail, and closes the Turn; replay validates the fact set without an adjacency requirement.
 - Schema v19 stores typed Mail Goal routes and exposes Goal-scoped latest Handoff queries.

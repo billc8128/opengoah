@@ -170,17 +170,22 @@ export interface RunnerConfigurator {
 export type TurnTrigger = { kind: "user_message" } | { kind: "wake"; reasons: string[] };
 export interface TurnContext { trigger: TurnTrigger; activeGoal: GoalSnapshot | null; goalCommitment: GoalCommitment | null }
 export interface AssistantResponse { content: string }
+/** Canonical user-visible assistant prose. Raw provider events remain unchanged. */
+export function normalizeAssistantText(text: string): string { return text.replace(/\r\n?/g, "\n").trim(); }
 export interface RunRequest { agent: string; execution: TurnSnapshot; sourceWake?: WakeSnapshot; sourceWakeTriggers?: WakeTriggerSnapshot[]; turn: TurnContext; context: JsonValue; now(): string; emit(event: RunnerTraceEvent): void; rpc?(method: RunnerRpcMethod, params: JsonValue): Promise<JsonValue> }
 export type RunnerCandidateResult = { outcome: "completed"; response: AssistantResponse; handoff?: TurnOutput } | { outcome: "abnormal"; reason: string };
 export interface RunnerHandle { pid: number | null; begin(): void; result: Promise<RunnerCandidateResult>; steer?(message: string): Promise<void>; terminate(): Promise<void> }
 export interface Runner { readonly isolation: "process"; prepare(request: RunRequest): RunnerHandle; terminateProcess(pid: number, runnerProfileId?: string): Promise<void> }
 
 export interface HandoffCommit { agent: string; turnId: string; sourceWakeId: string | null; mailIds: string[]; ts: string; output: CommittedTurnOutput; responseItemId:string;item: TurnItemSnapshot }
+export interface HumanTurnAdmissionRequest { thread:ThreadSnapshot;turn:TurnSnapshot;messageItem:TurnItemSnapshot;replaceTurnId:string|null;rootGoal?:GoalSnapshot }
+export interface HumanTurnAdmissionResult { turn:TurnSnapshot;replacedTurn:TurnSnapshot|null;goal:GoalSnapshot|null }
 
 /** Standard execution modules composed on top of the generic event store. */
 export interface Ledger extends EventStore {
   putThread(thread: ThreadSnapshot, actor: string): EventRecord;
   putTurn(turn: TurnSnapshot, actor: string): EventRecord;
+  admitHumanTurn(request:HumanTurnAdmissionRequest):HumanTurnAdmissionResult;
   commitTurnToGoal(turnId: string, goal: GoalCommitment, actor: string): TurnSnapshot;
   putTurnItem(item: TurnItemSnapshot, actor: string): EventRecord;
   thread(id: string): ThreadSnapshot | null;
@@ -209,6 +214,7 @@ export interface Ledger extends EventStore {
   appendTurnEvent(input: EventInput, leaseToken: string): EventRecord;
   repairTurnAttempt(id:string,reason:string,now:string,actor:string):TurnItemSnapshot[];
   finishTurn(id:string,status:"completed"|"failed"|"interrupted",error:JsonValue|null,now:string,actor:string,mailIds?:string[]):TurnSnapshot;
+  releaseTurnProcess(id:string,actor:string):TurnSnapshot;
   putMail(mail: MailSnapshot, actor: string, wakeId?: string): EventRecord;
   putMails(mail: MailSnapshot[], actor: string, wakeId?: string): EventRecord[];
   commitHandoff(commit: HandoffCommit): EventRecord;

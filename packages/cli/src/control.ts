@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { Supervisor } from "goah-supervisor";
 import type { ProcessRunner } from "goah-runner-pi";
 import type { SqliteLedger } from "goah-ledger-sqlite";
-import type { JsonValue, Ledger } from "goah-ledger-contract";
+import { normalizeAssistantText, type JsonValue, type Ledger } from "goah-ledger-contract";
 import { installedVersion } from "./update.js";
 
 export type ControlRequest =
@@ -193,7 +193,7 @@ function ceoStatus(ledger: Ledger, supervisor: Supervisor): JsonValue {
   return { root:supervisor.currentRoot(),roots: ledger.goals().filter((goal) => goal.parentId === null && goal.owner === "ceo"), team: supervisor.teamList(), pendingHuman: ledger.unreadMail("human"), recentCeoHandoffs: ledger.eventsSince(0, ["handoff.recorded"]).filter((event) => event.actor === "ceo").slice(-10) } as unknown as JsonValue;
 }
 function requiredGoal(ledger: Ledger, id: string) { const goal = ledger.goal(id); if (!goal) throw new Error("goal not found"); return goal; }
-function assistantEventText(value:JsonValue):string{if(!value||typeof value!=="object"||Array.isArray(value)||!value.message||typeof value.message!=="object"||Array.isArray(value.message))return"";const content=value.message.content;if(typeof content==="string")return content;if(!Array.isArray(content))return"";return content.map((item)=>item&&typeof item==="object"&&!Array.isArray(item)&&item.type==="text"&&typeof item.text==="string"?item.text:"").filter(Boolean).join("\n");}
+function assistantEventText(value:JsonValue):string{if(!value||typeof value!=="object"||Array.isArray(value)||!value.message||typeof value.message!=="object"||Array.isArray(value.message))return"";const content=value.message.content;if(typeof content==="string")return normalizeAssistantText(content);if(!Array.isArray(content))return"";return content.map((item)=>item&&typeof item==="object"&&!Array.isArray(item)&&item.type==="text"&&typeof item.text==="string"?normalizeAssistantText(item.text):"").filter(Boolean).join("\n");}
 export function isTurnPresentationEvent(type:string):boolean{return type.startsWith("message.")||type.startsWith("tool.")||type.startsWith("item.")||type.startsWith("turn.")||type==="response.committed"||type==="handoff.recorded"||type==="transcript.interrupted"||type==="transcript.completed";}
 function write(socket: Socket, frame: ControlFrame): void { socket.write(`${JSON.stringify(frame)}\n`); }
 

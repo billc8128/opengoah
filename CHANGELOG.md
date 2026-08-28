@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Unified all execution under one Turn shape: Thread persists Agent role, Turn persists `user_message|wake` trigger plus optional Goal commitment, active Root context is visible without creating responsibility, and Wake/Schedule retain only automatic Goal/Specialist targets under schema v25.
+- Unified all execution under one Turn shape: Thread persists canonical Agent role, Turn persists `user_message|wake` trigger plus optional Goal commitment, active Root context is visible without creating responsibility, and Wake/Schedule retain only automatic Goal/Specialist targets under schema v27; Human Turn replacement is atomic and terminal Turns retain Runner cleanup ownership until release.
 - Unified successful Runner results as readable response plus optional Handoff, made Human input direct-only, and made explicit `/goal` start a committed CEO user Turn without an intermediate Wake.
 - Made Goal output dual-channel without duplicate authority: every validation attempt invalidates older tokens, Goal Runner feedback is mandatory, normalized completion intent drives UI, Pi fences post-revocation tools, and commit references the existing Message while allowing later Work Record refinement.
 - Closed Turn admission under schema v24: removed the duplicate `consumeWake` API, restricted direct Turn creation to CEO Human Turns, fenced current Goal revision/owner/phase transactionally, enforced one Wake per Turn, and added typed Turn/Wake replay reducers.

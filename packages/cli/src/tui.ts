@@ -7,6 +7,7 @@ import { welcomeSnapshot, renderWelcome } from "./welcome.js";
 import { chooseSetupSection, runRunnerCommandWizard, runSetupWizard, applyWizardResult, type SetupSection } from "./setup-wizard.js";
 import { installedVersion } from "./update.js";
 import { tuiTheme } from "./tui-theme.js";
+import { normalizeAssistantText } from "goah-ledger-contract";
 import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -32,7 +33,7 @@ const markdownTheme: MarkdownTheme = {
   hr: tuiTheme.muted, listBullet: tuiTheme.accent, bold: tuiTheme.strong, italic: tuiTheme.muted,
   strikethrough: tuiTheme.muted, underline: tuiTheme.underline, codeBlockIndent: "  ",
 };
-class ConversationView implements Component {
+export class ConversationView implements Component {
   private entries: Array<{ kind: "text" | "user" | "markdown" | "thinking"; content: string } | ToolActivity>;
   private liveMarkdown = "";
   private liveThinking = "";
@@ -48,7 +49,7 @@ class ConversationView implements Component {
     if (previous?.kind === "markdown" && previous.content === content) return;
     this.entries.push({ kind: "markdown", content }); this.trim();
   }
-  setLiveMarkdown(content: string): void { this.liveMarkdown = content; }
+  appendLiveMarkdown(content: string): void { this.liveMarkdown += content; }
   clearLiveMarkdown(): void { this.liveMarkdown = ""; }
   updateThinking(activity: ThinkingActivity): void {
     if (activity.phase === "start") { this.liveThinking = ""; this.thinkingActive = true; return; }
@@ -66,6 +67,10 @@ class ConversationView implements Component {
     else this.entries.push(activity);
     this.trim();
   }
+  stopRunningTools(): void {
+    for (const entry of this.entries) if (entry.kind === "tool" && entry.status === "running") entry.status = "failed";
+  }
+  endTransientTurn(): void { this.liveMarkdown="";this.liveThinking="";this.thinkingActive=false;this.stopRunningTools(); }
   private trim(): void { if (this.entries.length > 240) this.entries.splice(1, this.entries.length - 240); }
   render(width: number): string[] {
     const rendered = this.entries.flatMap((entry) => entry.kind === "markdown"
@@ -83,6 +88,20 @@ class ConversationView implements Component {
     return rendered;
   }
   invalidate(): void {}
+}
+export class StreamCoordinator {
+  #active:AbortController|null=null;
+  #pending:AbortController|null=null;
+  get active():AbortController|null{return this.#active;}
+  get hasPending():boolean{return this.#pending!==null;}
+  begin(controller:AbortController):{owns:boolean;previous:AbortController|null}{if(this.#pending)throw new Error("Another Turn is waiting to be accepted.");const previous=this.#active;if(previous)this.#pending=controller;else this.#active=controller;return{owns:previous===null,previous};}
+  accept(controller:AbortController):AbortController|null{if(this.#pending!==controller)throw new Error("Stream candidate is no longer pending.");const previous=this.#active;this.#pending=null;this.#active=controller;previous?.abort();return previous;}
+  reject(controller:AbortController):void{if(this.#pending===controller)this.#pending=null;}
+  isCurrent(controller:AbortController):boolean{return this.#active===controller;}
+  complete(controller:AbortController):boolean{if(this.#active!==controller)return false;this.#active=null;return true;}
+  retire():void{const previous=this.#active;this.#active=null;previous?.abort();}
+  supersede():void{this.#active?.abort();this.#pending?.abort();this.#active=null;this.#pending=null;}
+  abortAll():void{this.supersede();}
 }
 export function renderUserMessage(content: string, width: number): string[] { return new Text(content, 2, 1, tuiTheme.userMessage).render(width); }
 export function renderTuiHeader(width: number, runner: string, target: string, version: string): string {
@@ -150,7 +169,7 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   const busy: CancellableState = { active: false };
   const queued: string[] = [];
   const queuedTurnIds: string[] = [];
-  let activeStream: AbortController | null = null;
+  const streams=new StreamCoordinator();
   let activeInteractionTurnId: string | null = null;
   let steeringTail: Promise<void> = Promise.resolve();
   let configuring = false;
@@ -160,46 +179,70 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
     transcriptView.addText(line);
     tui.requestRender();
   };
-  let liveText = "";
-  const appendLive = (text: string): void => { liveText += text; transcriptView.setLiveMarkdown(liveText); tui.requestRender(); };
-  const commitLive = (text: string): void => { liveText = ""; transcriptView.clearLiveMarkdown(); if (text) transcriptView.addMarkdown(text); tui.requestRender(); };
+  const appendLive = (text: string): void => { transcriptView.appendLiveMarkdown(text); tui.requestRender(); };
+  const commitLive = (text: string): void => { transcriptView.clearLiveMarkdown(); if (text) transcriptView.addMarkdown(text); tui.requestRender(); };
   const pushResponse = (text: string): void => { transcriptView.addMarkdown(text); tui.requestRender(); };
   const updateTool = (activity: ToolActivity): void => { transcriptView.updateTool(activity); tui.requestRender(); };
   const updateThinking = (activity: ThinkingActivity): void => { transcriptView.updateThinking(activity); tui.requestRender(); };
   const setWakeState = (mode: "queued" | "working"): void => { statusView.setText(statusText(mode, mode === "queued" ? 1 : queued.length)); tui.requestRender(); };
+  const finishIdle = async (): Promise<void> => {
+    busy.active = false;
+    await refreshGoalBar(stateDir, goalView, tui);
+    statusView.setText(statusText(queuedTurnIds.length || queued.length ? "queued" : "ready", queuedTurnIds.length + queued.length));
+    continuePending();
+  };
+  const endVisibleTurn = (): void => { transcriptView.endTransientTurn();tui.requestRender(); };
+  const takeStream = (controller:AbortController):void => { streams.accept(controller);endVisibleTurn(); };
+  const supersedeStreams = ():void => { streams.supersede();endVisibleTurn(); };
 
   const send = async (message: string, showUser = true,request:ControlRequest={op:"interact",message}): Promise<void> => {
-    activeStream?.abort();
-    busy.active = true;
-    const controller = new AbortController(); activeStream = controller;
-    statusView.setText(statusText("working", queued.length));
+    const controller = new AbortController();
+    let started:{owns:boolean;previous:AbortController|null};try{started=streams.begin(controller);}catch(error){push(errorLine(error));return;}let ownsStream=started.owns;
+    let rejectionShown = false;
+    if (ownsStream) { busy.active = true; statusView.setText(statusText("working", queued.length)); }
     if (showUser) { transcriptView.addUser(message); tui.requestRender(); }
     try {
-      await streamControl(stateDir, request, (frame) => { if (frame.type === "accepted") activeInteractionTurnId = frame.turnId; if (frame.type === "result" || frame.type === "error") activeInteractionTurnId = null; renderFrame(frame, push, appendLive, commitLive, pushResponse, updateTool, updateThinking, setWakeState, () => commitLive("")); }, controller.signal);
+      await streamControl(stateDir, request, (frame) => {
+        if (frame.type === "accepted" && !ownsStream) {
+          ownsStream = true;
+          takeStream(controller);
+        }
+        if (!ownsStream) {
+          if (frame.type === "error") { rejectionShown = true; push(errorLine(frame.error)); }
+          return;
+        }
+        if (!streams.isCurrent(controller)) return;
+        if (frame.type === "accepted") activeInteractionTurnId = frame.turnId;
+        if (frame.type === "result" || frame.type === "error") activeInteractionTurnId = null;
+        renderFrame(frame, push, appendLive, commitLive, pushResponse, updateTool, updateThinking, setWakeState, () => commitLive(""));
+      }, controller.signal);
     } catch (error) {
-      if(activeStream!==controller)return;
+      if (!ownsStream) { if (!controller.signal.aborted) { rejectionShown = true; push(errorLine(error)); } return; }
+      if(!streams.isCurrent(controller))return;
       transcriptView.clearLiveMarkdown();
       transcriptView.updateThinking({ phase: "clear", text: "" });
       if (!controller.signal.aborted) push(errorLine(error));
     } finally {
-      if(activeStream!==controller)return;
-      activeStream = null;
-      busy.active = false;
-      await refreshGoalBar(stateDir, goalView, tui);
-      statusView.setText(statusText(queuedTurnIds.length || queued.length ? "queued" : "ready", queuedTurnIds.length + queued.length));
-      continuePending();
+      if (!ownsStream) {
+        streams.reject(controller);
+        if (!rejectionShown && !controller.signal.aborted) push(errorLine("Turn request ended before it was accepted."));
+        if (!streams.active) await finishIdle();
+        return;
+      }
+      if(!streams.complete(controller))return;
+      if (streams.hasPending) return;
+      await finishIdle();
     }
   };
   const attachTurn = async (turnId: string): Promise<void> => {
     busy.active = true;
     activeInteractionTurnId = turnId;
-    const controller = new AbortController(); activeStream = controller;
+    const controller = new AbortController();try{if(!streams.begin(controller).owns)throw new Error("Cannot attach a Turn while another stream is active.");}catch(error){busy.active=false;push(errorLine(error));continuePending();return;}
     statusView.setText(statusText("queued", 1));
-    try { await streamControl(stateDir, { op: "turn.attach", turnId }, (frame) => { if (frame.type === "result" || frame.type === "error") activeInteractionTurnId = null; renderFrame(frame, push, appendLive, commitLive, pushResponse, updateTool, updateThinking, setWakeState, () => commitLive("")); }, controller.signal); }
-    catch (error) { if(activeStream===controller&&!controller.signal.aborted)push(errorLine(error)); }
+    try { await streamControl(stateDir, { op: "turn.attach", turnId }, (frame) => { if(!streams.isCurrent(controller))return;if (frame.type === "result" || frame.type === "error") activeInteractionTurnId = null; renderFrame(frame, push, appendLive, commitLive, pushResponse, updateTool, updateThinking, setWakeState, () => commitLive("")); }, controller.signal); }
+    catch (error) { if(streams.isCurrent(controller)&&!controller.signal.aborted)push(errorLine(error)); }
     finally {
-      if(activeStream!==controller)return;
-      activeStream = null;
+      if(!streams.complete(controller))return;
       busy.active = false;
       await refreshGoalBar(stateDir, goalView, tui);
       statusView.setText(statusText("ready"));
@@ -216,7 +259,7 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   const steer = async (message: string): Promise<void> => {
     try {
       const outcome=await requestControl(stateDir, { op: "turn.steer", message });const value=outcome&&typeof outcome==="object"&&!Array.isArray(outcome)?outcome as Record<string,unknown>:{};const queuedBySupervisor=value.steered===false&&typeof value.turnId==="string";
-      if(queuedBySupervisor){queuedTurnIds.push(String(value.turnId));activeStream?.abort();}
+      if(queuedBySupervisor){queuedTurnIds.push(String(value.turnId));supersedeStreams();busy.active=false;}
       statusView.setText(queuedBySupervisor?`${tuiTheme.warning("new Turn")}  ${tuiTheme.muted("Runner stopped accepting steering; continuing in a fresh Turn")}`:`${tuiTheme.accent("working")}  ${tuiTheme.muted("your update is steering this turn · /stop cancels")}`);
       tui.requestRender();
       if (queuedBySupervisor && !busy.active) continuePending();
@@ -278,7 +321,7 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   input.onSubmit = (line) => {
     const { action, text } = classifyTuiInput(line, busy.active);
     input.setText("");
-    if (action === "quit") { exiting = true; activeStream?.abort(); tui.stop(); resolveExit(); return; }
+    if (action === "quit") { exiting = true; streams.abortAll(); tui.stop(); resolveExit(); return; }
     if (action === "help") { push(`${tuiTheme.strong("Commands")}\n  /model  /login  /logout  /setup  /status\n  /records  /history  /goal  /observe  /stop  /quit\n`); return; }
     if (action === "status") { void printStatus(stateDir, push).finally(() => refreshGoalBar(stateDir, goalView, tui)); return; }
     if (action === "records") { void printRecords(text, stateDir, push); return; }
@@ -300,7 +343,7 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
     if (data !== "\x03") return undefined;
     exiting = true;
     push(busy.active ? "Detached — the current Turn continues in the daemon. Use /stop before detaching when you intend to cancel it." : "Detached.");
-    activeStream?.abort();
+    streams.abortAll();
     tui.stop(); resolveExit();
     return { consume: true };
   });
@@ -530,10 +573,10 @@ function safeError(value: string): string {
 }
 
 function messageText(value: unknown): string {
-  if (typeof value === "string") return value;
+  if (typeof value === "string") return normalizeAssistantText(value);
   if (!Array.isArray(value)) return "";
   return (value as unknown[])
-    .map((item) => item && typeof item === "object" && !Array.isArray(item) && (item as Record<string, unknown>).type === "text" && typeof (item as Record<string, unknown>).text === "string" ? (item as Record<string, unknown>).text as string : "")
+    .map((item) => item && typeof item === "object" && !Array.isArray(item) && (item as Record<string, unknown>).type === "text" && typeof (item as Record<string, unknown>).text === "string" ? normalizeAssistantText((item as Record<string, unknown>).text as string) : "")
     .filter(Boolean)
     .join("\n");
 }

@@ -36,7 +36,7 @@ Implemented and tested today:
 - Real runner subprocess boundary with sliding lease renewal, process-group termination, per-Agent exit barriers, optional runner-specific timeout, and stale-event rejection
 - Every Turn uses one Runner loop; visible Goal context stays advisory until a Turn acquires a Goal commitment, which requires a readable response, current Work Record revision, and compact Goal Handoff
 - Goal Mail is acknowledged atomically with its successful Handoff; ordinary Human conversation never uses Mail or Wake
-- Injected clocks, schema v25 persisted Thread roles, unified Turn triggers/commitments, automatic targets and Mail routing, one canonical Wake-to-Turn transition, durable Wake trigger sets, revision-neutral Goal scheduling, and Turn-owned revision fencing, with indexed bounded queries and a public ledger conformance suite; earlier development schemas are intentionally rejected
+- Injected clocks, schema v27 persisted canonical Thread roles and Runner cleanup ownership, atomic Human Turn admission, unified Turn triggers/commitments, automatic targets and Mail routing, one canonical Wake-to-Turn transition, durable Wake trigger sets, revision-neutral Goal scheduling, and Turn-owned revision fencing, with indexed bounded queries and a public ledger conformance suite; earlier development schemas are intentionally rejected
 - Textual observation and verification methods executed by Agents with ordinary tools, plus trigger coalescing and FTS5 fact search
 - Official Pi 0.84.2 worker binding with `read`, `write`, `edit`, and `bash` for every Agent plus model-view-only mid-turn compaction
 - Durable textual Goal observation methods with root human confirmation, atomic child assignment, revision invalidation, replay, and evidence-backed completion
@@ -215,7 +215,7 @@ Not guaranteed, by design honesty:
 
 | Milestone | Scope |
 |---|---|
-| v2 ledger kernel | ✅ stream-aware event schema, typed replay reducers, private projection metadata, required/ignorable events, SQLite schema v25, transaction fault injection |
+| v2 ledger kernel | ✅ stream-aware event schema, typed replay reducers, private projection metadata, required/ignorable events, SQLite schema v27, transaction fault injection |
 | resumable Thread + Turn transcript | ✅ durable Thread/Turn/Item projections, normalized Pi messages/tools/requests, compaction facts, replay and interrupted-tool repair |
 | Active Context | ✅ deterministic Markdown composition with evidence source sequences |
 | execution modules | ✅ Goal/Wake/Schedule/Mailbox/Handoff contracts are layered above the generic kernel; Schedule has a closed lifecycle and Action is deliberately deferred |
