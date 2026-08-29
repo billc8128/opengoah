@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.13.4
 
+- Goal Agents now treat each Wake as a sustained work session, continue through immediately actionable work, and reserve Handoff for a genuine wait, blocker, exhausted frontier, or completion review boundary.
 - Runner completion, Handoff validation, Ledger commit, and Control output now reference one canonical Assistant Item by `finalMessageId`; tool-only Handoffs no longer erase an earlier readable reply, and consecutive duplicate terminal errors render once.
 
 ## 0.13.3

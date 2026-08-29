@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Goal Turn and tool prompts now distinguish checkpoints from terminal Handoff: Work Record and Schedule do not end work, and `progress` requires meaningful work plus an exhausted current frontier.
 - Model switching now requires resolvable credentials for the selected provider, reuses saved or present environment authentication, and opens the scoped OAuth/API-key/environment flow before saving an otherwise unusable target.
 - Pi now receives active Goal context independently from Goal commitment and returns one successful shape containing canonical `finalMessageId` plus optional Handoff; tool-only Handoff reuses the prior readable Assistant Item instead of overwriting it with an empty response.
 - Pi uses `beforeToolCall` to validate Handoff with Supervisor; blocked drafts become model-visible Tool errors, fatal revocation fences later batch tools, and mandatory PiRunnerSession feedback carries correctable issues. Every adapter emits normalized provisional Handoff message metadata.

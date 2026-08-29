@@ -406,10 +406,10 @@ Every Child Agent must:
 1. read the current Child Goal and Work Record;
 2. inspect the shared Work Record index;
 3. follow the observation method;
-4. make concrete progress;
+4. treat the Wake as the start of a sustained work session and continue while safe, useful work is immediately executable;
 5. gather evidence under the verification method;
 6. update the Child Work Record;
-7. submit progress, waiting, blocker, or completion proposal to CEO.
+7. use Work Record updates as checkpoints and submit progress, waiting, blocker, or completion proposal to CEO only at a genuine control boundary.
 
 Child Agent cannot redefine the Goal, change its methods, create an unowned Agent, or complete the Child Goal itself.
 
@@ -423,6 +423,8 @@ CEO owns decomposition and organization:
 - repair active Child Goals without a Wake, schedule, wait, or escalated blocker;
 - consolidate Child results into the Root Work Record;
 - request Human decisions and Root completion.
+
+CEO also remains the executor of last resort. When no suitable Child Agent profile exists, or exploratory work is not yet independently observable and verifiable, CEO continues executing the current frontier rather than stopping after decomposition. Planning, partial progress, Work Record updates, and future Schedules do not independently justify Handoff.
 
 ## 9. Work Record Filesystem
 

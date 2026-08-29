@@ -10,6 +10,9 @@ import { normalizeAssistantText, TRANSCRIPT_FORMAT_VERSION, type AgentCapability
 import { runProcessWorker, type WorkerRpc } from "./index.js";
 import { createPiModel } from "./model-provider.js";
 
+const GOAL_TURN_POLICY = `A Goal commitment starts a sustained work session, not a short status round. Continue working while any safe, useful action can be executed now with current tools and authority. Use the Work Record as a durable checkpoint whenever the semantic state changes; updating it does not end the Turn. Planning, partial progress, decomposition, or scheduling a future Wake are not by themselves reasons to stop. Before Handoff, ask whether another useful action can be completed without new authority, unavailable data, another Agent's result, or the passage of time; if yes, do it now.
+
+Call handoff exactly once, only at a genuine control boundary: the current actionable frontier is exhausted after meaningful work, an explicit external wait is required, a real blocker prevents safe progress, or completion evidence is ready for review. Use outcome progress only for the first case, waiting only for the second, blocked only for the third, and completion_proposed only for the fourth. Write a concise human-readable assistant message describing what happened, and keep Handoff machine-readable with only outcome and evidence. Treat the supplied context as authoritative.`;
 
 export function compactMessages(messages: AgentMessage[], maxRecent = 8): AgentMessage[] {
   if (messages.length <= maxRecent + 1) return messages;
@@ -92,9 +95,9 @@ export async function runPiWorker(): Promise<void> {
     const sourceSeqs = Array.isArray(contextRecord.sourceSeqs) ? contextRecord.sourceSeqs.filter((value): value is number => Number.isInteger(value)) : [];
     const basePrompt = process.env.GOAH_PI_SYSTEM_PROMPT ?? suppliedPrompt ?? (request.turn?.trigger.kind === "user_message" ? "You are Goah's primary Agent. Respond naturally to the Human." : `You are Goah Agent ${request.agent}. Inspect the supplied context and respond appropriately.`);
     const systemPrompt = goalState.bound
-      ? `${basePrompt}\nThis Turn has a Goal commitment. You must update its Work Record, write a concise human-readable assistant message describing what happened, and call handoff exactly once with only machine-readable outcome and evidence. The message and Handoff are separate outputs. Treat the supplied context as authoritative.`
+      ? `${basePrompt}\n\n${GOAL_TURN_POLICY}`
       : request.turn?.trigger.kind === "user_message"
-        ? `${basePrompt}\nThe active Goal, when supplied, is context rather than an assignment. Finish with an ordinary response unless a Goal tool establishes a commitment during this Turn. After commitment, update that Goal's Work Record, write a concise human-readable assistant message, and call handoff exactly once with separate machine-readable outcome and evidence. Treat the supplied context as authoritative.`
+        ? `${basePrompt}\nThe active Goal, when supplied, is context rather than an assignment. Finish with an ordinary response unless a Goal tool establishes a commitment during this Turn. If a Goal commitment is established, follow this policy for the rest of the Turn:\n\n${GOAL_TURN_POLICY}`
         : `${basePrompt}\nThis Turn has no Goal commitment. Finish with an ordinary response and do not call handoff. Treat the supplied context as authoritative.`;
     const agent = new Agent({
       initialState: {
@@ -204,7 +207,7 @@ function createTools(root: string, handoff: (output: AgentHandoff) => void, rpc:
   const handoffTool: AgentTool<any> = {
     name: "handoff",
     label: "Handoff",
-    description: "Record a structured handoff and end a Turn with a Goal commitment.",
+    description: "End the current Goal Turn at a genuine control boundary. Do not call while another safe and useful action can be completed now. Planning, partial progress, a Work Record update, or a scheduled Wake does not by itself justify Handoff.",
     parameters: Type.Object({
       outcome: Type.Union([Type.Literal("progress"), Type.Literal("waiting"), Type.Literal("blocked"), Type.Literal("completion_proposed")]),
       evidence: Type.Array(Type.Number()),
@@ -351,7 +354,7 @@ function createRpcTools(rpc: WorkerRpc, allowed?: ReadonlySet<AgentCapability>, 
     ["ledger.search", tool("ledger_search", "Search durable ledger facts.", "ledger.search", Type.Object({ query: Type.String(), limit: Type.Optional(Type.Number()) }))],
     ["memory.append", tool("memory_append", "Append a durable working-memory note that is injected into your future wakes. Record procedural knowledge, active hypotheses, and abandoned approaches with the reason; keep notes concise.", "memory.append", Type.Object({ note: Type.String() }))],
     ["mail.send", tool("send_mail", "Send durable Mail to another Goal owner. goalId is required and routes the Mail into that owner's next committed Turn. Human communication must use request_human.", "mail.send", Type.Object({ to: Type.String(), goalId: Type.String(), level: Type.Union([Type.Literal("fyi"), Type.Literal("decision"), Type.Literal("emergency")]), body: Type.Any() }))],
-    ["schedule.set", tool("schedule_wake", "Schedule this agent's next wake.", "schedule.set", Type.Object({ at: Type.String(), reason: Type.String() }))],
+    ["schedule.set", tool("schedule_wake", "Schedule genuinely time-dependent future observation. Scheduling does not end the current Turn; continue all useful work that can be completed before waiting.", "schedule.set", Type.Object({ at: Type.String(), reason: Type.String() }))],
     ["team.list", tool("team_list", "Read the ledger-derived team roster and liveness state.", "team.list", Type.Object({}))],
     ["goal.get", tool("get_goal", "Read the active Goal visible to this Turn. Visibility does not establish a Goal commitment.", "goal.get", Type.Object({}))],
     ["goal.create", tool("create_goal", "Create a Root Goal from durable Human intent and bind this Turn. Do not use for greetings, questions, or routine single-turn work.", "goal.create", Type.Object({ objective: Type.String(), id: Type.Optional(Type.String()) }))],
