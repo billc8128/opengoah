@@ -21,7 +21,8 @@ test("fresh-workspace welcome is compact and has no placeholder rows", () => {
   const snapshot: WelcomeSnapshot = { root: null, team: [], handoffs: [], conversation: [], runner: "pi", target: "zai/glm" };
   const rendered = renderWelcome(snapshot, false).join("\n");
   assert.match(rendered, /Chat normally · \/goal for durable work · \/help/);
-  assert.ok(GOAH_TERMINAL_MARK.some((line) => line.includes("████")));
+  assert.equal(GOAH_TERMINAL_MARK.length, 4);
+  assert.ok(GOAH_TERMINAL_MARK.some((line) => line.includes("●")));
   assert.match(stripAnsi(rendered), /zai\/glm\s+· pi/);
   assert.doesNotMatch(rendered, /Agents:|Recent work:|Conversation:|  ·/);
 });

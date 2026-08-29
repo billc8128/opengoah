@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.13.2
+
+- Replaced the ambiguous block-art welcome mark with a compact terminal orbital glyph, improved secondary-text contrast, and added a shared slash-command registry that drives autocomplete, help, parsing, argument prompts, and a six-row keyboard menu.
+- Reduced single-line Human messages to one compact highlighted row instead of adding full blank rows above and below.
+
 ## 0.13.1
 
 - Published `@goah/cli` as one fully self-contained bundle: the tarball carries zero registry dependencies, so consumer installs execute no third-party lifecycle scripts and can no longer fail on broken upstream postinstalls (for example protobufjs on machines with a partially extracted global prefix). Each pack bundles from a pristine snapshot of the tsc output and restores it afterwards, ships the TypeScript declarations for every public subpath, all spawned worker entries, Goah's Apache license, and generated third-party license notices.

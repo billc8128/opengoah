@@ -23,12 +23,10 @@ export const WELCOME_TEAM_SLOTS = 3;
 export const WELCOME_HANDOFF_SLOTS = 2;
 export const WELCOME_CONVERSATION_SLOTS = 240;
 export const GOAH_TERMINAL_MARK = [
-  "        ▄▄",
-  "      ▄▀▀  █▄",
-  "   ▄▄██▀█▀▀ █",
-  "  █▀ █ ████ █ ▄█",
-  "   ▀▀██▄█▀▄█▀▀▀",
-  "      ▀▄▄▄▀▀",
+  "      ╭────╮",
+  "  ╭───╯ ●  ╰───╮",
+  "  ╰───╮    ╭───╯",
+  "      ╰────╯",
 ];
 
 interface GoalRow { id: string; objective: string; phase: string; parent_id: string | null; owner: string }

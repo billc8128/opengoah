@@ -21,13 +21,14 @@ test("Pi configurator owns provider, model, and auth choices", async () => {
 });
 
 test("model command uses a scoped picker without replaying authentication for the current provider", async () => {
+  const previous=process.env.OPENAI_API_KEY;process.env.OPENAI_API_KEY="test-openai-key";const authFile=join(mkdtempSync(join(tmpdir(),"goah-model-env-auth-")),"auth.json");
   const interaction: RunnerSetupInteraction = {
     select: async ({ title, choices }) => title.includes("provider") ? "openai" : title.includes("model") ? choices.find((choice) => choice.value === "gpt-5.5")!.value : null,
     input: async () => null,
     notify: () => undefined,
   };
-  const result = await piRunnerConfigurator().runCommand!("model", [], { provider: "openai", model: "gpt-5.4", authMode: "environment", apiKeyEnv: "OPENAI_API_KEY" }, interaction);
-  assert.deepEqual(result.config, { provider: "openai", model: "gpt-5.5", authMode: "environment", apiKeyEnv: "OPENAI_API_KEY" });
+  try{const result = await piRunnerConfigurator().runCommand!("model", [], { provider: "openai", model: "gpt-5.4",authFile, authMode: "environment", apiKeyEnv: "OPENAI_API_KEY" }, interaction);const config=result.config as {provider:string;model:string;authFile:string;authMode:string;apiKeyEnv:string};assert.deepEqual({provider:config.provider,model:config.model,authFile:config.authFile,authMode:config.authMode,apiKeyEnv:config.apiKeyEnv},{provider:"openai",model:"gpt-5.5",authFile,authMode:"environment",apiKeyEnv:"OPENAI_API_KEY"});}
+  finally{if(previous===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=previous;}
 });
 
 test("model picker preserves a custom credential store and never launches authentication", async () => {
@@ -45,6 +46,10 @@ test("model picker preserves a custom credential store and never launches authen
   const result = await piRunnerConfigurator().runCommand!("model", [], { provider: "faux", model: "faux-goah", authFile, authMode: "local" }, interaction);
   assert.deepEqual(result.config, { provider: "openai", model: "gpt-5.5", thinking: "medium", authFile, authMode: "stored-key" });
 });
+
+test("switching to a provider without credentials requires authentication before saving",async()=>{const directory=mkdtempSync(join(tmpdir(),"goah-model-requires-auth-"));const authFile=join(directory,"auth.json");const interaction:RunnerSetupInteraction={select:async({title,choices})=>{if(title==="Choose a provider")return"cloudflare-workers-ai";if(title==="Choose a model")return choices[0]!.value;if(title==="Authentication")return"key";return null;},input:async({secret})=>secret?"cloudflare-test-key":null,notify:()=>undefined};const result=await piRunnerConfigurator().runCommand!("model",[],{provider:"faux",model:"faux-goah",authFile,authMode:"local"},interaction);assert.equal((result.config as {provider:string}).provider,"cloudflare-workers-ai");assert.equal((result.config as {authMode:string}).authMode,"stored-key");assert.deepEqual(await new JsonCredentialStore(authFile).read("cloudflare-workers-ai"),{type:"api_key",key:"cloudflare-test-key"});});
+
+test("model switch rejects an environment reference that is not actually set",async()=>{const directory=mkdtempSync(join(tmpdir(),"goah-model-missing-env-"));const authFile=join(directory,"auth.json");delete process.env.GOAH_TEST_MISSING_API_KEY;const interaction:RunnerSetupInteraction={select:async({title,choices})=>{if(title==="Choose a provider")return"openai";if(title==="Choose a model")return choices.find((choice)=>choice.value==="gpt-5.5")!.value;if(title==="Authentication")return"env";return null;},input:async({title})=>title==="Environment variable"?"GOAH_TEST_MISSING_API_KEY":null,notify:()=>undefined};await assert.rejects(piRunnerConfigurator().runCommand!("model",[],{provider:"faux",model:"faux-goah",authFile,authMode:"local"},interaction),/is not set/);});
 
 test("auth login command supports API keys without running model setup", async () => {
   const previous = process.env.GOAH_STATE_HOME;
@@ -75,13 +80,14 @@ test("scoped auth refuses a concurrent update to the same provider", async () =>
 });
 
 test("explicit model use accepts faux and custom provider ids", async () => {
+  const directory=mkdtempSync(join(tmpdir(),"goah-explicit-model-auth-"));const authFile=join(directory,"auth.json");await new JsonCredentialStore(authFile).modify("team-gateway",async()=>({type:"api_key",key:"gateway-key"}));
   const interaction: RunnerSetupInteraction = { select: async () => null, input: async () => null, notify: () => undefined };
-  const faux = await piRunnerConfigurator().runCommand!("model", ["use", "faux/faux-goah"], { provider: "team-gateway", model: "fast-v1", baseUrl: "https://models.example.test/v1", api: "openai-responses" }, interaction);
+  const faux = await piRunnerConfigurator().runCommand!("model", ["use", "faux/faux-goah"], { provider: "team-gateway", model: "fast-v1", baseUrl: "https://models.example.test/v1", api: "openai-responses",authFile,authMode:"stored-key" }, interaction);
   assert.equal((faux.config as { provider: string }).provider, "faux");
   assert.equal((faux.config as { baseUrl?: string }).baseUrl, undefined);
-  const custom = await piRunnerConfigurator().runCommand!("model", ["use", "team-gateway/fast-v2"], { provider: "team-gateway", model: "fast-v1", baseUrl: "https://models.example.test/v1", api: "openai-responses" }, interaction);
-  assert.deepEqual(custom.config, { provider: "team-gateway", model: "fast-v2", baseUrl: "https://models.example.test/v1", api: "openai-responses", authMode: "unconfigured" });
-  await assert.rejects(piRunnerConfigurator().runCommand!("model", ["use", "other-gateway/model"], { provider: "team-gateway", model: "fast-v1", baseUrl: "https://models.example.test/v1" }, interaction), /Unknown provider/);
+  const custom = await piRunnerConfigurator().runCommand!("model", ["use", "team-gateway/fast-v2"], { provider: "team-gateway", model: "fast-v1", baseUrl: "https://models.example.test/v1", api: "openai-responses",authFile,authMode:"stored-key" }, interaction);
+  assert.deepEqual(custom.config, { provider: "team-gateway", model: "fast-v2", baseUrl: "https://models.example.test/v1", api: "openai-responses",authFile,authMode:"stored-key" });
+  await assert.rejects(piRunnerConfigurator().runCommand!("model", ["use", "other-gateway/model"], { provider: "team-gateway", model: "fast-v1", baseUrl: "https://models.example.test/v1",authFile }, interaction), /Unknown provider/);
 });
 
 test("logout updates stored auth state and is honest about environment auth", async () => {

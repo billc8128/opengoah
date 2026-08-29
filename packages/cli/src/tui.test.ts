@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifyTuiInput, ConversationView, findLiveTurnId, renderFrame, renderTuiHeader, renderUserMessage, StreamCoordinator } from "./tui.js";
+import { classifyTuiInput, commandAwaitingArgument, ConversationView, createTuiAutocompleteProvider, findLiveTurnId, renderFrame, renderTuiCommandHelp, renderTuiHeader, renderUserMessage, StreamCoordinator, TUI_COMMANDS } from "./tui.js";
 import { stripAnsi } from "./tui-theme.js";
 
 test("TUI routes ordinary text, queued follow-ups, and commands", () => {
@@ -14,9 +14,14 @@ test("TUI routes ordinary text, queued follow-ups, and commands", () => {
   assert.equal(classifyTuiInput("/login zai", false).action, "login");
   assert.equal(classifyTuiInput("/logout", false).action, "logout");
   assert.equal(classifyTuiInput("/setup model", false).action, "setup");
+  assert.equal(classifyTuiInput("/goal", false).action, "goal");
+  assert.equal(classifyTuiInput("/history", false).action, "records");
   assert.equal(classifyTuiInput("/modle", false).action, "unknown");
   assert.equal(classifyTuiInput("/help", false).action, "help");
+  assert.equal(classifyTuiInput("/status extra", false).action, "unknown");
 });
+
+test("slash commands share one discoverable registry and preserve required argument input",async()=>{assert.equal(commandAwaitingArgument("/goal"),"/goal ");assert.equal(commandAwaitingArgument("/history "),"/history ");assert.equal(commandAwaitingArgument("/status"),null);const provider=createTuiAutocompleteProvider(process.cwd());const suggestions=await provider.getSuggestions(["/"],0,1,{signal:new AbortController().signal});assert.ok(suggestions);assert.deepEqual(suggestions!.items.slice(0,4).map((item)=>item.value),["goal","model","status","setup"]);const completed=provider.applyCompletion(["/g"],0,2,suggestions!.items[0]!,"/g");assert.deepEqual(completed.lines,["/goal "]);const help=stripAnsi(renderTuiCommandHelp());for(const command of TUI_COMMANDS)assert.match(help,new RegExp(`/${command.name}\\b`));});
 
 test("TUI reconnect selects the newest live Human interaction only", () => {
   assert.equal(findLiveTurnId([{ id: "goal", triggerKind: "wake", status: "in_progress" }, { id: "human", triggerKind: "user_message", status: "in_progress" }]), "human");
@@ -78,7 +83,7 @@ test("TUI header is a stable full-width brand rail", () => {
 
 test("user messages render as unlabeled full-width background blocks", () => {
   const rendered = renderUserMessage("你好", 30);
-  assert.deepEqual(rendered.map(stripAnsi), [" ".repeat(30), `  你好${" ".repeat(24)}`, " ".repeat(30)]);
+  assert.deepEqual(rendered.map(stripAnsi), [`  你好${" ".repeat(24)}`]);
   assert.doesNotMatch(rendered.join("\n"), /you/i);
 });
 

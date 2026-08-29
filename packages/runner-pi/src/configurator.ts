@@ -98,14 +98,17 @@ async function setupPi(current: JsonValue | null, interaction: RunnerSetupIntera
   if (selected === "__back__") return setupPi(current, interaction, scope, setupAuthFile);
   const model = selected === "__custom__" ? await interaction.input({ title: "Model ID", description: `Enter the model identifier accepted by ${providerId}.`, prompt: "Model", progress: { current: 3, total: 5 }, ...(before?.provider === providerId ? { initial: before.model } : {}) }) : selected;
   if (!model) return null;
-  if (scope === "model" && before?.provider === providerId) return { ...before, model } as unknown as JsonValue;
-  const config: PiRunnerConfig = { provider: providerId, model, thinking: before?.thinking ?? (providerId === "faux" ? "off" : "medium"), authFile: before?.authFile ?? setupAuthFile, authMode: providerId === "faux" || ["ollama", "lm-studio", "llama.cpp"].includes(providerId) ? "local" : "unconfigured" };
+  const config: PiRunnerConfig = scope === "model" && before?.provider === providerId
+    ? { ...before, model, authFile: before.authFile ?? setupAuthFile }
+    : { provider: providerId, model, thinking: before?.thinking ?? (providerId === "faux" ? "off" : "medium"), authFile: scope === "full" ? setupAuthFile : before?.authFile ?? setupAuthFile, authMode: providerId === "faux" || ["ollama", "lm-studio", "llama.cpp"].includes(providerId) ? "local" : "unconfigured" };
 
   const descriptor = providers.find((entry) => entry.id === provider)!;
   if (!descriptor.local && provider !== "faux") {
-    const existing = scope === "model" ? await new JsonCredentialStore(config.authFile!).read(providerId) : null;
-    if (scope === "model") config.authMode = existing?.type === "oauth" ? "oauth" : existing ? "stored-key" : "unconfigured";
-    else {
+    if (scope === "model") {
+      const authenticated=await requireAuthentication(config,descriptor,interaction,legacyCredential);
+      if(authenticated==="back")return setupPi(current,interaction,scope,setupAuthFile);
+      Object.assign(config,authenticated);
+    } else {
       const auth = await configureAuthentication(providerId, descriptor, config.authFile!, interaction, legacyCredential);
       if (auth === "back") return setupPi(current, interaction, scope, setupAuthFile);
       Object.assign(config, auth);
@@ -157,6 +160,18 @@ async function configureAuthentication(provider: string, descriptor: { oauth: bo
   }
   return { authMode: "unconfigured" };
 }
+
+async function requireAuthentication(config:PiRunnerConfig,descriptor:{oauth:boolean;apiKey:boolean;local?:boolean},interaction:RunnerSetupInteraction,legacyCredential=false):Promise<PiRunnerConfig|"back">{
+  if(descriptor.local||config.provider==="faux"||["ollama","lm-studio","llama.cpp"].includes(config.provider)){const local={...config,authMode:"local" as const};delete local.apiKeyEnv;return local;}
+  const authFile=config.authFile??defaultAuthFile();const stored=await new JsonCredentialStore(authFile).read(config.provider);
+  if(stored){const saved={...config,authFile,authMode:stored.type==="oauth"?"oauth" as const:"stored-key" as const};delete saved.apiKeyEnv;return saved;}
+  if(environmentAuthenticationAvailable(config))return{...config,authFile,authMode:"environment",apiKeyEnv:config.apiKeyEnv??defaultApiKeyEnv(config.provider)};
+  const auth=await configureAuthentication(config.provider,descriptor,authFile,interaction,legacyCredential,false,true);if(auth==="back")return"back";const next:PiRunnerConfig={...config,...auth,authFile};if(auth.authMode!=="environment")delete next.apiKeyEnv;
+  if(next.authMode==="environment"&&!environmentAuthenticationAvailable(next))throw new Error(`Environment variable ${next.apiKeyEnv??defaultApiKeyEnv(next.provider)} is not set. Set it first or choose “Paste an API key”.`);
+  return next;
+}
+
+function environmentAuthenticationAvailable(config:PiRunnerConfig):boolean{const key=config.api?"GOAH_PI_API_KEY":defaultApiKeyEnv(config.provider);try{return Boolean(resolveEnvSpec(piEnvironment(config),{root:process.cwd()})[key]);}catch{return false;}}
 
 async function doctorPi(value: JsonValue, context?: { root: string }): Promise<RunnerDiagnostic[]> {
   const config = piConfig(value);
@@ -224,7 +239,8 @@ async function runPiCommand(command: string, args: string[], value: JsonValue, i
       ? { ...config, model }
       : { provider, model, thinking: config.thinking ?? (provider === "faux" ? "off" : "medium"), authFile: config.authFile ?? defaultAuthFile(), authMode: provider === "faux" || ["ollama", "lm-studio", "llama.cpp"].includes(provider) ? "local" : existing?.type === "oauth" ? "oauth" : existing ? "stored-key" : "unconfigured" };
     createPiModel(provider, model, piEnvironment(next));
-    return { config: next as unknown as JsonValue, output: [`Pi target changed to ${provider}/${model}`] };
+    const descriptor=providerCatalog().find((entry)=>entry.id===provider)??{id:provider,name:provider,oauth:false,apiKey:true,local:false,modelCount:0};const authenticated=await requireAuthentication(next,descriptor,interaction);if(authenticated==="back")return{output:["No change."]};
+    return { config: authenticated as unknown as JsonValue, output: [`Pi target changed to ${provider}/${model}`] };
   }
   if (command === "auth") {
     const authFile = config.authFile ?? defaultAuthFile();

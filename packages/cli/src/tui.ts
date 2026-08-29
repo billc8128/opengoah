@@ -1,5 +1,5 @@
 /** Full-screen goah TUI: streaming CEO transcript over the resident Supervisor control socket. */
-import { TuiAltScreen, Text, Markdown, Editor, ProcessTerminal, ScrollView, VStack, type Component, type MarkdownTheme } from "@earendil-works/pi-tui";
+import { TuiAltScreen, Text, Markdown, Editor, ProcessTerminal, ScrollView, VStack, CombinedAutocompleteProvider, type Component, type MarkdownTheme, type SlashCommand } from "@earendil-works/pi-tui";
 import { controlAvailable, requestControl, streamControl, type ControlFrame, type ControlRequest } from "./control.js";
 import { loadConfig, readConsoleMetadata, readDefaultRunnerProfile } from "./index.js";
 import { switchModel, reloadDaemon, readRunnerDisplay } from "./live-config.js";
@@ -103,7 +103,7 @@ export class StreamCoordinator {
   supersede():void{this.#active?.abort();this.#pending?.abort();this.#active=null;this.#pending=null;}
   abortAll():void{this.supersede();}
 }
-export function renderUserMessage(content: string, width: number): string[] { return new Text(content, 2, 1, tuiTheme.userMessage).render(width); }
+export function renderUserMessage(content: string, width: number): string[] { return new Text(content, 2, 0, tuiTheme.userMessage).render(width); }
 export function renderTuiHeader(width: number, runner: string, target: string, version: string): string {
   const brand = " GOAH ";
   const release = width >= 34 ? ` v${version} ` : "";
@@ -120,19 +120,29 @@ function statusText(mode: "ready" | "working" | "queued" | "setup", queued = 0):
   return `${tuiTheme.muted("ready")}  ${tuiTheme.accent("/help")}`;
 }
 export type TuiInputAction = "quit" | "help" | "status" | "records" | "stop" | "model" | "login" | "logout" | "setup" | "goal" | "unknown" | "empty" | "steer" | "send";
+export interface TuiCommandDefinition extends SlashCommand { action:Exclude<TuiInputAction,"unknown"|"empty"|"steer"|"send">;acceptsArguments?:boolean;requiresArgument?:boolean;aliases?:string[] }
+export const TUI_COMMANDS:TuiCommandDefinition[]=[
+  {name:"goal",action:"goal",description:"Start or revise durable work",argumentHint:"<objective>",acceptsArguments:true,requiresArgument:true},
+  {name:"model",action:"model",description:"Choose a provider and model",argumentHint:"[provider/model]",acceptsArguments:true},
+  {name:"status",action:"status",description:"Inspect the current workspace"},
+  {name:"setup",action:"setup",description:"Configure Goah",argumentHint:"[runner|model|auth]",acceptsArguments:true},
+  {name:"records",action:"records",description:"Browse current work records",argumentHint:"[goal]",acceptsArguments:true},
+  {name:"history",action:"records",description:"Show a Goal's record history",argumentHint:"<goal>",acceptsArguments:true,requiresArgument:true},
+  {name:"observe",action:"goal",description:"Set how the active Goal is observed",argumentHint:"<method>",acceptsArguments:true,requiresArgument:true},
+  {name:"login",action:"login",description:"Add provider credentials",argumentHint:"[provider]",acceptsArguments:true},
+  {name:"logout",action:"logout",description:"Remove provider credentials",argumentHint:"[provider]",acceptsArguments:true},
+  {name:"stop",action:"stop",description:"Stop the current Turn"},
+  {name:"help",action:"help",description:"Show all commands"},
+  {name:"quit",action:"quit",description:"Leave Goah",aliases:["exit"]},
+];
+function commandDefinition(text:string):{definition:TuiCommandDefinition;hasArguments:boolean}|null{const token=text.trim().split(/\s+/,1)[0]??"";if(!token.startsWith("/"))return null;const name=token.slice(1);const definition=TUI_COMMANDS.find((candidate)=>candidate.name===name||candidate.aliases?.includes(name));if(!definition)return null;return{definition,hasArguments:Boolean(text.trim().slice(token.length).trim())};}
+export function commandAwaitingArgument(text:string):string|null{const match=commandDefinition(text);return match&&match.definition.requiresArgument&&!match.hasArguments?`/${match.definition.name} `:null;}
+export function createTuiAutocompleteProvider(basePath=process.cwd()):CombinedAutocompleteProvider{const commands:SlashCommand[]=TUI_COMMANDS.map(({name,description,argumentHint,getArgumentCompletions})=>({name,...(description?{description}:{}),...(argumentHint?{argumentHint}:{}),...(getArgumentCompletions?{getArgumentCompletions}:{})}));return new CombinedAutocompleteProvider(commands,basePath);}
+export function renderTuiCommandHelp():string{return [tuiTheme.strong("Commands"),...TUI_COMMANDS.map((command)=>{const invocation=`/${command.name}${command.argumentHint?` ${command.argumentHint}`:""}`;return `  ${invocation.padEnd(28)} ${tuiTheme.muted(command.description??"")}`;}),""].join("\n");}
 export function classifyTuiInput(value: string, busy: boolean): { action: TuiInputAction; text: string } {
   const text = value.trim();
   if (!text) return { action: "empty", text };
-  if (text === "/quit" || text === "/exit") return { action: "quit", text };
-  if (text === "/help") return { action: "help", text };
-  if (text === "/status") return { action: "status", text };
-  if (text === "/records" || text.startsWith("/records ") || text.startsWith("/history ")) return { action: "records", text };
-  if (text === "/stop") return { action: "stop", text };
-  if (text === "/model" || text.startsWith("/model ")) return { action: "model", text };
-  if (text === "/login" || text.startsWith("/login ")) return { action: "login", text };
-  if (text === "/logout" || text.startsWith("/logout ")) return { action: "logout", text };
-  if (text === "/setup" || text.startsWith("/setup ")) return { action: "setup", text };
-  if (text.startsWith("/goal ") || text.startsWith("/observe ")) return { action: "goal", text };
+  const command=commandDefinition(text);if(command){if(command.hasArguments&&!command.definition.acceptsArguments)return{action:"unknown",text};return{action:command.definition.action,text};}
   if (text.startsWith("/")) return { action: "unknown", text };
   return { action: busy ? "steer" : "send", text };
 }
@@ -158,13 +168,14 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
     borderColor: tuiTheme.accent,
     selectList: { selectedPrefix: tuiTheme.accent, selectedText: tuiTheme.strong, description: tuiTheme.muted, scrollInfo: tuiTheme.muted, noMatch: tuiTheme.error },
   }, { paddingX: 1, autocompleteMaxVisible: 6 });
+  input.setAutocompleteProvider(createTuiAutocompleteProvider());
   const statusView = new Text(statusText("ready"), 1, 0);
   const shell = new VStack([
     { component: headerView, basis: 1, shrink: 0 },
     { component: conversationScroll, grow: 1, minSize: 1 },
     { component: goalView, basis: 1, shrink: 0 },
     { component: statusView, basis: 1, shrink: 0 },
-    { component: input, basis: "auto", minSize: 3, maxSize: 8, shrink: 0 },
+    { component: input, basis: "auto", minSize: 3, maxSize: 11, shrink: 0 },
   ]);
   const busy: CancellableState = { active: false };
   const queued: string[] = [];
@@ -319,10 +330,11 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   });
 
   input.onSubmit = (line) => {
+    const waiting=commandAwaitingArgument(line);if(waiting){input.setText(waiting);return;}
     const { action, text } = classifyTuiInput(line, busy.active);
     input.setText("");
     if (action === "quit") { exiting = true; streams.abortAll(); tui.stop(); resolveExit(); return; }
-    if (action === "help") { push(`${tuiTheme.strong("Commands")}\n  /model  /login  /logout  /setup  /status\n  /records  /history  /goal  /observe  /stop  /quit\n`); return; }
+    if (action === "help") { push(renderTuiCommandHelp()); return; }
     if (action === "status") { void printStatus(stateDir, push).finally(() => refreshGoalBar(stateDir, goalView, tui)); return; }
     if (action === "records") { void printRecords(text, stateDir, push); return; }
     if (action === "stop") { void stopCeoWake(stateDir, push); return; }
