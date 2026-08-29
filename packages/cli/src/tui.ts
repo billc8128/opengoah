@@ -34,21 +34,22 @@ const markdownTheme: MarkdownTheme = {
   strikethrough: tuiTheme.muted, underline: tuiTheme.underline, codeBlockIndent: "  ",
 };
 export class ConversationView implements Component {
-  private entries: Array<{ kind: "text" | "user" | "markdown" | "thinking"; content: string } | { kind: "component"; component: Component } | ToolActivity>;
+  private entries: Array<{ kind: "text" | "user" | "thinking"; content: string } | { kind:"markdown";content:string;messageId?:string } | { kind: "component"; component: Component } | ToolActivity>;
   private liveMarkdown = "";
   private liveThinking = "";
   private thinkingActive = false;
   constructor(initial: string[]) { this.entries = initial.length ? [{ kind: "text", content: initial.join("\n") }] : []; }
   addComponent(component: Component): void { this.entries.push({ kind: "component", component }); }
-  addText(content: string): void { this.entries.push({ kind: "text", content }); this.trim(); }
+  addText(content: string): void { const previous=this.entries.at(-1);if(previous?.kind==="text"&&previous.content===content)return;this.entries.push({ kind: "text", content }); this.trim(); }
   addUser(content: string): void { this.entries.push({ kind: "user", content }); this.trim(); }
-  addMarkdown(content: string): void {
+  addMarkdown(content: string,messageId?:string): void {
     this.liveMarkdown = "";
     content = content.trim();
     if (!content) return;
+    if(messageId&&this.entries.some((entry)=>entry.kind==="markdown"&&entry.messageId===messageId))return;
     const previous = this.entries.at(-1);
     if (previous?.kind === "markdown" && previous.content === content) return;
-    this.entries.push({ kind: "markdown", content }); this.trim();
+    this.entries.push({ kind: "markdown", content,...(messageId?{messageId}:{}) }); this.trim();
   }
   appendLiveMarkdown(content: string): void { this.liveMarkdown += content; }
   clearLiveMarkdown(): void { this.liveMarkdown = ""; }
@@ -243,8 +244,8 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
     tui.requestRender();
   };
   const appendLive = (text: string): void => { transcriptView.appendLiveMarkdown(text); tui.requestRender(); };
-  const commitLive = (text: string): void => { transcriptView.clearLiveMarkdown(); if (text) transcriptView.addMarkdown(text); tui.requestRender(); };
-  const pushResponse = (text: string): void => { transcriptView.addMarkdown(text); tui.requestRender(); };
+  const commitLive = (text: string,messageId?:string): void => { transcriptView.clearLiveMarkdown(); if (text) transcriptView.addMarkdown(text,messageId); tui.requestRender(); };
+  const pushResponse = (text: string,messageId?:string): void => { transcriptView.addMarkdown(text,messageId); tui.requestRender(); };
   const updateTool = (activity: ToolActivity): void => { transcriptView.updateTool(activity); tui.requestRender(); };
   const updateThinking = (activity: ThinkingActivity): void => { transcriptView.updateThinking(activity); tui.requestRender(); };
   const setWakeState = (mode: "queued" | "working"): void => { statusView.setText(statusText(mode, mode === "queued" ? 1 : queued.length)); tui.requestRender(); };
@@ -471,7 +472,7 @@ export interface ToolActivity { kind: "tool"; callId: string; name: string; deta
 export interface ThinkingActivity { phase: "start" | "delta" | "done" | "clear"; text: string }
 
 /** Render one structured control-protocol frame into its own transcript channel. */
-export function renderFrame(frame: ControlFrame, push: (line: string) => void, appendLive: (text: string) => void = push, commitLive: (text: string) => void = push, pushResponse: (text: string) => void = push, updateTool: (activity: ToolActivity) => void = (activity) => push(toolActivityLine(activity)), updateThinking: (activity: ThinkingActivity) => void = () => {}, setWakeState: (state: "queued" | "working") => void = () => {}, clearLive: () => void = () => {}): void {
+export function renderFrame(frame: ControlFrame, push: (line: string) => void, appendLive: (text: string) => void = push, commitLive: (text: string,messageId?:string) => void = push, pushResponse: (text: string,messageId?:string) => void = push, updateTool: (activity: ToolActivity) => void = (activity) => push(toolActivityLine(activity)), updateThinking: (activity: ThinkingActivity) => void = () => {}, setWakeState: (state: "queued" | "working") => void = () => {}, clearLive: () => void = () => {}): void {
   if (frame.type === "error") { updateThinking({ phase: "clear", text: "" }); clearLive(); push(`${tuiTheme.error("error")}  ${safeError(frame.error)}\n`); return; }
   if (frame.type === "accepted") {
     const value = frame.value && typeof frame.value === "object" && !Array.isArray(frame.value) ? frame.value as Record<string, unknown> : {};
@@ -512,11 +513,11 @@ export function renderFrame(frame: ControlFrame, push: (line: string) => void, a
     updateThinking({ phase: "done", text: "" });
     const message = data.message && typeof data.message === "object" ? data.message as Record<string, unknown> : {};
     if (message.stopReason === "error" || message.stopReason === "aborted") { clearLive(); return; }
-    const text = messageText(message.content);
+    const text = messageText(message.content);const messageId=typeof message.id==="string"?message.id:undefined;
     if(data.commitState==="provisional"){clearLive();return;}
-    if (text) commitLive(text);
+    if (text) commitLive(text,messageId);
   } else if(record.type==="response.committed"){
-    if(typeof data.text==="string"&&data.text.trim())commitLive(data.text.trim());
+    if(typeof data.text==="string"&&data.text.trim())commitLive(data.text.trim(),typeof data.messageItemId==="string"?data.messageItemId:undefined);
   } else if (record.type === "handoff.recorded") {
     if (typeof data.goalId === "string") push(`${data.outcome === "blocked" ? tuiTheme.error("goal blocked") : tuiTheme.success("goal saved")}  ${tuiTheme.muted(`${String(data.outcome).replaceAll("_", " ")} · record r${String(data.recordRevision)}`)}`);
   } else if (record.type === "ceo.human_requested") {

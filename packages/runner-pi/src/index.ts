@@ -7,7 +7,6 @@ import {
   type AgentHandoff,
   type HandoffValidationResult,
   type JsonValue,
-  type AssistantResponse,
   type RunRequest,
   type Runner,
   type RunnerHandle,
@@ -21,10 +20,11 @@ export { defaultAuthFile, modelCatalog, providerCatalog, LOCAL_PROVIDERS, type M
 export { createPiProcessRunner, piConfig, piEnvironment, piRunnerConfigurator, type PiRunnerConfig } from "./configurator.js";
 export { resolveEnvSpec } from "./env-spec.js";
 
+export interface PiAssistantResponse { content:string }
 export interface PiStep {
   trace?: Array<{ type: string; data: JsonValue }>;
-  response?: AssistantResponse;
-  handoff?: {response:AssistantResponse;handoff:AgentHandoff};
+  response?: PiAssistantResponse;
+  handoff?: {response:PiAssistantResponse;handoff:AgentHandoff};
   stopped?: boolean;
 }
 export interface PiRunnerSession { step(): Promise<PiStep>;feedback(validation:Exclude<HandoffValidationResult,{accepted:true}>):Promise<void>;close(): Promise<void> }
@@ -54,13 +54,24 @@ export class PiRunnerAdapter {
 
   async #run(request: RunRequest): Promise<RunnerCandidateResult> {
     const runnerSession = await this.driver.createRunnerSession(request);
+    let messageSequence = 0;
     try {
       while (true) {
         const step = await runnerSession.step();
         for (const trace of step.trace ?? []) request.emit(trace);
-        if (step.response) return { outcome: "completed", response: step.response };
+        if (step.response) {
+          const finalMessageId = `adapter:${request.execution.id}:attempt:${request.execution.attempt}:message:${++messageSequence}`;
+          request.emit({ type: "message.assistant.completed", data: { message: { id: finalMessageId, role: "assistant", content: [{ type: "text", text: step.response.content }] }, commitState: "committed" } });
+          return { outcome: "completed", finalMessageId };
+        }
         if (step.handoff) {
-          const validation=await request.rpc?.("goal.handoff.validate",{handoff:step.handoff.handoff,candidateMessage:step.handoff.response.content} as unknown as JsonValue) as unknown as HandoffValidationResult|undefined;if(!validation)return{outcome:"abnormal",reason:"Handoff validation is unavailable"};request.emit({type:"message.assistant.completed",data:{message:{id:`adapter:${request.execution.id}:handoff:${validation.attemptId}`,role:"assistant",content:[{type:"text",text:step.handoff.response.content}],stopReason:"toolUse"},commitState:"provisional"}});if(!validation.accepted){if(validation.fatal)return{outcome:"abnormal",reason:validation.issues.map((issue)=>issue.message).join("; ")};await runnerSession.feedback(validation);request.emit({type:"runner.handoff_rejected",data:{attemptId:validation.attemptId,issues:validation.issues} as unknown as JsonValue});continue;}const output:TurnOutput={validationAttemptId:validation.attemptId,validationToken:validation.token,handoff:step.handoff.handoff};assertTurnOutput(output);return { outcome: "completed", response:step.handoff.response, handoff:output };
+          const messageItemId = `adapter:${request.execution.id}:attempt:${request.execution.attempt}:message:${++messageSequence}`;
+          const validation=await request.rpc?.("goal.handoff.validate",{handoff:step.handoff.handoff,candidateMessageId:messageItemId,candidateMessage:step.handoff.response.content} as unknown as JsonValue) as unknown as HandoffValidationResult|undefined;
+          if(!validation)return{outcome:"abnormal",reason:"Handoff validation is unavailable"};
+          request.emit({type:"message.assistant.completed",data:{message:{id:messageItemId,role:"assistant",content:[{type:"text",text:step.handoff.response.content}],stopReason:"toolUse"},commitState:"provisional"}});
+          if(!validation.accepted){if(validation.fatal)return{outcome:"abnormal",reason:validation.issues.map((issue)=>issue.message).join("; ")};await runnerSession.feedback(validation);request.emit({type:"runner.handoff_rejected",data:{attemptId:validation.attemptId,issues:validation.issues} as unknown as JsonValue});continue;}
+          if(validation.messageItemId!==messageItemId)return{outcome:"abnormal",reason:"Handoff validation returned a different assistant message identity"};
+          const output:TurnOutput={validationAttemptId:validation.attemptId,validationToken:validation.token,handoff:step.handoff.handoff};assertTurnOutput(output);return { outcome: "completed", finalMessageId:messageItemId, handoff:output };
         }
         if (step.stopped) return { outcome: "abnormal", reason: request.turn.goalCommitment ? "runner stopped without a readable response and valid handoff" : "runner stopped without a response" };
       }

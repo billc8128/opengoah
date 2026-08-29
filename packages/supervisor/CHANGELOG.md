@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Human Turn replacement now uses one atomic Ledger admission and a persisted Runner cleanup fence; Assistant trace/result/Handoff share canonical text normalization, persisted Thread role remains the sole Agent-role authority, and committed direct Turns participate in live/restart recovery.
+- Human Turn replacement now uses one atomic Ledger admission and a persisted Runner cleanup fence; Runner completion and Handoff reference one canonical Assistant Item, persisted Thread role remains the sole Agent-role authority, and committed direct Turns participate in live/restart recovery.
 - Separated active Goal visibility from Turn commitment, made user priority trigger-based, removed Human Wakes, and moved explicit Goal control onto a directly committed CEO user Turn.
 - Human Turns that become Goal-bound rebuild Goal context on retry; live Handoff validation returns correctable issues to the Agent and binds accepted drafts to one-use tokens.
 - Uses typed Mail routes, reserves Human requests for CEO, commits effect-free Handoffs, scopes outcome context by Goal, and separates Team motion/outcome.

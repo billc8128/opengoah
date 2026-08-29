@@ -132,9 +132,9 @@ export interface GoalHandoff extends AgentHandoff { goalId: string; goalRevision
 export type Handoff = GoalHandoff;
 export interface HandoffValidationIssue { code:string;message:string;details?:JsonValue }
 export type HandoffValidationResult=
-  | {accepted:true;fatal:false;attemptId:number;token:string;goalId:string;goalRevision:number}
+  | {accepted:true;fatal:false;attemptId:number;token:string;goalId:string;goalRevision:number;messageItemId:string}
   | {accepted:false;fatal:boolean;attemptId:number;issues:HandoffValidationIssue[]};
-export interface HandoffValidationRequest {handoff:AgentHandoff;candidateMessage:string}
+export interface HandoffValidationRequest {handoff:AgentHandoff;candidateMessageId:string;candidateMessage:string}
 export interface TurnOutput { validationAttemptId:number;validationToken:string;handoff: AgentHandoff }
 export interface CommittedTurnOutput { handoff: GoalHandoff }
 export interface RunnerTraceEvent { type: string; data: JsonValue }
@@ -169,11 +169,10 @@ export interface RunnerConfigurator {
 }
 export type TurnTrigger = { kind: "user_message" } | { kind: "wake"; reasons: string[] };
 export interface TurnContext { trigger: TurnTrigger; activeGoal: GoalSnapshot | null; goalCommitment: GoalCommitment | null }
-export interface AssistantResponse { content: string }
 /** Canonical user-visible assistant prose. Raw provider events remain unchanged. */
 export function normalizeAssistantText(text: string): string { return text.replace(/\r\n?/g, "\n").trim(); }
 export interface RunRequest { agent: string; execution: TurnSnapshot; sourceWake?: WakeSnapshot; sourceWakeTriggers?: WakeTriggerSnapshot[]; turn: TurnContext; context: JsonValue; now(): string; emit(event: RunnerTraceEvent): void; rpc?(method: RunnerRpcMethod, params: JsonValue): Promise<JsonValue> }
-export type RunnerCandidateResult = { outcome: "completed"; response: AssistantResponse; handoff?: TurnOutput } | { outcome: "abnormal"; reason: string };
+export type RunnerCandidateResult = { outcome: "completed"; finalMessageId: string; handoff?: TurnOutput } | { outcome: "abnormal"; reason: string };
 export interface RunnerHandle { pid: number | null; begin(): void; result: Promise<RunnerCandidateResult>; steer?(message: string): Promise<void>; terminate(): Promise<void> }
 export interface Runner { readonly isolation: "process"; prepare(request: RunRequest): RunnerHandle; terminateProcess(pid: number, runnerProfileId?: string): Promise<void> }
 
@@ -213,7 +212,8 @@ export interface Ledger extends EventStore {
   renewTurnLease(id: string, leaseToken: string, leaseUntil: string, now: string): TurnSnapshot;
   appendTurnEvent(input: EventInput, leaseToken: string): EventRecord;
   repairTurnAttempt(id:string,reason:string,now:string,actor:string):TurnItemSnapshot[];
-  finishTurn(id:string,status:"completed"|"failed"|"interrupted",error:JsonValue|null,now:string,actor:string,mailIds?:string[]):TurnSnapshot;
+  finishTurn(id:string,status:"failed"|"interrupted",error:JsonValue,now:string,actor:string):TurnSnapshot;
+  commitTurnResponse(id:string,responseItemId:string,now:string,actor:string,mailIds?:string[]):TurnSnapshot;
   releaseTurnProcess(id:string,actor:string):TurnSnapshot;
   putMail(mail: MailSnapshot, actor: string, wakeId?: string): EventRecord;
   putMails(mail: MailSnapshot[], actor: string, wakeId?: string): EventRecord[];

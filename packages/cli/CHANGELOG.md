@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Runner completion, Handoff validation, Ledger commit, and Control output now reference one canonical Assistant Item by `finalMessageId`; tool-only Handoffs no longer erase an earlier readable reply, and consecutive duplicate terminal errors render once.
+
 ## 0.13.3
 
 - Added terminal-protocol-safe Ctrl+C handling: clear a draft, interrupt an active Turn, press again to exit, or exit immediately when idle; Ctrl+D now exits an idle prompt.

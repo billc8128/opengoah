@@ -4,8 +4,8 @@ import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { goalAutomaticTarget, type AgentHandoff,type AssistantResponse, type GoalSnapshot, type RunRequest, type TurnSnapshot, type WakeSnapshot } from "goah-ledger-contract";
-import { PiRunnerAdapter, ProcessRunner, piWorkerPath, type PiDriver } from "./index.js";
+import { goalAutomaticTarget, type AgentHandoff,type GoalSnapshot, type RunRequest, type TurnSnapshot, type WakeSnapshot } from "goah-ledger-contract";
+import { PiRunnerAdapter, ProcessRunner, piWorkerPath, type PiAssistantResponse,type PiDriver } from "./index.js";
 import { assistantResponseText, bashTimeoutMs, compactMessages, compactMessagesToTokenBudget, linuxSandboxArgs, resolveContextPolicy, runBashCommand, sandboxWorkspacePaths, scopedRunnerPath, snapshotModelConfig } from "./pi-worker.js";
 import { createPiModel, modelCatalog, providerCatalog } from "./model-provider.js";
 
@@ -27,7 +27,7 @@ test("assistant response excludes thinking and tool blocks", () => {
   assert.equal(assistantResponseText(message), "Visible answer.");
 });
 
-function driver(steps: Array<{ stop?: boolean; response?: AssistantResponse; handoff?: {response:AssistantResponse;handoff:AgentHandoff} }>): PiDriver {
+function driver(steps: Array<{ stop?: boolean; response?: PiAssistantResponse; handoff?: {response:PiAssistantResponse;handoff:AgentHandoff} }>): PiDriver {
   return {
     createRunnerSession: async () => ({
       step: async () => {
@@ -49,7 +49,7 @@ test("runner policy is external and a multi-step driver can hand off", async () 
   ]);
   const request: RunRequest = {
     ...requestBase, turn: goalTurn, context: {},
-    now: () => now, emit: () => undefined,rpc:async(method)=>method==="goal.handoff.validate"?{accepted:true,fatal:false,attemptId:1,token:"accepted",goalId:"goal",goalRevision:0}:null,
+    now: () => now, emit: () => undefined,rpc:async(method,params)=>method==="goal.handoff.validate"?{accepted:true,fatal:false,attemptId:1,token:"accepted",goalId:"goal",goalRevision:0,messageItemId:String((params as {candidateMessageId?:unknown}).candidateMessageId)}:null,
   };
   const handle = new PiRunnerAdapter(faux).prepare(request);
   handle.begin();
@@ -58,7 +58,7 @@ test("runner policy is external and a multi-step driver can hand off", async () 
   if(result.outcome==="completed")assert.equal(result.handoff?.handoff.outcome,"progress");
 });
 
-test("PiRunnerAdapter feeds correctable Handoff issues back and continues the session",async()=>{let steps=0;const feedback:string[]=[];let validations=0;const runner=new PiRunnerAdapter({createRunnerSession:async()=>({step:async()=>{steps+=1;return{handoff:{response:{content:`attempt ${steps}`},handoff:{outcome:"progress",evidence:[1]}}}},feedback:async(result)=>{feedback.push(result.issues[0]?.code??"");},close:async()=>undefined})});const request:RunRequest={...requestBase,turn:goalTurn,context:{},now:()=>execution.startedAt,emit:()=>undefined,rpc:async(method)=>{if(method!=="goal.handoff.validate")return null;validations+=1;return validations===1?{accepted:false,fatal:false,attemptId:1,issues:[{code:"repair",message:"repair it"}]}:{accepted:true,fatal:false,attemptId:2,token:"accepted",goalId:"goal",goalRevision:0};}};const handle=runner.prepare(request);handle.begin();const result=await handle.result;assert.equal(result.outcome,"completed");assert.deepEqual({steps,validations,feedback},{steps:2,validations:2,feedback:["repair"]});});
+test("PiRunnerAdapter feeds correctable Handoff issues back and continues the session",async()=>{let steps=0;const feedback:string[]=[];let validations=0;const runner=new PiRunnerAdapter({createRunnerSession:async()=>({step:async()=>{steps+=1;return{handoff:{response:{content:`attempt ${steps}`},handoff:{outcome:"progress",evidence:[1]}}}},feedback:async(result)=>{feedback.push(result.issues[0]?.code??"");},close:async()=>undefined})});const request:RunRequest={...requestBase,turn:goalTurn,context:{},now:()=>execution.startedAt,emit:()=>undefined,rpc:async(method,params)=>{if(method!=="goal.handoff.validate")return null;validations+=1;return validations===1?{accepted:false,fatal:false,attemptId:1,issues:[{code:"repair",message:"repair it"}]}:{accepted:true,fatal:false,attemptId:2,token:"accepted",goalId:"goal",goalRevision:0,messageItemId:String((params as {candidateMessageId?:unknown}).candidateMessageId)};}};const handle=runner.prepare(request);handle.begin();const result=await handle.result;assert.equal(result.outcome,"completed");assert.deepEqual({steps,validations,feedback},{steps:2,validations:2,feedback:["repair"]});});
 
 test("PiRunnerAdapter stops a revoked session without requesting another step",async()=>{let steps=0;let feedback=0;const runner=new PiRunnerAdapter({createRunnerSession:async()=>({step:async()=>{steps+=1;return{handoff:{response:{content:"stale"},handoff:{outcome:"progress",evidence:[1]}}}},feedback:async()=>{feedback+=1;},close:async()=>undefined})});const handle=runner.prepare({...requestBase,turn:goalTurn,context:{},now:()=>execution.startedAt,emit:()=>undefined,rpc:async()=>({accepted:false,fatal:true,attemptId:1,issues:[{code:"revoked",message:"Goal changed"}]})});handle.begin();assert.equal((await handle.result).outcome,"abnormal");assert.deepEqual({steps,feedback},{steps:1,feedback:0});});
 
@@ -66,7 +66,7 @@ test("an unbound Turn returns a normal assistant response without handoff", asyn
   const request: RunRequest = { ...requestBase, execution:{...execution,triggerKind:"user_message",goalId:null,goalRevision:null}, turn: { trigger: { kind: "user_message" },activeGoal:goal,goalCommitment:null }, context: {}, now: () => "2026-08-18T00:00:00.000Z", emit: () => undefined };
   const handle = new PiRunnerAdapter(driver([{ response: { content: "你好" } }])).prepare(request);
   handle.begin();
-  assert.deepEqual(await handle.result, { outcome: "completed", response: { content: "你好" } });
+  assert.deepEqual(await handle.result, { outcome: "completed", finalMessageId: "adapter:turn:attempt:1:message:1" });
 });
 
 test("bash commands are killed by process-group timeout and become visible tool errors", async () => {
@@ -163,7 +163,7 @@ test("ProcessRunner forwards steering messages over the live worker protocol", a
   const handle = runner.prepare({ ...requestBase, execution:{...execution,triggerKind:"user_message",goalId:null,goalRevision:null}, turn: { trigger: { kind: "user_message" },activeGoal:goal,goalCommitment:null }, context: {}, now: () => new Date().toISOString(), emit: () => undefined });
   handle.begin();
   await handle.steer!("correct the budget");
-  assert.deepEqual(await handle.result, { outcome: "completed", response: { content: "correct the budget" } });
+  assert.deepEqual(await handle.result, { outcome: "completed", finalMessageId: "steering:turn" });
 });
 
 test("ProcessRunner rejects steering that the worker no longer accepts", async () => {
@@ -171,7 +171,7 @@ test("ProcessRunner rejects steering that the worker no longer accepts", async (
   const handle = runner.prepare({ ...requestBase, execution:{...execution,triggerKind:"user_message",goalId:null,goalRevision:null}, turn: { trigger: { kind: "user_message" },activeGoal:goal,goalCommitment:null }, context: {}, now: () => new Date().toISOString(), emit: () => undefined });
   handle.begin();
   await assert.rejects(handle.steer!("too late"), /no longer accepting/);
-  assert.deepEqual(await handle.result, { outcome: "completed", response: { content: "finished" } });
+  assert.deepEqual(await handle.result, { outcome: "completed", finalMessageId: "steering:turn" });
 });
 
 test("ProcessRunner bounds steering acknowledgement waits", async () => {

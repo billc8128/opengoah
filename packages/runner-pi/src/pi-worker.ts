@@ -50,8 +50,10 @@ export async function runPiWorker(): Promise<void> {
         const record = `# Current State\n\nFaux Goal outcome: ${outcome}.\n\n# Observations\n\nSee the cited Ledger evidence.\n\n# Work Completed\n\nExecuted the scripted faux Goal turn.\n\n# Decisions\n\nRecord the scripted result from ${request.execution.id}.\n\n# Blockers\n\n${outcome==="blocked"?"Blocked.":"None."}\n\n# Next Steps\n\nFollow the current Goal and explicit tools.\n`;
         const finalResponse=fauxAssistantMessage([fauxText(String(handoff.message??`Goal work recorded with outcome ${outcome}.`)),fauxToolCall("handoff", {outcome,evidence:handoffEvidence})], { stopReason: "toolUse" });
         const recordResponse=fauxAssistantMessage(fauxToolCall("work_record_update", { expectedRevision: Number(current.recordRevision ?? 0), content: record, reason: "record faux Goal progress", evidence: evidence.length ? [Math.max(...evidence)] : [] }), { stopReason: "toolUse" });
+        const narratedScheduleResponse=fauxAssistantMessage([fauxText(String(handoff.message??"Work Record updated; the next wake is scheduled.")),fauxToolCall("schedule_wake",{at:new Date(Date.parse(request.execution.startedAt)+60_000).toISOString(),reason:"continue Goal work"})],{stopReason:"toolUse"});
+        const toolOnlyHandoff=fauxAssistantMessage(fauxToolCall("handoff",{outcome,evidence:handoffEvidence}),{stopReason:"toolUse"});
         const fatalBatch=fauxAssistantMessage([fauxText("Stale completion attempt."),fauxToolCall("handoff",{outcome,evidence:handoffEvidence}),fauxToolCall("write",{path:"fatal.txt",content:"must not be written"})],{stopReason:"toolUse"});
-        faux.setResponses(process.env.GOAH_PI_FAUX_FATAL_BATCH==="1"?[fatalBatch]:process.env.GOAH_PI_FAUX_HANDOFF_REPAIR==="1"?[fauxAssistantMessage([fauxText("Premature completion attempt."),fauxToolCall("handoff",{outcome,evidence:handoffEvidence})],{stopReason:"toolUse"}),recordResponse,finalResponse]:[recordResponse,finalResponse]);
+        faux.setResponses(process.env.GOAH_PI_FAUX_FATAL_BATCH==="1"?[fatalBatch]:process.env.GOAH_PI_FAUX_HANDOFF_REPAIR==="1"?[fauxAssistantMessage([fauxText("Premature completion attempt."),fauxToolCall("handoff",{outcome,evidence:handoffEvidence})],{stopReason:"toolUse"}),recordResponse,finalResponse]:process.env.GOAH_PI_FAUX_TOOL_ONLY_HANDOFF==="1"?[recordResponse,narratedScheduleResponse,toolOnlyHandoff]:[recordResponse,finalResponse]);
       } else if (!goalState.bound) {
         faux.setResponses([fauxAssistantMessage([fauxText(process.env.GOAH_PI_FAUX_RESPONSE ?? "Hello from Goah.")])]);
       } else {
@@ -61,9 +63,9 @@ export async function runPiWorker(): Promise<void> {
     }
 
     let output: TurnOutput | null = null;
-    let acceptedHandoff:{attemptId:number;token:string;handoff:AgentHandoff}|null=null;
+    let acceptedHandoff:{attemptId:number;token:string;messageItemId:string;handoff:AgentHandoff}|null=null;
     let revokedReason="";
-    let response = "";
+    let lastReadableMessage:{id:string;text:string}|null=null;
     let responseFailure = "";
     let compactions = 0;
     let messageCounter = 0;
@@ -73,7 +75,7 @@ export async function runPiWorker(): Promise<void> {
       if (typeof message !== "object" || message === null) return `message:${++messageCounter}`;
       const existing = messageIds.get(message);
       if (existing) return existing;
-      const id = `message:${++messageCounter}`;
+      const id = `${request.execution.id}:attempt:${request.execution.attempt}:message:${++messageCounter}`;
       messageIds.set(message, id);
       return id;
     };
@@ -132,7 +134,7 @@ export async function runPiWorker(): Promise<void> {
         }
         return view;
       },
-      beforeToolCall:async({assistantMessage,toolCall,args})=>{if(revokedReason)return{block:true,reason:`Turn authority was revoked: ${revokedReason}`,terminate:true};if(toolCall.name!=="handoff")return;acceptedHandoff=null;output=null;const handoff=args as AgentHandoff;try{const result=await rpc("goal.handoff.validate",{handoff,candidateMessage:assistantResponseText(assistantMessage)} as unknown as JsonValue) as unknown as HandoffValidationResult;if(result.accepted){acceptedHandoff={attemptId:result.attemptId,token:result.token,handoff};return;}const reason=result.issues.map((issue)=>`- ${issue.message}`).join("\n");if(result.fatal)revokedReason=reason;return{block:true,reason:`Handoff was not accepted:\n${reason}`,terminate:result.fatal};}catch(error){revokedReason=error instanceof Error?error.message:String(error);return{block:true,reason:`Handoff validation could not continue: ${revokedReason}`,terminate:true};}},
+      beforeToolCall:async({assistantMessage,toolCall,args})=>{if(revokedReason)return{block:true,reason:`Turn authority was revoked: ${revokedReason}`,terminate:true};if(toolCall.name!=="handoff")return;acceptedHandoff=null;output=null;const handoff=args as AgentHandoff;const currentText=assistantResponseText(assistantMessage);const candidate=currentText?{id:idFor(assistantMessage),text:currentText}:lastReadableMessage;try{const result=await rpc("goal.handoff.validate",{handoff,candidateMessageId:candidate?.id??"",candidateMessage:candidate?.text??""} as unknown as JsonValue) as unknown as HandoffValidationResult;if(result.accepted){if(!candidate||result.messageItemId!==candidate.id){revokedReason="Handoff validation returned a different assistant message identity";return{block:true,reason:revokedReason,terminate:true};}acceptedHandoff={attemptId:result.attemptId,token:result.token,messageItemId:result.messageItemId,handoff};return;}const reason=result.issues.map((issue)=>`- ${issue.message}`).join("\n");if(result.fatal)revokedReason=reason;return{block:true,reason:`Handoff was not accepted:\n${reason}`,terminate:result.fatal};}catch(error){revokedReason=error instanceof Error?error.message:String(error);return{block:true,reason:`Handoff validation could not continue: ${revokedReason}`,terminate:true};}},
       shouldStopAfterTurn: () => output !== null||Boolean(revokedReason),
       toolExecution: "sequential",
     });
@@ -150,9 +152,9 @@ export async function runPiWorker(): Promise<void> {
       } else if (event.type === "message_update") {
         emit({ type: "message.assistant.delta", data: { messageId: idFor(event.message), delta: JSON.parse(JSON.stringify(event.assistantMessageEvent)) as JsonValue } });
       } else if (event.type === "message_end" && event.message.role === "assistant") {
-        response = assistantResponseText(event.message);
+        const messageId=idFor(event.message);const text=assistantResponseText(event.message);if(text)lastReadableMessage={id:messageId,text};
         if ((event.message.stopReason === "error" || event.message.stopReason === "aborted") && event.message.errorMessage) responseFailure = event.message.errorMessage;
-        const handoffIntent=hasAgentToolCall(event.message,"handoff");emit({ type: "message.assistant.completed", data: { message: transcriptMessage(event.message, idFor(event.message)) as unknown as JsonValue,commitState:handoffIntent?"provisional":"committed" } });
+        const handoffIntent=hasAgentToolCall(event.message,"handoff");emit({ type: "message.assistant.completed", data: { message: transcriptMessage(event.message, messageId) as unknown as JsonValue,commitState:handoffIntent?"provisional":"committed" } });
       } else if (event.type === "tool_execution_start") emit({ type: "tool.called", data: { callId: event.toolCallId, name: event.toolName, arguments: JSON.parse(JSON.stringify(event.args)) as JsonValue } });
       else if (event.type === "tool_execution_end") emit({ type: "tool.completed", data: { callId: event.toolCallId, messageId: `tool:${event.toolCallId}`, name: event.toolName, result: JSON.parse(JSON.stringify(event.result)) as JsonValue, isError: event.isError } });
       else if (event.type === "turn_end") emit({ type: "turn.completed", data: {} });
@@ -168,10 +170,13 @@ export async function runPiWorker(): Promise<void> {
       process.off("SIGINT", abortAgent);
     }
     if(revokedReason)return{outcome:"abnormal",reason:revokedReason};
-    if (!goalState.bound) return response ? { outcome: "completed", response: { content: response } } : { outcome: "abnormal", reason: responseFailure || "Pi worker exited without a response" };
+    const finalMessage=lastReadableMessage as {id:string;text:string}|null;
+    if (!goalState.bound) return finalMessage ? { outcome: "completed", finalMessageId: finalMessage.id } : { outcome: "abnormal", reason: responseFailure || "Pi worker exited without a response" };
     if (responseFailure) return { outcome: "abnormal", reason: responseFailure };
     if (!output) return { outcome: "abnormal", reason: "Pi worker exited without an accepted Handoff" };
-    return { outcome: "completed", response:{content:response}, handoff:output };
+    const finalHandoff=acceptedHandoff as {attemptId:number;token:string;messageItemId:string;handoff:AgentHandoff}|null;
+    if(!finalHandoff)return{outcome:"abnormal",reason:"Pi worker exited without an accepted Handoff message"};
+    return { outcome: "completed", finalMessageId:finalHandoff.messageItemId, handoff:output };
   });
 }
 

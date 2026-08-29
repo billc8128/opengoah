@@ -37,7 +37,7 @@ Append-only typed events with global `seq`, per-stream `streamSeq`, atomic appen
 
 ### Replayable Thread, Turn, and Item
 
-A Thread is a durable Goah conversation, not a provider thread. Turns are the sole execution identity. Normalized user, assistant, reasoning, tool, request, compaction, completion, and interruption Items reconstruct what the model saw and did. Open tool calls become explicit `unknown` outcomes after interruption.
+A Thread is a durable Goah conversation, not a provider thread. Turns are the sole execution identity. Normalized user, assistant, reasoning, tool, request, compaction, completion, and interruption Items reconstruct what the model saw and did. Open tool calls become explicit `unknown` outcomes after interruption. Assistant prose has exactly one authoritative representation: a completed Assistant Item. Runner completion returns only its `finalMessageId`; `response.committed`, Control output, and Handoff all reference or project that Item.
 
 ### Execution modules
 

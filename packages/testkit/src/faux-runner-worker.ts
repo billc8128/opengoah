@@ -24,6 +24,7 @@ await runProcessWorker(async (request, emit, rpc): Promise<RunnerCandidateResult
   const steps = triggerSteps ?? byAgent[request.agent] ?? JSON.parse(process.env.GOAH_FAUX_STEPS ?? "[]") as WorkerStep[];
   let goalCommitment = request.turn?.goalCommitment;
   let recordUpdated = false;
+  let messageSequence = 0;
   for (const step of steps) {
     if (step.write) {
       const path = join(process.cwd(), step.write.path);
@@ -40,7 +41,7 @@ await runProcessWorker(async (request, emit, rpc): Promise<RunnerCandidateResult
     if (step.crash) throw new Error(step.crash);
     if (step.delayMs) await new Promise((resolve) => setTimeout(resolve, step.delayMs));
     if (step.hang) await new Promise(() => undefined);
-    if (step.response !== undefined) return { outcome: "completed", response: { content: step.response } };
+    if (step.response !== undefined) {const finalMessageId=`faux:${request.execution.id}:attempt:${request.execution.attempt}:message:${++messageSequence}`;emit({type:"message.assistant.completed",data:{message:{id:finalMessageId,role:"assistant",content:[{type:"text",text:step.response}]},commitState:"committed"}});return { outcome: "completed", finalMessageId };}
     if (step.handoff) {
       const draft=step.handoff;
       if (goalCommitment && !recordUpdated) {
@@ -49,7 +50,7 @@ await runProcessWorker(async (request, emit, rpc): Promise<RunnerCandidateResult
         const evidence = sourceSeqs(request.context);
         await rpc("work_record.update", { expectedRevision: Number(record.recordRevision ?? 0), content: handoffRecord(draft.handoff, request.execution.id), reason: "record faux Goal progress", evidence: evidence.length ? [Math.max(...evidence)] : [] });
       }
-      const validation=await rpc("goal.handoff.validate",{handoff:draft.handoff,candidateMessage:draft.response.content} as unknown as JsonValue) as unknown as HandoffValidationResult;emit({type:"message.assistant.completed",data:{message:{id:`faux:${request.execution.id}:handoff:${validation.attemptId}`,role:"assistant",content:[{type:"text",text:draft.response.content}],stopReason:"toolUse"},commitState:"provisional"}});if(!validation.accepted){emit({type:"runner.handoff_rejected",data:{attemptId:validation.attemptId,issues:validation.issues} as unknown as JsonValue});if(validation.fatal)return{outcome:"abnormal",reason:validation.issues.map((issue)=>issue.message).join("; ")};continue;}const output:TurnOutput={validationAttemptId:validation.attemptId,validationToken:validation.token,handoff:draft.handoff};return { outcome: "completed", response:draft.response,handoff:output };
+      const messageItemId=`faux:${request.execution.id}:attempt:${request.execution.attempt}:message:${++messageSequence}`;const validation=await rpc("goal.handoff.validate",{handoff:draft.handoff,candidateMessageId:messageItemId,candidateMessage:draft.response.content} as unknown as JsonValue) as unknown as HandoffValidationResult;emit({type:"message.assistant.completed",data:{message:{id:messageItemId,role:"assistant",content:[{type:"text",text:draft.response.content}],stopReason:"toolUse"},commitState:"provisional"}});if(!validation.accepted){emit({type:"runner.handoff_rejected",data:{attemptId:validation.attemptId,issues:validation.issues} as unknown as JsonValue});if(validation.fatal)return{outcome:"abnormal",reason:validation.issues.map((issue)=>issue.message).join("; ")};continue;}if(validation.messageItemId!==messageItemId)return{outcome:"abnormal",reason:"Handoff validation returned a different assistant message identity"};const output:TurnOutput={validationAttemptId:validation.attemptId,validationToken:validation.token,handoff:draft.handoff};return { outcome: "completed", finalMessageId:messageItemId,handoff:output };
     }
   }
   return { outcome: "abnormal", reason: "faux worker stopped without handoff" };

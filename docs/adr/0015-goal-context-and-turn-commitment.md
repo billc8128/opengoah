@@ -61,17 +61,17 @@ Every CEO Turn receives the current active Root Goal when one exists. Child Turn
 
 Wake and Schedule retain a discriminated automatic target: Goal or Specialist. Human input never becomes a Wake; it starts or steers a CEO Turn directly. The automatic target is consumed during Turn admission and is not copied into a Turn classification.
 
-### One successful Runner result
+### One canonical Assistant Item
 
-Every successful Runner result contains a readable assistant response and may contain a Handoff:
+Every successful Runner result references the readable Assistant Item already emitted into the Turn transcript and may contain a Handoff:
 
 ```ts
 type RunnerCandidateResult =
-  | { outcome: "completed"; response: AssistantResponse; handoff?: TurnOutput }
+  | { outcome: "completed"; finalMessageId: string; handoff?: TurnOutput }
   | { outcome: "abnormal"; reason: string };
 ```
 
-Supervisor requires Handoff exactly when the persisted Turn has a Goal commitment. Work Record and Handoff validation remain unchanged in strength.
+Runner does not submit response prose a second time. Supervisor requires `finalMessageId` to reference a completed readable Assistant Item in the same Turn and atomically writes `response.committed` before closing the Turn. Handoff validation binds the same Item identity; Supervisor requires Handoff exactly when the persisted Turn has a Goal commitment. Work Record and Handoff validation remain unchanged in strength.
 
 ## Consequences
 
@@ -90,6 +90,6 @@ This ADR supersedes:
 - ADR 0011 and ADR 0012 fields that model `source` as `human | goal | system`;
 - ADR 0012 and architecture schema v24 `ExecutionBinding` copied onto Turn;
 - Human Mail/Wake as an alternate CEO interaction path;
-- Runner result variants that treat response and Handoff as different successful Turn outcomes.
+- Runner result variants that treat response and Handoff as different successful Turn outcomes, or duplicate Assistant prose outside its canonical Turn Item.
 
 It does not supersede the Goal hierarchy, Child ownership, observation and verification methods, Work Record requirement for committed execution, Human Root authority, or Handoff validation.
