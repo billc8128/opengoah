@@ -1,15 +1,15 @@
 /** Full-screen goah TUI: streaming CEO transcript over the resident Supervisor control socket. */
-import { TuiAltScreen, Text, Markdown, Editor, ProcessTerminal, ScrollView, VStack, CombinedAutocompleteProvider, type Component, type MarkdownTheme, type SlashCommand } from "@earendil-works/pi-tui";
+import { TuiAltScreen, Text, Markdown, Editor, Image, HStack, ProcessTerminal, ScrollView, VStack, CombinedAutocompleteProvider, Key, getCapabilities, isKeyRelease, matchesKey, type Component, type MarkdownTheme, type SlashCommand } from "@earendil-works/pi-tui";
 import { controlAvailable, requestControl, streamControl, type ControlFrame, type ControlRequest } from "./control.js";
 import { loadConfig, readConsoleMetadata, readDefaultRunnerProfile } from "./index.js";
 import { switchModel, reloadDaemon, readRunnerDisplay } from "./live-config.js";
-import { welcomeSnapshot, renderWelcome } from "./welcome.js";
+import { GOAH_TERMINAL_MARK, welcomeSnapshot, type WelcomeSnapshot } from "./welcome.js";
 import { chooseSetupSection, runRunnerCommandWizard, runSetupWizard, applyWizardResult, type SetupSection } from "./setup-wizard.js";
 import { installedVersion } from "./update.js";
 import { tuiTheme } from "./tui-theme.js";
 import { normalizeAssistantText } from "goah-ledger-contract";
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 interface CancellableState { active: boolean }
@@ -34,11 +34,12 @@ const markdownTheme: MarkdownTheme = {
   strikethrough: tuiTheme.muted, underline: tuiTheme.underline, codeBlockIndent: "  ",
 };
 export class ConversationView implements Component {
-  private entries: Array<{ kind: "text" | "user" | "markdown" | "thinking"; content: string } | ToolActivity>;
+  private entries: Array<{ kind: "text" | "user" | "markdown" | "thinking"; content: string } | { kind: "component"; component: Component } | ToolActivity>;
   private liveMarkdown = "";
   private liveThinking = "";
   private thinkingActive = false;
-  constructor(initial: string[]) { this.entries = [{ kind: "text", content: initial.join("\n") }]; }
+  constructor(initial: string[]) { this.entries = initial.length ? [{ kind: "text", content: initial.join("\n") }] : []; }
+  addComponent(component: Component): void { this.entries.push({ kind: "component", component }); }
   addText(content: string): void { this.entries.push({ kind: "text", content }); this.trim(); }
   addUser(content: string): void { this.entries.push({ kind: "user", content }); this.trim(); }
   addMarkdown(content: string): void {
@@ -73,7 +74,9 @@ export class ConversationView implements Component {
   endTransientTurn(): void { this.liveMarkdown="";this.liveThinking="";this.thinkingActive=false;this.stopRunningTools(); }
   private trim(): void { if (this.entries.length > 240) this.entries.splice(1, this.entries.length - 240); }
   render(width: number): string[] {
-    const rendered = this.entries.flatMap((entry) => entry.kind === "markdown"
+    const rendered = this.entries.flatMap((entry) => entry.kind === "component"
+      ? entry.component.render(width)
+      : entry.kind === "markdown"
       ? [...new Markdown(entry.content, 2, 0, markdownTheme).render(width), ""]
       : entry.kind === "user"
         ? renderUserMessage(entry.content, width)
@@ -88,6 +91,42 @@ export class ConversationView implements Component {
     return rendered;
   }
   invalidate(): void {}
+}
+
+export class WelcomeLockup implements Component {
+  private readonly mark: Component;
+  private readonly details: Component;
+  private readonly horizontal: HStack;
+  constructor(snapshot: WelcomeSnapshot, hasHistory: boolean, imageData: string | null = null) {
+    this.mark = imageData
+      ? new Image(imageData, "image/png", { fallbackColor: tuiTheme.accent }, { maxWidthCells: 10, maxHeightCells: 5, filename: "Goah" })
+      : new Text(GOAH_TERMINAL_MARK.map((line) => tuiTheme.accent(line)).join("\n"), 0, 0);
+    const lines = [
+      tuiTheme.strong(hasHistory ? "Welcome back." : "Ready when you are."),
+      `${tuiTheme.accent(snapshot.target)} ${tuiTheme.muted(`· ${snapshot.runner}`)}`,
+    ];
+    if (!snapshot.root) lines.push(tuiTheme.muted("Chat normally · /goal for durable work · /help"));
+    if (snapshot.team.length) lines.push(tuiTheme.muted(`${snapshot.team.length} Goal Agent${snapshot.team.length === 1 ? "" : "s"} in the organization`));
+    this.details = new Text(lines.join("\n"), 0, 0);
+    this.horizontal = new HStack([
+      { component: this.mark, basis: 14, shrink: 0 },
+      { component: this.details, grow: 1, minSize: 24 },
+    ], { gap: 2, align: "center" });
+  }
+  render(width: number): string[] {
+    const contentWidth = Math.max(1, width - 4);
+    if (width < 58) {
+      return ["", ...this.mark.render(Math.min(14, contentWidth)).map((line) => `  ${line}`), "", ...this.details.render(contentWidth).map((line) => `  ${line}`), ""];
+    }
+    return ["", ...this.horizontal.render(contentWidth).map((line) => `  ${line}`), ""];
+  }
+  invalidate(): void { this.mark.invalidate(); this.details.invalidate(); this.horizontal.invalidate(); }
+}
+
+function terminalLogoData(): string | null {
+  if (getCapabilities().images !== "kitty") return null;
+  try { return readFileSync(new URL("./console/goah-orbital-mark.png", import.meta.url)).toString("base64"); }
+  catch { return null; }
 }
 export class StreamCoordinator {
   #active:AbortController|null=null;
@@ -138,7 +177,7 @@ export const TUI_COMMANDS:TuiCommandDefinition[]=[
 function commandDefinition(text:string):{definition:TuiCommandDefinition;hasArguments:boolean}|null{const token=text.trim().split(/\s+/,1)[0]??"";if(!token.startsWith("/"))return null;const name=token.slice(1);const definition=TUI_COMMANDS.find((candidate)=>candidate.name===name||candidate.aliases?.includes(name));if(!definition)return null;return{definition,hasArguments:Boolean(text.trim().slice(token.length).trim())};}
 export function commandAwaitingArgument(text:string):string|null{const match=commandDefinition(text);return match&&match.definition.requiresArgument&&!match.hasArguments?`/${match.definition.name} `:null;}
 export function createTuiAutocompleteProvider(basePath=process.cwd()):CombinedAutocompleteProvider{const commands:SlashCommand[]=TUI_COMMANDS.map(({name,description,argumentHint,getArgumentCompletions})=>({name,...(description?{description}:{}),...(argumentHint?{argumentHint}:{}),...(getArgumentCompletions?{getArgumentCompletions}:{})}));return new CombinedAutocompleteProvider(commands,basePath);}
-export function renderTuiCommandHelp():string{return [tuiTheme.strong("Commands"),...TUI_COMMANDS.map((command)=>{const invocation=`/${command.name}${command.argumentHint?` ${command.argumentHint}`:""}`;return `  ${invocation.padEnd(28)} ${tuiTheme.muted(command.description??"")}`;}),""].join("\n");}
+export function renderTuiCommandHelp():string{return [tuiTheme.strong("Commands"),...TUI_COMMANDS.map((command)=>{const invocation=`/${command.name}${command.argumentHint?` ${command.argumentHint}`:""}`;return `  ${invocation.padEnd(28)} ${tuiTheme.muted(command.description??"")}`;}),"",tuiTheme.strong("Keyboard"),`  ${"Ctrl+C".padEnd(28)} ${tuiTheme.muted("Clear input · interrupt current Turn · exit when idle")}`,`  ${"Ctrl+D".padEnd(28)} ${tuiTheme.muted("Exit when idle")}`,""].join("\n");}
 export function classifyTuiInput(value: string, busy: boolean): { action: TuiInputAction; text: string } {
   const text = value.trim();
   if (!text) return { action: "empty", text };
@@ -147,11 +186,22 @@ export function classifyTuiInput(value: string, busy: boolean): { action: TuiInp
   return { action: busy ? "steer" : "send", text };
 }
 
+export type TuiControlAction = "forward" | "clear" | "interrupt" | "exit";
+export function classifyTuiControlKey(data: string, inputText: string, busy: boolean): TuiControlAction {
+  if (isKeyRelease(data)) return "forward";
+  if (matchesKey(data, Key.ctrl("c"))) {
+    if (inputText.length > 0) return "clear";
+    return busy ? "interrupt" : "exit";
+  }
+  if (matchesKey(data, Key.ctrl("d")) && !inputText && !busy) return "exit";
+  return "forward";
+}
+
 export async function runGoahTui(configPath: string, stateDir: string, initialMessage: string | null): Promise<void> {
   if (!process.stdout.isTTY || !process.stdin.isTTY) return runNonInteractive(configPath, stateDir, initialMessage);
   const runner = readRunnerDisplay(configPath);
   const snapshot = welcomeSnapshot(stateDir, runner);
-  const welcome = renderWelcome(snapshot, Boolean(snapshot.root || snapshot.handoffs.length || snapshot.conversation.length));
+  const hasHistory = Boolean(snapshot.root || snapshot.handoffs.length || snapshot.conversation.length);
   await ensureDaemon(configPath, stateDir);
   const liveSnapshot = await requestControl(stateDir, { op: "status" }).catch(() => null);
   const liveTurns = liveSnapshot && typeof liveSnapshot === "object" && !Array.isArray(liveSnapshot) && Array.isArray(liveSnapshot.turns) ? liveSnapshot.turns as Array<Record<string, unknown>> : [];
@@ -160,7 +210,8 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   const tui = new TuiAltScreen(terminal, true, undefined, { mouse: true });
   terminal.setTitle(`Goah · ${runner.target}`);
   const headerView = new HeaderBar(runner.runner, runner.target, installedVersion());
-  const transcriptView = new ConversationView(welcome);
+  const transcriptView = new ConversationView([]);
+  transcriptView.addComponent(new WelcomeLockup(snapshot, hasHistory, terminalLogoData()));
   for (const row of snapshot.conversation) if (row.speaker === "You") transcriptView.addUser(row.text); else transcriptView.addMarkdown(row.text);
   const conversationScroll = new ScrollView(transcriptView, { follow: "end", primary: true, scrollbar: "auto", scrollbarStyle: tuiTheme.muted });
   const goalView = new GoalBar(snapshot.root);
@@ -185,6 +236,7 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   let steeringTail: Promise<void> = Promise.resolve();
   let configuring = false;
   let exiting = false;
+  let interrupting = false;
 
   const push = (line: string): void => {
     transcriptView.addText(line);
@@ -198,6 +250,7 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   const setWakeState = (mode: "queued" | "working"): void => { statusView.setText(statusText(mode, mode === "queued" ? 1 : queued.length)); tui.requestRender(); };
   const finishIdle = async (): Promise<void> => {
     busy.active = false;
+    interrupting = false;
     await refreshGoalBar(stateDir, goalView, tui);
     statusView.setText(statusText(queuedTurnIds.length || queued.length ? "queued" : "ready", queuedTurnIds.length + queued.length));
     continuePending();
@@ -255,6 +308,7 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
     finally {
       if(!streams.complete(controller))return;
       busy.active = false;
+      interrupting = false;
       await refreshGoalBar(stateDir, goalView, tui);
       statusView.setText(statusText("ready"));
       continuePending();
@@ -352,11 +406,24 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   tui.setFocus(input);
   const { promise: exited, resolve: resolveExit } = Promise.withResolvers<void>();
   tui.addInputListener((data) => {
-    if (data !== "\x03") return undefined;
+    const action = classifyTuiControlKey(data, input.getText(), busy.active);
+    if (action === "forward") return undefined;
+    if (action === "clear") {
+      input.setText("");
+      tui.requestRender();
+      return { consume: true };
+    }
+    if (action === "interrupt" && !interrupting) {
+      interrupting = true;
+      statusView.setText(`${tuiTheme.warning("stopping")}  ${tuiTheme.muted("press Ctrl+C again to exit")}`);
+      tui.requestRender();
+      void stopCeoWake(stateDir, push);
+      return { consume: true };
+    }
     exiting = true;
-    push(busy.active ? "Detached — the current Turn continues in the daemon. Use /stop before detaching when you intend to cancel it." : "Detached.");
     streams.abortAll();
-    tui.stop(); resolveExit();
+    tui.stop();
+    resolveExit();
     return { consume: true };
   });
   tui.start();

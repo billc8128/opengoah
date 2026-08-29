@@ -23,10 +23,12 @@ export const WELCOME_TEAM_SLOTS = 3;
 export const WELCOME_HANDOFF_SLOTS = 2;
 export const WELCOME_CONVERSATION_SLOTS = 240;
 export const GOAH_TERMINAL_MARK = [
-  "      ╭────╮",
-  "  ╭───╯ ●  ╰───╮",
-  "  ╰───╮    ╭───╯",
-  "      ╰────╯",
+  "⠀⠀⠀⢀⣴⠟⠛⠲⡀⠀⠀⠀",
+  "⠀⠀⢀⣿⣥⠶⠶⠞⢻⠛⠒⠀",
+  "⣰⠞⢻⡏⣰⣾⣶⡄⢸⡟⢳⡄",
+  "⠻⣦⣸⣇⣙⣿⣟⣁⣿⣴⠾⠃",
+  "⠀⠀⠉⢿⡉⠉⣉⣿⠃⠀⠀⠀",
+  "⠀⠀⠀⠈⠛⠛⠋⠁⠀⠀⠀⠀",
 ];
 
 interface GoalRow { id: string; objective: string; phase: string; parent_id: string | null; owner: string }
@@ -51,7 +53,7 @@ export function welcomeSnapshot(stateDir: string, runner: RunnerDisplay): Welcom
         return [{ agent: row.actor, result }];
       } catch { return [{ agent: row.actor, result: "" }]; }
     });
-    const itemRows = db.prepare("SELECT i.type,i.data FROM turn_items i JOIN turns t ON t.id=i.turn_id JOIN threads th ON th.id=t.thread_id WHERE th.agent='ceo' AND t.trigger_kind='user_message' AND t.status<>'in_progress' AND i.status='completed' AND i.type IN ('user_message','assistant_message') AND (i.type='user_message' OR t.goal_id IS NULL OR EXISTS (SELECT 1 FROM events e WHERE e.stream_id='turn:'||t.id AND e.type='response.committed' AND json_extract(e.data,'$.messageItemId')=i.id)) ORDER BY i.rowid DESC LIMIT ?").all(WELCOME_CONVERSATION_SLOTS) as unknown as Array<{ type: string; data: string }>;
+    const itemRows = db.prepare("SELECT i.type,i.data FROM turn_items i JOIN turns t ON t.id=i.turn_id JOIN threads th ON th.id=t.thread_id WHERE th.agent='ceo' AND t.trigger_kind='user_message' AND t.status='completed' AND i.status='completed' AND i.type IN ('user_message','assistant_message') AND (i.type='user_message' OR t.goal_id IS NULL OR EXISTS (SELECT 1 FROM events e WHERE e.stream_id='turn:'||t.id AND e.type='response.committed' AND json_extract(e.data,'$.messageItemId')=i.id)) ORDER BY i.rowid DESC LIMIT ?").all(WELCOME_CONVERSATION_SLOTS) as unknown as Array<{ type: string; data: string }>;
     const conversation = itemRows.reverse().flatMap((row) => { try { const data = JSON.parse(row.data) as { text?: unknown }; return typeof data.text === "string" ? [{ speaker: row.type === "user_message" ? "You" : "Goah", text: data.text }] : []; } catch { return []; } });
     return { root: root ? { id: root.id, objective: root.objective, phase: root.phase } : null, team, handoffs, conversation, runner: runner.runner, target: runner.target };
   } finally { db.close(); }

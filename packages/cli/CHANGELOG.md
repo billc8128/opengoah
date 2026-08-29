@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.3
+
+- Added terminal-protocol-safe Ctrl+C handling: clear a draft, interrupt an active Turn, press again to exit, or exit immediately when idle; Ctrl+D now exits an idle prompt.
+- Stopped replaying orphan Human messages from failed or interrupted Turns when the TUI opens; complete conversations remain resumable from the Ledger.
+- Replaced the oversized welcome mark with the selected compact horizontal lockup: the official orbital Logo renders in Kitty-compatible terminals, with a faithful Braille mark on unsupported alternate screens.
+
 ## 0.13.2
 
 - Replaced the ambiguous block-art welcome mark with a compact terminal orbital glyph, improved secondary-text contrast, and added a shared slash-command registry that drives autocomplete, help, parsing, argument prompts, and a six-row keyboard menu.

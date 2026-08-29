@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifyTuiInput, commandAwaitingArgument, ConversationView, createTuiAutocompleteProvider, findLiveTurnId, renderFrame, renderTuiCommandHelp, renderTuiHeader, renderUserMessage, StreamCoordinator, TUI_COMMANDS } from "./tui.js";
+import { resetCapabilitiesCache, setCapabilities } from "@earendil-works/pi-tui";
+import { classifyTuiControlKey, classifyTuiInput, commandAwaitingArgument, ConversationView, createTuiAutocompleteProvider, findLiveTurnId, renderFrame, renderTuiCommandHelp, renderTuiHeader, renderUserMessage, StreamCoordinator, TUI_COMMANDS, WelcomeLockup } from "./tui.js";
+import type { WelcomeSnapshot } from "./welcome.js";
 import { stripAnsi } from "./tui-theme.js";
 
 test("TUI routes ordinary text, queued follow-ups, and commands", () => {
@@ -21,7 +23,34 @@ test("TUI routes ordinary text, queued follow-ups, and commands", () => {
   assert.equal(classifyTuiInput("/status extra", false).action, "unknown");
 });
 
-test("slash commands share one discoverable registry and preserve required argument input",async()=>{assert.equal(commandAwaitingArgument("/goal"),"/goal ");assert.equal(commandAwaitingArgument("/history "),"/history ");assert.equal(commandAwaitingArgument("/status"),null);const provider=createTuiAutocompleteProvider(process.cwd());const suggestions=await provider.getSuggestions(["/"],0,1,{signal:new AbortController().signal});assert.ok(suggestions);assert.deepEqual(suggestions!.items.slice(0,4).map((item)=>item.value),["goal","model","status","setup"]);const completed=provider.applyCompletion(["/g"],0,2,suggestions!.items[0]!,"/g");assert.deepEqual(completed.lines,["/goal "]);const help=stripAnsi(renderTuiCommandHelp());for(const command of TUI_COMMANDS)assert.match(help,new RegExp(`/${command.name}\\b`));});
+test("slash commands share one discoverable registry and preserve required argument input",async()=>{assert.equal(commandAwaitingArgument("/goal"),"/goal ");assert.equal(commandAwaitingArgument("/history "),"/history ");assert.equal(commandAwaitingArgument("/status"),null);const provider=createTuiAutocompleteProvider(process.cwd());const suggestions=await provider.getSuggestions(["/"],0,1,{signal:new AbortController().signal});assert.ok(suggestions);assert.deepEqual(suggestions!.items.slice(0,4).map((item)=>item.value),["goal","model","status","setup"]);const completed=provider.applyCompletion(["/g"],0,2,suggestions!.items[0]!,"/g");assert.deepEqual(completed.lines,["/goal "]);const help=stripAnsi(renderTuiCommandHelp());for(const command of TUI_COMMANDS)assert.match(help,new RegExp(`/${command.name}\\b`));assert.match(help,/Ctrl\+C.*Clear input/);assert.match(help,/Ctrl\+D.*Exit when idle/);});
+
+test("TUI control keys clear drafts, interrupt work, and exit only from an idle prompt", () => {
+  assert.equal(classifyTuiControlKey("\x03", "draft", false), "clear");
+  assert.equal(classifyTuiControlKey("\x03", "", true), "interrupt");
+  assert.equal(classifyTuiControlKey("\x03", "", false), "exit");
+  assert.equal(classifyTuiControlKey("\x1b[99;5u", "", false), "exit");
+  assert.equal(classifyTuiControlKey("\x1b[99;5:3u", "", false), "forward");
+  assert.equal(classifyTuiControlKey("\x04", "", false), "exit");
+  assert.equal(classifyTuiControlKey("\x04", "draft", false), "forward");
+  assert.equal(classifyTuiControlKey("\x04", "", true), "forward");
+  assert.equal(classifyTuiControlKey("x", "", false), "forward");
+});
+
+test("welcome lockup is horizontal, compact, and falls back to the official Braille mark", () => {
+  const snapshot: WelcomeSnapshot = { root: null, team: [], handoffs: [], conversation: [], runner: "pi", target: "zai/glm-5.3" };
+  const fallback = stripAnsi(new WelcomeLockup(snapshot, false).render(100).join("\n"));
+  assert.match(fallback, /⣾|⣿/);
+  assert.match(fallback, /Ready when you are\./);
+  assert.match(fallback, /zai\/glm-5\.3 · pi/);
+  assert.ok(fallback.split("\n").length <= 8);
+
+  setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+  try {
+    const onePixelPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+    assert.match(new WelcomeLockup(snapshot, false, onePixelPng).render(100).join("\n"), /\x1b_G/);
+  } finally { resetCapabilitiesCache(); }
+});
 
 test("TUI reconnect selects the newest live Human interaction only", () => {
   assert.equal(findLiveTurnId([{ id: "goal", triggerKind: "wake", status: "in_progress" }, { id: "human", triggerKind: "user_message", status: "in_progress" }]), "human");

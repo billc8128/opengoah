@@ -23,7 +23,7 @@ const shipped = JSON.parse(readFileSync(join(unpacked, "package", "package.json"
 const files = packed[0].files.map((file) => file.path);
 const nested = files.filter((file) => file.startsWith("node_modules/"));
 const required = [
-  "dist/console/index.html", "dist/LICENSE", "dist/THIRD-PARTY-NOTICES.md",
+  "dist/console/index.html", "dist/console/goah-orbital-mark.png", "dist/LICENSE", "dist/THIRD-PARTY-NOTICES.md",
   "dist/index.d.ts", "dist/cli.d.ts", "dist/kernel.d.ts", "dist/transcript.d.ts", "dist/execution.d.ts",
   "dist/sqlite.d.ts", "dist/supervisor.d.ts", "dist/runner-pi.d.ts", "dist/testkit.d.ts",
   "dist/pi-worker.js", "dist/verification-worker.js", "dist/faux-runner-worker.js",
@@ -35,6 +35,7 @@ if (Object.keys(shipped.dependencies ?? {}).length !== 0 || shipped.bundledDepen
 const notices = readFileSync(join(unpacked, "package", "dist", "THIRD-PARTY-NOTICES.md"), "utf8");
 if (/License: unknown|license text not shipped/i.test(notices)) throw new Error("third-party notices contain unresolved license text");
 if(readFileSync(join(unpacked,"package","dist","LICENSE"),"utf8")!==readFileSync(join(root,"LICENSE"),"utf8"))throw new Error("published CLI omitted or changed the Goah license");
+if(!readFileSync(join(unpacked,"package","dist","console","goah-orbital-mark.png")).equals(readFileSync(join(root,"apps","console","public","goah-orbital-mark.png"))))throw new Error("published CLI changed the terminal logo asset");
 
 writeFileSync(join(app, "package.json"), `${JSON.stringify({ name: "goah-install-smoke", private: true, version: "1.0.0" }, null, 2)}\n`);
 execFileSync("npm", ["install", "--no-audit", "--no-fund", tarball], { cwd: app, stdio: "pipe" });

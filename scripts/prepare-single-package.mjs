@@ -58,6 +58,7 @@ try {
     if (!existsSync(join(modules, pkg, "dist", `${file}.js`))) throw new Error(`missing tsc output for worker: ${pkg}/dist/${file}.js; run the root build first`);
   }
   if (!existsSync(join(dist, "console"))) throw new Error("missing dist/console; run the root build first");
+  if (!existsSync(join(dist, "console", "goah-orbital-mark.png"))) throw new Error("missing terminal logo asset; run the root build first");
 
   // Snapshot the pristine tsc output. postpack restores it, and the catch path
   // restores it immediately if any publication preparation fails.
