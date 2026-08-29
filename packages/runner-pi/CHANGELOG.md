@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Pi now assigns one stable ID from assistant message start through completion and strips cumulative provider `partial` payloads before sending minimal live deltas over the process boundary.
 - Goal Turn and tool prompts now distinguish checkpoints from terminal Handoff: Work Record and Schedule do not end work, and `progress` requires meaningful work plus an exhausted current frontier.
 - Model switching now requires resolvable credentials for the selected provider, reuses saved or present environment authentication, and opens the scoped OAuth/API-key/environment flow before saving an otherwise unusable target.
 - Pi now receives active Goal context independently from Goal commitment and returns one successful shape containing canonical `finalMessageId` plus optional Handoff; tool-only Handoff reuses the prior readable Assistant Item instead of overwriting it with an empty response.

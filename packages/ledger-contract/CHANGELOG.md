@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added the ephemeral `RunnerLiveEvent` / `TurnLiveSnapshot` contract so provider deltas never become durable Transcript facts.
 - Replaced Turn source/binding discriminants with Thread role, Turn trigger, visible Goal context, and optional Goal commitment; successful Runner results now reference one canonical Assistant Item through `finalMessageId` plus optional Handoff.
 - Added runner-agnostic Handoff attempts/issues/tokens and internal Runner control RPC; each result carries an attemptId, `TurnOutput` binds the current attempt/token plus Handoff, tokens omit transient Work Record revision, and the duplicate `consumeWake` transition has been removed.
 - Inactive reassignment results may contain no Wake because paused/blocked Goals cannot schedule execution.

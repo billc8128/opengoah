@@ -78,6 +78,8 @@ test("TUI renders streamed assistant text and tool completion", () => {
   assert.equal(lines.at(-1), "final answer");
 });
 
+test("TUI replaces live text and thinking from bounded snapshots",()=>{let live:{text:string;thinking:string;active:boolean}|null=null;renderFrame({type:"event",event:{type:"message.assistant.live",data:{messageId:"m",revision:42,text:"working",thinking:"inspect",thinkingActive:true}}},()=>undefined,()=>undefined,()=>undefined,()=>undefined,()=>undefined,()=>undefined,()=>undefined,()=>undefined,(text,thinking,active)=>{live={text,thinking,active};});assert.deepEqual(live,{text:"working",thinking:"inspect",active:true});});
+
 test("TUI commits canonical assistant blocks instead of raw provider whitespace",()=>{let committed="";renderFrame({type:"event",event:{type:"message.assistant.completed",data:{message:{content:[{type:"text",text:"  first\r\n"},{type:"text",text:" second  \n"}]},commitState:"committed"}}},()=>undefined,()=>undefined,(text)=>{committed=text;});assert.equal(committed,"first\nsecond");});
 
 test("TUI keeps a normalized Handoff response provisional until Supervisor commits it",()=>{const committed:string[]=[];let cleared=0;const render=(frame:Parameters<typeof renderFrame>[0])=>renderFrame(frame,()=>undefined,()=>undefined,(text)=>committed.push(text),()=>undefined,()=>undefined,()=>undefined,()=>undefined,()=>{cleared+=1;});const message={content:[{type:"text",text:"Goal completed."}]};render({type:"event",event:{type:"message.assistant.completed",data:{message,commitState:"provisional"}}});assert.deepEqual(committed,[]);assert.equal(cleared,1);render({type:"event",event:{type:"response.committed",data:{text:"Goal completed.",messageItemId:"m"}}});assert.deepEqual(committed,["Goal completed."]);});

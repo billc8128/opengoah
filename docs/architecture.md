@@ -37,7 +37,9 @@ Append-only typed events with global `seq`, per-stream `streamSeq`, atomic appen
 
 ### Replayable Thread, Turn, and Item
 
-A Thread is a durable Goah conversation, not a provider thread. Turns are the sole execution identity. Normalized user, assistant, reasoning, tool, request, compaction, completion, and interruption Items reconstruct what the model saw and did. Open tool calls become explicit `unknown` outcomes after interruption. Assistant prose has exactly one authoritative representation: a completed Assistant Item. Runner completion returns only its `finalMessageId`; `response.committed`, Control output, and Handoff all reference or project that Item.
+A Thread is a durable Goah conversation, not a provider thread. Turns are the sole execution identity. Normalized user, assistant, completed reasoning, tool, request, compaction, completion, and interruption Items reconstruct what the model saw and did. Open tool calls become explicit `unknown` outcomes after interruption. Assistant prose has exactly one authoritative representation: a completed Assistant Item. Runner completion returns only its `finalMessageId`; `response.committed`, Control output, and Handoff all reference or project that Item.
+
+Provider token deltas are live transport, not Ledger facts. Runner emits minimal deltas with one stable message ID through an ephemeral channel; Supervisor holds one bounded cumulative `TurnLiveSnapshot` for TUI/Console polling and drops it when the message or Turn completes. Cumulative provider `partial` payloads never cross this boundary. The completed Assistant message is persisted once, and its complete thinking blocks materialize at most one reasoning Item per message. Daemon restart may lose uncommitted visual partials, but never completed messages, Tool Calls, Tool Results, Handoffs, or Work Records.
 
 ### Execution modules
 

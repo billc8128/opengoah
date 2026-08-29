@@ -10,6 +10,7 @@ import {
   type RunRequest,
   type Runner,
   type RunnerHandle,
+  type RunnerLiveEvent,
   type RunnerCandidateResult,
   type RunnerRpcMethod,
   type TurnContext,
@@ -103,9 +104,10 @@ export interface ProcessRunnerOptions {
 export function piWorkerPath(): string { return fileURLToPath(new URL("./pi-worker.js", import.meta.url)); }
 export function verificationWorkerPath(): string { return fileURLToPath(new URL("./verification-worker.js", import.meta.url)); }
 
-type WorkerRequest = Omit<RunRequest, "now" | "emit" | "rpc" | "turn"> & { turn?: TurnContext; runtime?: JsonValue };
+type WorkerRequest = Omit<RunRequest, "now" | "emit" | "emitLive" | "rpc" | "turn"> & { turn?: TurnContext; runtime?: JsonValue };
 type WorkerMessage =
   | { type: "trace"; event: { type: string; data: JsonValue } }
+  | { type: "live"; event: RunnerLiveEvent }
   | { type: "rpc_request"; id: string; method: RunnerRpcMethod; params: JsonValue }
   | { type: "steer_ack"; id: string; accepted: boolean }
   | { type: "result"; result: RunnerCandidateResult };
@@ -148,6 +150,7 @@ export class ProcessRunner implements Runner {
       try {
         const message = JSON.parse(line) as WorkerMessage;
         if (message.type === "trace") request.emit(message.event);
+        else if(message.type==="live")request.emitLive?.(message.event);
         else if (message.type === "steer_ack") {
           const pending = pendingSteering.get(message.id);
           if (pending) { pendingSteering.delete(message.id); clearTimeout(pending.timer); if (message.accepted) pending.resolve(); else pending.reject(new Error("runner is no longer accepting steering messages")); }
@@ -218,7 +221,7 @@ export class ProcessRunner implements Runner {
 
 export type WorkerRpc = (method: RunnerRpcMethod, params: JsonValue) => Promise<JsonValue>;
 export interface WorkerControls { onSteer(listener: (message: string) => boolean): void }
-export type WorkerRun = (request: WorkerRequest, emit: (event: { type: string; data: JsonValue }) => void, rpc: WorkerRpc, controls: WorkerControls) => Promise<RunnerCandidateResult>;
+export type WorkerRun = (request: WorkerRequest, emit: (event: { type: string; data: JsonValue }) => void, rpc: WorkerRpc, controls: WorkerControls, emitLive:(event:RunnerLiveEvent)=>void) => Promise<RunnerCandidateResult>;
 
 /** Entry helper for runner executables. It exits when its parent disappears. */
 export async function runProcessWorker(run: WorkerRun): Promise<void> {
@@ -261,7 +264,7 @@ export async function runProcessWorker(run: WorkerRun): Promise<void> {
     process.stdout.write(`${JSON.stringify({ type: "rpc_request", id, method, params })}\n`);
   });
   const controls: WorkerControls = { onSteer: (listener) => { steerListener = listener; for (const message of queuedSteering.splice(0)) deliverSteer(message.id, message.message); } };
-  const result = await run(start.request, (event) => process.stdout.write(`${JSON.stringify({ type: "trace", event })}\n`), rpc, controls);
+  const result = await run(start.request, (event) => process.stdout.write(`${JSON.stringify({ type: "trace", event })}\n`), rpc, controls,(event)=>process.stdout.write(`${JSON.stringify({type:"live",event} satisfies WorkerMessage)}\n`));
   process.stdout.write(`${JSON.stringify({ type: "result", result })}\n`);
   input.close();
   process.stdin.unref();

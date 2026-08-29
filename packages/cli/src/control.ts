@@ -128,8 +128,8 @@ async function serve(socket: Socket, supervisor: Supervisor, ledger: Ledger, rel
 
 async function dispatch(request: ControlRequest, socket: Socket, supervisor: Supervisor, ledger: Ledger, reloadRuntime?: (configPath: string) => Promise<RuntimeSwap | undefined>, stop?: () => void): Promise<void> {
   if (request.op === "interact") { await interact(request.message, socket, supervisor, ledger); return; }
-  if (request.op === "goal.interact") { const accepted=await supervisor.startHumanGoalTurn(request.objective,request.id);write(socket,{type:"accepted",turnId:accepted.turnId,value:accepted as unknown as JsonValue});for await(const frame of turnFrames(accepted.turnId,ledger,()=>!socket.destroyed))write(socket,frame);socket.end();return; }
-  if (request.op === "turn.attach") { for await (const frame of turnFrames(request.turnId, ledger, () => !socket.destroyed)) write(socket, frame); socket.end(); return; }
+  if (request.op === "goal.interact") { const accepted=await supervisor.startHumanGoalTurn(request.objective,request.id);write(socket,{type:"accepted",turnId:accepted.turnId,value:accepted as unknown as JsonValue});for await(const frame of turnFrames(accepted.turnId,supervisor,ledger,()=>!socket.destroyed))write(socket,frame);socket.end();return; }
+  if (request.op === "turn.attach") { for await (const frame of turnFrames(request.turnId,supervisor, ledger, () => !socket.destroyed)) write(socket, frame); socket.end(); return; }
   let value: unknown;
   if (request.op === "daemon.stop") {
     value = { stopping: true };
@@ -171,15 +171,16 @@ export async function* interactFrames(message: string, supervisor: Supervisor, l
   if (!message.trim()) throw new Error("message is required");
   const accepted = await supervisor.startHumanTurn(message);
   yield { type: "accepted", turnId: accepted.turnId, value: accepted as unknown as JsonValue };
-  yield* turnFrames(accepted.turnId, ledger, isActive);
+  yield* turnFrames(accepted.turnId,supervisor, ledger, isActive);
 }
 
-async function* turnFrames(turnId: string, ledger: Ledger, isActive: () => boolean): AsyncGenerator<ControlFrame> {
-  let nextStreamSeq = 1; const turn = ledger.turn(turnId); if (!turn) throw new Error("Turn not found");
+async function* turnFrames(turnId: string,supervisor:Supervisor, ledger: Ledger, isActive: () => boolean): AsyncGenerator<ControlFrame> {
+  let nextStreamSeq = 1;let liveRevision=0; const turn = ledger.turn(turnId); if (!turn) throw new Error("Turn not found");
   const drain=async function*():AsyncGenerator<ControlFrame>{const events=ledger.readStream(`turn:${turnId}`,nextStreamSeq);for(const event of events){nextStreamSeq=event.streamSeq+1;if(isTurnPresentationEvent(event.type))yield{type:"event",event:event as unknown as JsonValue};}};
+  const drainLive=async function*():AsyncGenerator<ControlFrame>{const live=supervisor.liveTurnSnapshot(turnId,liveRevision);if(!live)return;liveRevision=live.revision;yield{type:"event",event:{type:"message.assistant.live",data:live} as unknown as JsonValue};};
   while (true) {
     if (!isActive()) return;
-    yield* drain();
+    yield* drain();yield* drainLive();
     const current = ledger.turn(turnId); if (!current) throw new Error("Turn disappeared");
     if (current.status !== "in_progress") {yield* drain();yield { type: "result", value: { turn:{...current,leaseToken:null} } as unknown as JsonValue }; return; }
     await new Promise((resolve) => setTimeout(resolve, 50));

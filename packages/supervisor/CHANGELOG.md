@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added an in-memory cumulative Turn LiveBus; assistant deltas no longer enter Ledger, and complete thinking materializes once from the completed Assistant message.
 - Goal role prompts now treat Wake as the start of sustained work, require Agents to exhaust the current actionable frontier before Handoff, and make CEO the execution fallback when no suitable Child profile exists.
 - Human Turn replacement now uses one atomic Ledger admission and a persisted Runner cleanup fence; Runner completion and Handoff reference one canonical Assistant Item, persisted Thread role remains the sole Agent-role authority, and committed direct Turns participate in live/restart recovery.
 - Separated active Goal visibility from Turn commitment, made user priority trigger-based, removed Human Wakes, and moved explicit Goal control onto a directly committed CEO user Turn.

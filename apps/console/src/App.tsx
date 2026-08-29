@@ -432,6 +432,8 @@ function applyFrame(frame: ChatFrame, setLive: Dispatch<SetStateAction<LiveChat 
     if(record(event.data).completionIntent==="handoff")setLive((current)=>current&&{...current,text:""});else if (text) setLive((current) => current && { ...current, text })
   } else if(event.type==="response.committed"){
     const text=record(event.data).text;if(typeof text==="string")setLive((current)=>current&&{...current,text});
+  } else if(event.type==="message.assistant.live"){
+    const text=record(event.data).text;if(typeof text==="string")setLive((current)=>current&&{...current,text})
   } else if (event.type === "message.assistant.delta") {
     const delta = record(record(event.data).delta)
     const text = delta.type === "text_delta"&&typeof delta.delta === "string" ? delta.delta : null

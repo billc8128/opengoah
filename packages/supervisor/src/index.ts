@@ -35,6 +35,7 @@ import {
   type ReassignmentResult,
   type Runner,
   type RunnerHandle,
+  type RunnerLiveEvent,
   type RunnerProfile,
   type RunnerRpcMethod,
   type ScheduleSnapshot,
@@ -42,6 +43,7 @@ import {
   type TurnContext,
   type TurnSnapshot,
   type TurnItemSnapshot,
+  type TurnLiveSnapshot,
   type TurnOutput,
   type WakeSnapshot,
   type WakeTriggerSnapshot,
@@ -84,6 +86,8 @@ export interface SupervisorOptions {
   runnerProfiles?: RunnerProfile[];
 }
 
+interface LiveTurnState {revision:number;messageId:string;text:Map<number,string[]>;thinking:Map<number,string[]>;thinkingActive:boolean}
+
 export class Supervisor {
   readonly #leaseMs: number;
   readonly #memoryTailChars: number;
@@ -99,6 +103,7 @@ export class Supervisor {
   readonly #goalExecutionBarriers=new Map<string,Promise<void>>();
   readonly #handoffValidations=new Map<string,{turnId:string;attemptId:number;agent:string;attempt:number;leaseToken:string;goalId:string;goalRevision:number;messageItemId:string;message:string;handoff:AgentHandoff}>();
   readonly #handoffAttemptSeq=new Map<string,number>();
+  readonly #liveTurns=new Map<string,LiveTurnState>();
 
   #runner: Runner;
   constructor(readonly ledger: Ledger, runner: Runner, readonly clock: Clock, options: SupervisorOptions = {}) {
@@ -174,7 +179,7 @@ export class Supervisor {
   }
   async #interruptTurn(turnId:string,reason:string,actor:string):Promise<TurnSnapshot>{
     const turn = this.ledger.turn(turnId); if (!turn || turn.status !== "in_progress") throw new Error("active Turn not found");
-    this.#clearHandoffState(turn.id);this.ledger.finishTurn(turn.id,"interrupted",{message:reason},this.#now(),actor);await this.#cleanupTerminalTurn(turn);
+    this.#liveTurns.delete(turn.id);this.#clearHandoffState(turn.id);this.ledger.finishTurn(turn.id,"interrupted",{message:reason},this.#now(),actor);await this.#cleanupTerminalTurn(turn);
     return this.ledger.turn(turn.id)!;
   }
 
@@ -182,7 +187,7 @@ export class Supervisor {
     while (this.ledger.turn(initial.id)?.status === "in_progress") {
       const execution = this.ledger.turn(initial.id)!; const leaseToken = execution.leaseToken!; let handle: RunnerHandle | null = null; let renewal: NodeJS.Timeout | null = null;let processClean=true;
       try {
-        handle = this.runner.prepare({ agent,execution, ...(sourceWake ? { sourceWake, sourceWakeTriggers } : {}),turn:turnContext,context:contextFactory(),now:()=>this.#now(),emit:(trace)=>this.#recordTurnTrace(initial.id,leaseToken,trace.type,trace.data,agent),rpc:(method,params)=>this.#agentRpcForTurn(initial.id,agent,turnContext,method,params,sourceWake?.id) });
+        handle = this.runner.prepare({ agent,execution, ...(sourceWake ? { sourceWake, sourceWakeTriggers } : {}),turn:turnContext,context:contextFactory(),now:()=>this.#now(),emit:(trace)=>this.#recordTurnTrace(initial.id,leaseToken,trace.type,trace.data,agent),emitLive:(trace)=>this.#recordLiveTrace(initial.id,leaseToken,trace),rpc:(method,params)=>this.#agentRpcForTurn(initial.id,agent,turnContext,method,params,sourceWake?.id) });
         this.#handles.set(initial.id,handle); if(handle.pid) this.ledger.attachTurnProcess(initial.id,leaseToken,handle.pid); renewal=setInterval(()=>{try{this.ledger.renewTurnLease(initial.id,leaseToken,new Date(this.clock.now().getTime()+this.#leaseMs).toISOString(),this.#now());}catch{void this.#terminateHandle(initial.id,handle!);}},Math.max(25,Math.floor(this.#leaseMs/3))); renewal.unref(); handle.begin(); const result=await handle.result; if(renewal)clearInterval(renewal); renewal=null;processClean=await this.#terminateHandle(initial.id,handle);this.#handles.delete(initial.id);if(!processClean)throw new Error("Runner process cleanup did not complete");const attached=this.ledger.turn(initial.id);if(attached?.status==="in_progress"&&attached.runnerPid!==null)this.ledger.releaseTurnProcess(initial.id,"supervisor");
         const current=this.ledger.turn(initial.id); if(!current||current.status!=="in_progress")return;if(current.attempt>1)this.ledger.appendEvent({streamId:`turn:${current.id}`,ts:this.#now(),actor:"supervisor",type:"turn.retry_finished",data:{attempt:current.attempt,outcome:result.outcome},ignorable:true});if(result.outcome!=="abnormal")this.#closeStreamingItems(current.id);
         if(result.outcome==="abnormal"){
@@ -229,8 +234,8 @@ export class Supervisor {
   #assistantCommitState(turnId:string,messageItemId:string):"committed"|"provisional"|null{const event=this.#assistantMessageEvent(turnId,messageItemId);if(!event||!event.data||typeof event.data!=="object"||Array.isArray(event.data))return null;const state=(event.data as {commitState?:unknown}).commitState;return state==="committed"||state==="provisional"?state:null;}
   #finalAssistantItem(turnId:string,messageItemId:string):TurnItemSnapshot{const id=messageItemId.trim();const item=id?this.ledger.turnItems(turnId).find((candidate)=>candidate.id===id):undefined;const text=item&&item.type==="assistant_message"&&item.status==="completed"?normalizeAssistantText(String((item.data as {text?:unknown}).text??"")):"";const event=id?this.#assistantMessageEvent(turnId,id):undefined;const turn=this.ledger.turn(turnId);const retryStart=turn&&turn.attempt>1?this.ledger.readStream(`turn:${turnId}`).findLast((candidate)=>candidate.type==="turn.retry_started"&&(candidate.data as {attempt?:unknown}).attempt===turn.attempt):undefined;if(!item||!text||!event||retryStart&&event.seq<=retryStart.seq)throw new Error("completed Turn finalMessageId must reference a readable Assistant Item from the current attempt");return item;}
 
-  #failTurn(turnId: string, reason: string): void { const current=this.ledger.turn(turnId);if(!current||current.status!=="in_progress")return;this.#clearHandoffState(turnId);this.ledger.finishTurn(turnId,"failed",{message:reason},this.#now(),"supervisor"); }
-  #preemptGoalTurn(goalId:string,reason:string):void{const turn=this.ledger.turns().find((candidate)=>candidate.status==="in_progress"&&candidate.goalId===goalId);if(!turn)return;this.#clearHandoffState(turn.id);this.ledger.finishTurn(turn.id,"interrupted",{message:reason},this.#now(),"supervisor");void this.#cleanupTerminalTurn(turn);}
+  #failTurn(turnId: string, reason: string): void { const current=this.ledger.turn(turnId);if(!current||current.status!=="in_progress")return;this.#liveTurns.delete(turnId);this.#clearHandoffState(turnId);this.ledger.finishTurn(turnId,"failed",{message:reason},this.#now(),"supervisor"); }
+  #preemptGoalTurn(goalId:string,reason:string):void{const turn=this.ledger.turns().find((candidate)=>candidate.status==="in_progress"&&candidate.goalId===goalId);if(!turn)return;this.#liveTurns.delete(turn.id);this.#clearHandoffState(turn.id);this.ledger.finishTurn(turn.id,"interrupted",{message:reason},this.#now(),"supervisor");void this.#cleanupTerminalTurn(turn);}
   async #terminateHandle(turnId:string,handle:RunnerHandle):Promise<boolean>{try{await handle.terminate();return true;}catch(error){this.#recordCleanupFailure(turnId,error);const turn=this.ledger.turn(turnId);const persistedPid=turn?.runnerPid;if(persistedPid===null||persistedPid===undefined)return handle.pid===null;try{await this.runner.terminateProcess(persistedPid,turn?.runnerProfileId);return true;}catch(fallback){this.#recordCleanupFailure(turnId,fallback);return false;}}}
   #recordCleanupFailure(turnId:string,error:unknown):void{this.ledger.appendEvent({streamId:`turn:${turnId}`,ts:this.#now(),actor:"supervisor",type:"runner.cleanup_failed",data:{message:error instanceof Error?error.message:String(error)},ignorable:true});}
 
@@ -243,16 +248,18 @@ export class Supervisor {
   }
 
   #recordTurnTrace(turnId: string, leaseToken: string, type: string, data: JsonValue, actor = "ceo"): void {
+    if(type==="message.assistant.delta"){this.#recordLiveTrace(turnId,leaseToken,{type,data:data as RunnerLiveEvent["data"]});return;}
     if(type==="transcript.completed"||type==="transcript.interrupted")return;
     if(type==="transcript.started"&&this.ledger.readStream(`turn:${turnId}`).some((event)=>event.type==="transcript.started"))return;
     if(type==="message.assistant.completed"){const value=data&&typeof data==="object"&&!Array.isArray(data)?data as {commitState?:unknown}:{};if(!["committed","provisional"].includes(String(value.commitState)))throw new Error("Runner assistant completion is missing normalized commit state");if(value.commitState==="provisional"&&this.ledger.turn(turnId)?.goalId===null)throw new Error("uncommitted Turn cannot emit a provisional assistant response");}
     this.ledger.appendTurnEvent({ streamId: `turn:${turnId}`, ts: this.#now(), actor, type, data },leaseToken);
-    if (type === "message.assistant.completed") {const value=data as {message?:{id?:unknown;content?:unknown}};const text=messageTextContent(value.message?.content);if(text){const id=typeof value.message?.id==="string"?value.message.id.trim():"";if(!id)throw new Error("Runner assistant completion is missing a message Item id");this.#appendTurnItem(turnId,"assistant_message",{text},actor,id);}}
+    if (type === "message.assistant.completed") {this.#liveTurns.delete(turnId);const value=data as {message?:{id?:unknown;content?:unknown}};const text=messageTextContent(value.message?.content);const reasoning=messageReasoningContent(value.message?.content);const id=typeof value.message?.id==="string"?value.message.id.trim():"";if((text||reasoning)&&!id)throw new Error("Runner assistant completion is missing a message Item id");if(reasoning)this.#appendTurnItem(turnId,"reasoning",{text:reasoning},actor,`${id}:reasoning`);if(text)this.#appendTurnItem(turnId,"assistant_message",{text},actor,id);}
     else if(type==="plan.updated")this.#appendTurnItem(turnId,"plan",data,actor);
-    else if(type==="message.assistant.delta"){const input=data as {messageId?:unknown;delta?:{type?:unknown;delta?:unknown;content?:unknown}};const delta=input.delta;if(delta?.type==="thinking_start"||delta?.type==="thinking_delta"||delta?.type==="thinking_end"){const turn=this.ledger.turn(turnId)!;const id=`${turnId}:attempt:${turn.attempt}:reasoning:${String(input.messageId??"message")}`;const existing=this.ledger.turnItems(turnId).find((item)=>item.id===id);const text=`${String((existing?.data as {text?:unknown}|undefined)?.text??"")}${delta.type==="thinking_delta"?String(delta.delta??""):""}`;if(!existing)this.#appendTurnItem(turnId,"reasoning",{text},actor,id,delta.type==="thinking_end"?"completed":"in_progress");else this.ledger.putTurnItem({...existing,data:{text},status:delta.type==="thinking_end"?"completed":"in_progress",completedAt:delta.type==="thinking_end"?this.#now():null},actor);}}
     else if (type === "tool.called") { const input = data as { callId?: unknown; name?: unknown; arguments?: JsonValue };const turn=this.ledger.turn(turnId)!;const id=`${turnId}:attempt:${turn.attempt}:tool:${String(input.callId)}`;if(this.ledger.turnItems(turnId).some((item)=>item.id===id))throw new Error("duplicate tool call id in Turn attempt");this.#appendTurnItem(turnId, "tool_call", { callId:String(input.callId),tool: String(input.name), arguments: input.arguments ?? null }, actor,id,"in_progress"); }
     else if (type === "tool.completed") { const input = data as { callId?: unknown; result?: JsonValue; isError?: unknown };const turn=this.ledger.turn(turnId)!;const id=`${turnId}:attempt:${turn.attempt}:tool:${String(input.callId)}`; const existing = this.ledger.turnItems(turnId).find((item) => item.id === id);if(!existing)throw new Error("tool result has no matching call in Turn attempt");this.ledger.putTurnItem({ ...existing, status: input.isError ? "failed" : "completed", completedAt: this.#now() }, actor); this.#appendTurnItem(turnId, "tool_result", { callId: String(input.callId), result: input.result ?? null }, actor); }
   }
+  #recordLiveTrace(turnId:string,leaseToken:string,event:RunnerLiveEvent):void{const turn=this.ledger.turn(turnId);if(!turn||turn.status!=="in_progress"||turn.leaseToken!==leaseToken)return;const input=event.data;const delta=input.delta;let state=this.#liveTurns.get(turnId);if(!state||state.messageId!==input.messageId||delta.type==="start"){state={revision:0,messageId:input.messageId,text:new Map(),thinking:new Map(),thinkingActive:false};this.#liveTurns.set(turnId,state);}const index=delta.contentIndex??0;if(delta.type==="text_start")state.text.set(index,[]);else if(delta.type==="text_delta")appendLiveChunk(state.text,index,delta.delta);else if(delta.type==="thinking_start"){state.thinking.set(index,[]);state.thinkingActive=true;}else if(delta.type==="thinking_delta")appendLiveChunk(state.thinking,index,delta.delta);else if(delta.type==="thinking_end")state.thinkingActive=false;state.revision+=1;}
+  liveTurnSnapshot(turnId:string,afterRevision=0):TurnLiveSnapshot|null{const state=this.#liveTurns.get(turnId);if(!state||state.revision<=afterRevision)return null;return{revision:state.revision,messageId:state.messageId,text:joinLiveChunks(state.text),thinking:joinLiveChunks(state.thinking),thinkingActive:state.thinkingActive};}
   async sendToCeo(body: JsonValue): Promise<{threadId:string;turnId:string;steered:boolean}> {const value=body&&typeof body==="object"&&!Array.isArray(body)?body as {message?:unknown}:{};const message=String(value.message??"").trim();if(!message)throw new Error("CEO message is required");const accepted=await this.startHumanTurn(message);await this.waitForTurn(accepted.turnId);return accepted;}
   async waitForTurn(turnId:string):Promise<void>{await this.#executions.get(turnId);}
   delegate(request: DelegationRequest, actor = "ceo", wakeId?: string): DelegationResult {const candidate:GoalSnapshot={...request.childGoal,parentId:request.parentGoalId,phase:"active",revision:0};if(!this.#validGoalOwner(candidate.owner,candidate))throw new Error("Child Goal owner must use a Child Agent profile");return this.ledger.commitDelegation(request, actor, wakeId); }
@@ -606,6 +613,9 @@ export function renderDashboard(ledger: Ledger): string {
 
 function escapeHtml(value: string): string { return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"); }
 function messageTextContent(content: unknown): string { if (typeof content === "string") return normalizeAssistantText(content); if (!Array.isArray(content)) return ""; return content.map((part) => part && typeof part === "object" && !Array.isArray(part) && (part as { type?: unknown }).type === "text" ? normalizeAssistantText(String((part as { text?: unknown }).text ?? "")) : "").filter(Boolean).join("\n"); }
+function messageReasoningContent(content:unknown):string{if(!Array.isArray(content))return"";return content.map((part)=>part&&typeof part==="object"&&!Array.isArray(part)&&(part as {type?:unknown}).type==="thinking"?normalizeAssistantText(String((part as {thinking?:unknown}).thinking??"")):"").filter(Boolean).join("\n");}
+function appendLiveChunk(target:Map<number,string[]>,index:number,delta:string):void{if(!delta)return;const chunks=target.get(index)??[];const last=chunks.at(-1);if(last!==undefined&&last.length<4096)chunks[chunks.length-1]=last+delta;else chunks.push(delta);target.set(index,chunks);}
+function joinLiveChunks(target:Map<number,string[]>):string{return[...target.entries()].sort(([left],[right])=>left-right).map(([,chunks])=>chunks.join("")).join("\n");}
 function goalBoundCapability(method: AgentCapability): boolean { return ["goal.delegate", "goal.reassign", "goal.revise", "goal.put", "work_record.update", "schedule.set", "human.request"].includes(method); }
 function asRecord(value: JsonValue): Record<string, JsonValue> { if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("RPC params must be an object"); return value; }
 function boundedJson(value:JsonValue,maxChars=2_000):string{const text=typeof value==="string"?value:JSON.stringify(value);return text.length<=maxChars?text:`${text.slice(0,maxChars)}…`;}

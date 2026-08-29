@@ -6,7 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { goalAutomaticTarget, type AgentHandoff,type GoalSnapshot, type RunRequest, type TurnSnapshot, type WakeSnapshot } from "goah-ledger-contract";
 import { PiRunnerAdapter, ProcessRunner, piWorkerPath, type PiAssistantResponse,type PiDriver } from "./index.js";
-import { assistantResponseText, bashTimeoutMs, compactMessages, compactMessagesToTokenBudget, linuxSandboxArgs, resolveContextPolicy, runBashCommand, sandboxWorkspacePaths, scopedRunnerPath, snapshotModelConfig } from "./pi-worker.js";
+import { assistantResponseText, bashTimeoutMs, compactMessages, compactMessagesToTokenBudget, linuxSandboxArgs,minimalLiveDelta, resolveContextPolicy, runBashCommand, sandboxWorkspacePaths, scopedRunnerPath, snapshotModelConfig } from "./pi-worker.js";
 import { createPiModel, modelCatalog, providerCatalog } from "./model-provider.js";
 
 const wake: WakeSnapshot = { id: "w", ...goalAutomaticTarget("a","goal"),triggerRef: "t", status: "consumed", attempt: 1, enqueuedSeq: 1, claimedAt:"2026-08-18T00:00:00.000Z",consumedAt:"2026-08-18T00:00:00.000Z",turnId:"turn" };
@@ -26,6 +26,8 @@ test("assistant response excludes thinking and tool blocks", () => {
   } as never;
   assert.equal(assistantResponseText(message), "Visible answer.");
 });
+
+test("live assistant deltas strip cumulative provider partials",()=>{const partial={role:"assistant",content:[{type:"thinking",thinking:"x".repeat(100_000)}]};const event={type:"thinking_delta",contentIndex:0,delta:"next",partial} as never;assert.deepEqual(minimalLiveDelta(event),{type:"thinking_delta",contentIndex:0,delta:"next"});assert.doesNotMatch(JSON.stringify(minimalLiveDelta(event)),/partial|100000/);});
 
 function driver(steps: Array<{ stop?: boolean; response?: PiAssistantResponse; handoff?: {response:PiAssistantResponse;handoff:AgentHandoff} }>): PiDriver {
   return {
@@ -160,10 +162,11 @@ test("ProcessRunner may opt into its own timeout policy", async () => {
 
 test("ProcessRunner forwards steering messages over the live worker protocol", async () => {
   const runner = new ProcessRunner({ command: process.execPath, args: [fileURLToPath(new URL("./steering-worker.test-fixture.js", import.meta.url))], steering: true });
-  const handle = runner.prepare({ ...requestBase, execution:{...execution,triggerKind:"user_message",goalId:null,goalRevision:null}, turn: { trigger: { kind: "user_message" },activeGoal:goal,goalCommitment:null }, context: {}, now: () => new Date().toISOString(), emit: () => undefined });
+  const live:string[]=[];const handle = runner.prepare({ ...requestBase, execution:{...execution,triggerKind:"user_message",goalId:null,goalRevision:null}, turn: { trigger: { kind: "user_message" },activeGoal:goal,goalCommitment:null }, context: {}, now: () => new Date().toISOString(), emit: () => undefined,emitLive:(event)=>{const delta=event.data.delta;if(delta.type==="text_delta")live.push(delta.delta);} });
   handle.begin();
   await handle.steer!("correct the budget");
   assert.deepEqual(await handle.result, { outcome: "completed", finalMessageId: "steering:turn" });
+  assert.deepEqual(live,["correct the budget"]);
 });
 
 test("ProcessRunner rejects steering that the worker no longer accepts", async () => {

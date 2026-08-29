@@ -138,6 +138,11 @@ export interface HandoffValidationRequest {handoff:AgentHandoff;candidateMessage
 export interface TurnOutput { validationAttemptId:number;validationToken:string;handoff: AgentHandoff }
 export interface CommittedTurnOutput { handoff: GoalHandoff }
 export interface RunnerTraceEvent { type: string; data: JsonValue }
+export type AssistantLiveDelta =
+  | {type:"start"|"text_start"|"text_end"|"thinking_start"|"thinking_end"|"toolcall_start"|"toolcall_end";contentIndex?:number}
+  | {type:"text_delta"|"thinking_delta"|"toolcall_delta";contentIndex:number;delta:string};
+export interface RunnerLiveEvent {type:"message.assistant.delta";data:{messageId:string;delta:AssistantLiveDelta}}
+export interface TurnLiveSnapshot {revision:number;messageId:string;text:string;thinking:string;thinkingActive:boolean}
 
 export type AgentCapability = "ledger.search" | "mail.send" | "schedule.set" | "goal.put"
   | "team.list" | "goal.get" | "goal.create" | "goal.work" | "goal.delegate" | "goal.reassign" | "goal.revise" | "goal.pause" | "goal.resume" | "goal.complete" | "human.request"
@@ -171,7 +176,7 @@ export type TurnTrigger = { kind: "user_message" } | { kind: "wake"; reasons: st
 export interface TurnContext { trigger: TurnTrigger; activeGoal: GoalSnapshot | null; goalCommitment: GoalCommitment | null }
 /** Canonical user-visible assistant prose. Raw provider events remain unchanged. */
 export function normalizeAssistantText(text: string): string { return text.replace(/\r\n?/g, "\n").trim(); }
-export interface RunRequest { agent: string; execution: TurnSnapshot; sourceWake?: WakeSnapshot; sourceWakeTriggers?: WakeTriggerSnapshot[]; turn: TurnContext; context: JsonValue; now(): string; emit(event: RunnerTraceEvent): void; rpc?(method: RunnerRpcMethod, params: JsonValue): Promise<JsonValue> }
+export interface RunRequest { agent: string; execution: TurnSnapshot; sourceWake?: WakeSnapshot; sourceWakeTriggers?: WakeTriggerSnapshot[]; turn: TurnContext; context: JsonValue; now(): string; emit(event: RunnerTraceEvent): void; emitLive?(event:RunnerLiveEvent):void; rpc?(method: RunnerRpcMethod, params: JsonValue): Promise<JsonValue> }
 export type RunnerCandidateResult = { outcome: "completed"; finalMessageId: string; handoff?: TurnOutput } | { outcome: "abnormal"; reason: string };
 export interface RunnerHandle { pid: number | null; begin(): void; result: Promise<RunnerCandidateResult>; steer?(message: string): Promise<void>; terminate(): Promise<void> }
 export interface Runner { readonly isolation: "process"; prepare(request: RunRequest): RunnerHandle; terminateProcess(pid: number, runnerProfileId?: string): Promise<void> }

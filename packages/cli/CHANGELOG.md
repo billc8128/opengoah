@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.5
+
+- Streamed text and thinking now use bounded in-memory snapshots instead of durable per-token events; 50,000 deltas produce one Reasoning Item and no Ledger delta rows.
+
 ## 0.13.4
 
 - Goal Agents now treat each Wake as a sustained work session, continue through immediately actionable work, and reserve Handoff for a genuine wait, blocker, exhausted frontier, or completion review boundary.

@@ -52,6 +52,7 @@ export class ConversationView implements Component {
     this.entries.push({ kind: "markdown", content,...(messageId?{messageId}:{}) }); this.trim();
   }
   appendLiveMarkdown(content: string): void { this.liveMarkdown += content; }
+  setLive(text:string,thinking:string,thinkingActive:boolean):void{this.liveMarkdown=text;this.liveThinking=thinking;this.thinkingActive=thinkingActive;}
   clearLiveMarkdown(): void { this.liveMarkdown = ""; }
   updateThinking(activity: ThinkingActivity): void {
     if (activity.phase === "start") { this.liveThinking = ""; this.thinkingActive = true; return; }
@@ -248,6 +249,7 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   const pushResponse = (text: string,messageId?:string): void => { transcriptView.addMarkdown(text,messageId); tui.requestRender(); };
   const updateTool = (activity: ToolActivity): void => { transcriptView.updateTool(activity); tui.requestRender(); };
   const updateThinking = (activity: ThinkingActivity): void => { transcriptView.updateThinking(activity); tui.requestRender(); };
+  const replaceLive = (text:string,thinking:string,thinkingActive:boolean):void => {transcriptView.setLive(text,thinking,thinkingActive);tui.requestRender();};
   const setWakeState = (mode: "queued" | "working"): void => { statusView.setText(statusText(mode, mode === "queued" ? 1 : queued.length)); tui.requestRender(); };
   const finishIdle = async (): Promise<void> => {
     busy.active = false;
@@ -279,7 +281,7 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
         if (!streams.isCurrent(controller)) return;
         if (frame.type === "accepted") activeInteractionTurnId = frame.turnId;
         if (frame.type === "result" || frame.type === "error") activeInteractionTurnId = null;
-        renderFrame(frame, push, appendLive, commitLive, pushResponse, updateTool, updateThinking, setWakeState, () => commitLive(""));
+        renderFrame(frame, push, appendLive, commitLive, pushResponse, updateTool, updateThinking, setWakeState, () => commitLive(""),replaceLive);
       }, controller.signal);
     } catch (error) {
       if (!ownsStream) { if (!controller.signal.aborted) { rejectionShown = true; push(errorLine(error)); } return; }
@@ -304,7 +306,7 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
     activeInteractionTurnId = turnId;
     const controller = new AbortController();try{if(!streams.begin(controller).owns)throw new Error("Cannot attach a Turn while another stream is active.");}catch(error){busy.active=false;push(errorLine(error));continuePending();return;}
     statusView.setText(statusText("queued", 1));
-    try { await streamControl(stateDir, { op: "turn.attach", turnId }, (frame) => { if(!streams.isCurrent(controller))return;if (frame.type === "result" || frame.type === "error") activeInteractionTurnId = null; renderFrame(frame, push, appendLive, commitLive, pushResponse, updateTool, updateThinking, setWakeState, () => commitLive("")); }, controller.signal); }
+    try { await streamControl(stateDir, { op: "turn.attach", turnId }, (frame) => { if(!streams.isCurrent(controller))return;if (frame.type === "result" || frame.type === "error") activeInteractionTurnId = null; renderFrame(frame, push, appendLive, commitLive, pushResponse, updateTool, updateThinking, setWakeState, () => commitLive(""),replaceLive); }, controller.signal); }
     catch (error) { if(streams.isCurrent(controller)&&!controller.signal.aborted)push(errorLine(error)); }
     finally {
       if(!streams.complete(controller))return;
@@ -472,7 +474,7 @@ export interface ToolActivity { kind: "tool"; callId: string; name: string; deta
 export interface ThinkingActivity { phase: "start" | "delta" | "done" | "clear"; text: string }
 
 /** Render one structured control-protocol frame into its own transcript channel. */
-export function renderFrame(frame: ControlFrame, push: (line: string) => void, appendLive: (text: string) => void = push, commitLive: (text: string,messageId?:string) => void = push, pushResponse: (text: string,messageId?:string) => void = push, updateTool: (activity: ToolActivity) => void = (activity) => push(toolActivityLine(activity)), updateThinking: (activity: ThinkingActivity) => void = () => {}, setWakeState: (state: "queued" | "working") => void = () => {}, clearLive: () => void = () => {}): void {
+export function renderFrame(frame: ControlFrame, push: (line: string) => void, appendLive: (text: string) => void = push, commitLive: (text: string,messageId?:string) => void = push, pushResponse: (text: string,messageId?:string) => void = push, updateTool: (activity: ToolActivity) => void = (activity) => push(toolActivityLine(activity)), updateThinking: (activity: ThinkingActivity) => void = () => {}, setWakeState: (state: "queued" | "working") => void = () => {}, clearLive: () => void = () => {},replaceLive:(text:string,thinking:string,thinkingActive:boolean)=>void=()=>{}): void {
   if (frame.type === "error") { updateThinking({ phase: "clear", text: "" }); clearLive(); push(`${tuiTheme.error("error")}  ${safeError(frame.error)}\n`); return; }
   if (frame.type === "accepted") {
     const value = frame.value && typeof frame.value === "object" && !Array.isArray(frame.value) ? frame.value as Record<string, unknown> : {};
@@ -495,6 +497,7 @@ export function renderFrame(frame: ControlFrame, push: (line: string) => void, a
   const data = record.data && typeof record.data === "object" && !Array.isArray(record.data) ? record.data as Record<string, unknown> : {};
   if (record.type === "wake.enqueued") { setWakeState("queued"); return; }
   if (record.type === "turn.started" || record.type === "transcript.started") { setWakeState("working"); return; }
+  if(record.type==="message.assistant.live"){replaceLive(typeof data.text==="string"?data.text:"",typeof data.thinking==="string"?data.thinking:"",data.thinkingActive===true);return;}
   if (record.type === "tool.called") {
     updateThinking({ phase: "done", text: "" });
     updateTool({ kind: "tool", callId: String(data.callId ?? "tool"), name: String(data.name ?? "tool"), detail: toolDetail(data.arguments), status: "running" });

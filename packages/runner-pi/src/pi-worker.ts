@@ -5,8 +5,8 @@ import { delimiter, dirname, join, resolve, sep } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { Agent, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
-import { fauxAssistantMessage, fauxText, fauxToolCall, Type, type Message, type Provider } from "@earendil-works/pi-ai";
-import { normalizeAssistantText, TRANSCRIPT_FORMAT_VERSION, type AgentCapability, type AgentHandoff, type HandoffValidationResult, type JsonValue, type RunnerCandidateResult, type TranscriptMessage, type TurnOutput } from "goah-ledger-contract";
+import { fauxAssistantMessage, fauxText, fauxToolCall, Type, type AssistantMessageEvent,type Message, type Provider } from "@earendil-works/pi-ai";
+import { normalizeAssistantText, TRANSCRIPT_FORMAT_VERSION, type AgentCapability, type AgentHandoff,type AssistantLiveDelta, type HandoffValidationResult, type JsonValue, type RunnerCandidateResult, type TranscriptMessage, type TurnOutput } from "goah-ledger-contract";
 import { runProcessWorker, type WorkerRpc } from "./index.js";
 import { createPiModel } from "./model-provider.js";
 
@@ -26,7 +26,7 @@ export function compactMessages(messages: AgentMessage[], maxRecent = 8): AgentM
 }
 
 export async function runPiWorker(): Promise<void> {
-  await runProcessWorker(async (request, emit, rpc, controls): Promise<RunnerCandidateResult> => {
+  await runProcessWorker(async (request, emit, rpc, controls,emitLive): Promise<RunnerCandidateResult> => {
     const contextRecord = typeof request.context === "object" && request.context !== null && !Array.isArray(request.context) ? request.context : {};
     const legacyRequest = request.turn === undefined;
     const binding = request.turn?.goalCommitment;
@@ -72,6 +72,7 @@ export async function runPiWorker(): Promise<void> {
     let responseFailure = "";
     let compactions = 0;
     let messageCounter = 0;
+    let activeAssistantMessageId:string|null=null;
     const messageIds = new WeakMap<object, string>();
     const emittedUsers = new Set<string>();
     const idFor = (message: AgentMessage): string => {
@@ -137,7 +138,7 @@ export async function runPiWorker(): Promise<void> {
         }
         return view;
       },
-      beforeToolCall:async({assistantMessage,toolCall,args})=>{if(revokedReason)return{block:true,reason:`Turn authority was revoked: ${revokedReason}`,terminate:true};if(toolCall.name!=="handoff")return;acceptedHandoff=null;output=null;const handoff=args as AgentHandoff;const currentText=assistantResponseText(assistantMessage);const candidate=currentText?{id:idFor(assistantMessage),text:currentText}:lastReadableMessage;try{const result=await rpc("goal.handoff.validate",{handoff,candidateMessageId:candidate?.id??"",candidateMessage:candidate?.text??""} as unknown as JsonValue) as unknown as HandoffValidationResult;if(result.accepted){if(!candidate||result.messageItemId!==candidate.id){revokedReason="Handoff validation returned a different assistant message identity";return{block:true,reason:revokedReason,terminate:true};}acceptedHandoff={attemptId:result.attemptId,token:result.token,messageItemId:result.messageItemId,handoff};return;}const reason=result.issues.map((issue)=>`- ${issue.message}`).join("\n");if(result.fatal)revokedReason=reason;return{block:true,reason:`Handoff was not accepted:\n${reason}`,terminate:result.fatal};}catch(error){revokedReason=error instanceof Error?error.message:String(error);return{block:true,reason:`Handoff validation could not continue: ${revokedReason}`,terminate:true};}},
+      beforeToolCall:async({assistantMessage,toolCall,args})=>{if(revokedReason)return{block:true,reason:`Turn authority was revoked: ${revokedReason}`,terminate:true};if(toolCall.name!=="handoff")return;acceptedHandoff=null;output=null;const handoff=args as AgentHandoff;const currentText=assistantResponseText(assistantMessage);const candidate=currentText?(activeAssistantMessageId?{id:activeAssistantMessageId,text:currentText}:lastReadableMessage?.text===currentText?lastReadableMessage:{id:idFor(assistantMessage),text:currentText}):lastReadableMessage;try{const result=await rpc("goal.handoff.validate",{handoff,candidateMessageId:candidate?.id??"",candidateMessage:candidate?.text??""} as unknown as JsonValue) as unknown as HandoffValidationResult;if(result.accepted){if(!candidate||result.messageItemId!==candidate.id){revokedReason="Handoff validation returned a different assistant message identity";return{block:true,reason:revokedReason,terminate:true};}acceptedHandoff={attemptId:result.attemptId,token:result.token,messageItemId:result.messageItemId,handoff};return;}const reason=result.issues.map((issue)=>`- ${issue.message}`).join("\n");if(result.fatal)revokedReason=reason;return{block:true,reason:`Handoff was not accepted:\n${reason}`,terminate:result.fatal};}catch(error){revokedReason=error instanceof Error?error.message:String(error);return{block:true,reason:`Handoff validation could not continue: ${revokedReason}`,terminate:true};}},
       shouldStopAfterTurn: () => output !== null||Boolean(revokedReason),
       toolExecution: "sequential",
     });
@@ -149,15 +150,17 @@ export async function runPiWorker(): Promise<void> {
     });
     agent.subscribe((event) => {
       if (event.type === "turn_start") emit({ type: "turn.started", data: {} });
-      else if (event.type === "message_start" && event.message.role === "user") {
-        const id = idFor(event.message);
+      else if (event.type === "message_start") {
+        if(event.message.role==="assistant"){activeAssistantMessageId=idFor(event.message);return;}
+        if(event.message.role!=="user")return;const id = idFor(event.message);
         if (!emittedUsers.has(id)) { emittedUsers.add(id); emit({ type: "message.user", data: { message: transcriptMessage(event.message, id) as unknown as JsonValue } }); }
       } else if (event.type === "message_update") {
-        emit({ type: "message.assistant.delta", data: { messageId: idFor(event.message), delta: JSON.parse(JSON.stringify(event.assistantMessageEvent)) as JsonValue } });
+        const delta=minimalLiveDelta(event.assistantMessageEvent);if(delta)emitLive({type:"message.assistant.delta",data:{messageId:activeAssistantMessageId??idFor(event.message),delta}});
       } else if (event.type === "message_end" && event.message.role === "assistant") {
-        const messageId=idFor(event.message);const text=assistantResponseText(event.message);if(text)lastReadableMessage={id:messageId,text};
+        const messageId=activeAssistantMessageId??idFor(event.message);messageIds.set(event.message,messageId);const text=assistantResponseText(event.message);if(text)lastReadableMessage={id:messageId,text};
         if ((event.message.stopReason === "error" || event.message.stopReason === "aborted") && event.message.errorMessage) responseFailure = event.message.errorMessage;
         const handoffIntent=hasAgentToolCall(event.message,"handoff");emit({ type: "message.assistant.completed", data: { message: transcriptMessage(event.message, messageId) as unknown as JsonValue,commitState:handoffIntent?"provisional":"committed" } });
+        activeAssistantMessageId=null;
       } else if (event.type === "tool_execution_start") emit({ type: "tool.called", data: { callId: event.toolCallId, name: event.toolName, arguments: JSON.parse(JSON.stringify(event.args)) as JsonValue } });
       else if (event.type === "tool_execution_end") emit({ type: "tool.completed", data: { callId: event.toolCallId, messageId: `tool:${event.toolCallId}`, name: event.toolName, result: JSON.parse(JSON.stringify(event.result)) as JsonValue, isError: event.isError } });
       else if (event.type === "turn_end") emit({ type: "turn.completed", data: {} });
@@ -201,6 +204,13 @@ function transcriptMessage(message: AgentMessage, id: string): TranscriptMessage
   const value = JSON.parse(JSON.stringify(message)) as Record<string, unknown>;
   const role = message.role === "assistant" ? "assistant" : message.role === "user" ? "user" : "tool";
   return { id, role, content: (value.content ?? value) as JsonValue, ...(value.usage !== undefined ? { usage: value.usage as JsonValue } : {}), ...(typeof value.stopReason === "string" ? { stopReason: value.stopReason } : {}), ...(typeof value.errorMessage === "string" ? { errorMessage: value.errorMessage } : {}) };
+}
+
+export function minimalLiveDelta(event:AssistantMessageEvent):AssistantLiveDelta|null{
+  if(event.type==="start")return{type:"start"};
+  if(event.type==="text_delta"||event.type==="thinking_delta"||event.type==="toolcall_delta")return{type:event.type,contentIndex:event.contentIndex,delta:event.delta};
+  if(event.type==="text_start"||event.type==="text_end"||event.type==="thinking_start"||event.type==="thinking_end"||event.type==="toolcall_start"||event.type==="toolcall_end")return{type:event.type,contentIndex:event.contentIndex};
+  return null;
 }
 
 function createTools(root: string, handoff: (output: AgentHandoff) => void, rpc: WorkerRpc, capabilities: ReadonlySet<AgentCapability> | undefined, goalState: { bound: boolean; binding?: { goalId: string; goalRevision: number }; recordRevision?: number }, protectedPaths: string[] = []): AgentTool<any>[] {
