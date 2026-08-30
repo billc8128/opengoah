@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.13.6
+
+- The Pi Runner now uses upstream Pi's native read/bash/edit/write tools. `cwd` is a working context rather than a Goah permission boundary, so absolute paths and commands inherit host-user access; isolation belongs to custom Runners or deployment wrappers.
+- The self-contained npm bundle now ships and verifies Pi's Photon image runtime, including installs performed with lifecycle scripts disabled.
+
 ## 0.13.5
 
 - Streamed text and thinking now use bounded in-memory snapshots instead of durable per-token events; 50,000 deltas produce one Reasoning Item and no Ledger delta rows.

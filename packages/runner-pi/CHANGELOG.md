@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Replaced Goah's custom path-scoped file tools and Bash sandbox with upstream Pi `createCodingTools`; the reference Runner now inherits host-user access exactly as Pi does.
 - Pi now assigns one stable ID from assistant message start through completion and strips cumulative provider `partial` payloads before sending minimal live deltas over the process boundary.
 - Goal Turn and tool prompts now distinguish checkpoints from terminal Handoff: Work Record and Schedule do not end work, and `progress` requires meaningful work plus an exhausted current frontier.
 - Model switching now requires resolvable credentials for the selected provider, reuses saved or present environment authentication, and opens the scoped OAuth/API-key/environment flow before saving an otherwise unusable target.
