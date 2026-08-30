@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Aligned the reference Pi Runner with upstream Pi by composing its native read/bash/edit/write tools directly: `cwd` is no longer a Goah permission boundary, absolute paths and commands inherit host-user access, and isolation is left to custom Runners or deployment wrappers. The single-package build now preserves Pi's Photon image runtime and verifies installed image reads.
 - Unified all execution under one Turn shape: Thread persists canonical Agent role, Turn persists `user_message|wake` trigger plus optional Goal commitment, active Root context is visible without creating responsibility, and Wake/Schedule retain only automatic Goal/Specialist targets under schema v27; Human Turn replacement is atomic and terminal Turns retain Runner cleanup ownership until release.
 - Unified successful Runner results as readable response plus optional Handoff, made Human input direct-only, and made explicit `/goal` start a committed CEO user Turn without an intermediate Wake.
 - Made Goal output dual-channel without duplicate authority: every validation attempt invalidates older tokens, Goal Runner feedback is mandatory, normalized completion intent drives UI, Pi fences post-revocation tools, and commit references the existing Message while allowing later Work Record refinement.

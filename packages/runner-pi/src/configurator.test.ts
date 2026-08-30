@@ -217,9 +217,9 @@ test("Pi ProcessRunner keeps the full credential store outside the worker enviro
   assert.equal(typeof runner.options.prepareRuntime, "function");
 });
 
-test("Pi doctor reports the Bash sandbox backend", async () => {
+test("Pi doctor reports native host tool access", async () => {
   const checks = await piRunnerConfigurator().doctor({ provider: "faux", model: "faux-goah", authMode: "local" });
-  assert.match(checks.find((check) => check.name === "bash-sandbox")!.detail, /sandbox-exec|bubblewrap|unavailable/);
+  assert.equal(checks.find((check) => check.name === "tool-access")!.detail, "Pi native tools · host user permissions");
 });
 
 test("Pi custom endpoints are runner-local overlays", () => {

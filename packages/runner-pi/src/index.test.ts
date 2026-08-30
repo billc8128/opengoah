@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { goalAutomaticTarget, type AgentHandoff,type GoalSnapshot, type RunRequest, type TurnSnapshot, type WakeSnapshot } from "goah-ledger-contract";
 import { PiRunnerAdapter, ProcessRunner, piWorkerPath, type PiAssistantResponse,type PiDriver } from "./index.js";
-import { assistantResponseText, bashTimeoutMs, compactMessages, compactMessagesToTokenBudget, linuxSandboxArgs,minimalLiveDelta, resolveContextPolicy, runBashCommand, sandboxWorkspacePaths, scopedRunnerPath, snapshotModelConfig } from "./pi-worker.js";
+import { assistantResponseText, compactMessages, compactMessagesToTokenBudget, createPiCodingTools,minimalLiveDelta, resolveContextPolicy, snapshotModelConfig } from "./pi-worker.js";
 import { createPiModel, modelCatalog, providerCatalog } from "./model-provider.js";
 
 const wake: WakeSnapshot = { id: "w", ...goalAutomaticTarget("a","goal"),triggerRef: "t", status: "consumed", attempt: 1, enqueuedSeq: 1, claimedAt:"2026-08-18T00:00:00.000Z",consumedAt:"2026-08-18T00:00:00.000Z",turnId:"turn" };
@@ -71,70 +71,24 @@ test("an unbound Turn returns a normal assistant response without handoff", asyn
   assert.deepEqual(await handle.result, { outcome: "completed", finalMessageId: "adapter:turn:attempt:1:message:1" });
 });
 
-test("bash commands are killed by process-group timeout and become visible tool errors", async () => {
-  assert.equal(bashTimeoutMs(undefined, { GOAH_PI_BASH_TIMEOUT_MS: "500" }), 500);
-  assert.equal(bashTimeoutMs(undefined, {}), 120_000);
-  assert.equal(bashTimeoutMs(60_000_000, {}), 600_000);
-  assert.equal(bashTimeoutMs(-5, {}), 120_000);
-
-  const started = Date.now();
-  const hung = await runBashCommand(process.cwd(), { command: "sleep 30", timeoutMs: 200 });
-  assert.equal(hung.isError, true);
-  assert.match(hung.content[0]?.text ?? "", /timed out/);
-  assert.ok(Date.now() - started < 5_000);
-
-  const fast = await runBashCommand(process.cwd(), { command: "printf ok", timeoutMs: 5_000 });
-  assert.notEqual(fast.isError, true);
-  assert.match(fast.content[0]?.text ?? "", /ok/);
-  const overflow = await runBashCommand(process.cwd(), { command: "head -c 1200000 /dev/zero", timeoutMs: 5_000 });
-  assert.equal(overflow.isError, true);
-  assert.equal((overflow.details as { outputOverflow?: boolean }).outputOverflow, true);
-  assert.ok((overflow.content[0]?.text.length ?? 0) <= 50_000);
-  const root = mkdtempSync(join(tmpdir(), "goah-sandbox-root-")); const outside = join(mkdtempSync(join(tmpdir(), "goah-sandbox-outside-")), "secret.txt"); writeFileSync(outside, "host-secret");
-  const escaped = await runBashCommand(root, { command: `cat ${JSON.stringify(outside)}`, timeoutMs: 5_000 });
-  assert.equal(escaped.isError, true); assert.doesNotMatch(escaped.content[0]?.text ?? "", /host-secret/);
-  const tempVictim = join(tmpdir(), `goah-temp-victim-${process.pid}`); writeFileSync(tempVictim, "safe");
-  const tempWrite = await runBashCommand(root, { command: `printf overwritten > ${JSON.stringify(tempVictim)}`, timeoutMs: 5_000 });
-  assert.equal(tempWrite.isError, true); assert.equal(readFileSync(tempVictim, "utf8"), "safe");
-  if (existsSync(join(homedir(), ".gitconfig"))) { const gitConfig = await runBashCommand(root, { command: `cat ${JSON.stringify(join(homedir(), ".gitconfig"))}`, timeoutMs: 5_000 }); assert.equal(gitConfig.isError, true); }
-  for (const command of ["node --version", "npm --version", "git --version"]) {
-    const tool = await runBashCommand(root, { command, timeoutMs: 10_000 });
-    assert.notEqual(tool.isError, true, `${command}: ${tool.content[0]?.text ?? ""}`);
-  }
-  const marker = join(root, "background-marker");
-  const background = await runBashCommand(root, { command: `(sleep 0.2; printf escaped > ${JSON.stringify(marker)}) >/dev/null 2>&1 &`, timeoutMs: 5_000 });
-  assert.notEqual(background.isError, true); await new Promise((resolveWait) => setTimeout(resolveWait, 350)); assert.equal(existsSync(marker), false);
-});
-
-test("runner tools cannot read protected Goah state", async () => {
-  const root = mkdtempSync(join(tmpdir(), "goah-protected-root-")); const state = join(root, ".goah"); mkdirSync(state);
-  const auth = join(state, "auth.json"); writeFileSync(auth, "private-secret");
-  const stateLink = join(root, "state-link"); symlinkSync(state, stateLink);
-  const outside = mkdtempSync(join(tmpdir(), "goah-outside-")); const outsideLink = join(root, "outside-link"); writeFileSync(join(outside, "secret.txt"), "outside-secret"); symlinkSync(outside, outsideLink);
-  assert.equal(sandboxWorkspacePaths(root, [state]).includes(outside), false);
-  assert.throws(() => scopedRunnerPath(root, auth, [state]), /protected Goah state/);
-  const result = await runBashCommand(root, { command: `cat ${JSON.stringify(auth)}`, timeoutMs: 5_000 }, undefined, [state]);
-  assert.equal(result.isError, true);
-  assert.doesNotMatch(result.content[0]?.text ?? "", /private-secret/);
-  const overwrite = await runBashCommand(root, { command: `printf corrupted > ${JSON.stringify(auth)}`, timeoutMs: 5_000 }, undefined, [state]);
-  assert.equal(overwrite.isError, true); assert.equal(readFileSync(auth, "utf8"), "private-secret");
-  const linked = await runBashCommand(root, { command: `cat ${JSON.stringify(join(stateLink, "auth.json"))}`, timeoutMs: 5_000 }, undefined, [state]);
-  assert.equal(linked.isError, true);
-  assert.doesNotMatch(linked.content[0]?.text ?? "", /private-secret/);
-  const escaped = await runBashCommand(root, { command: `cat ${JSON.stringify(join(outsideLink, "secret.txt"))}`, timeoutMs: 5_000 }, undefined, [state]);
-  assert.equal(escaped.isError, true);
-  assert.doesNotMatch(escaped.content[0]?.text ?? "", /outside-secret/);
-  const safe = await runBashCommand(root, { command: "printf ok", timeoutMs: 5_000 }, undefined, [state]);
-  assert.notEqual(safe.isError, true);
-  assert.equal(safe.content[0]?.text, "ok");
-});
-
-test("Linux Bash sandbox never binds the host root", () => {
-  const root = mkdtempSync(join(tmpdir(), "goah-bwrap-root-")); const state = join(root, ".goah"); const sandboxTemp = mkdtempSync(join(tmpdir(), "goah-bwrap-tmp-")); mkdirSync(state); writeFileSync(join(root, "work.txt"), "ok");
-  const args = linuxSandboxArgs("true", root, [state], sandboxTemp);
-  assert.equal(args.some((value, index) => value === "--bind" && args[index + 1] === "/"), false);
-  assert.equal(args.some((value, index) => value === "--ro-bind" && args[index + 1] === "/"), false);
-  assert.equal(args.some((value, index) => value === "--dir" && args[index + 1] === realpathSync(sandboxTemp)), true);
+test("Pi coding tools use upstream host-permission semantics outside cwd", async () => {
+  const root = mkdtempSync(join(tmpdir(), "goah-pi-root-"));
+  const outside = mkdtempSync(join(tmpdir(), "goah-pi-outside-"));
+  const source = join(outside, "source.txt");
+  const written = join(outside, "written.txt");
+  const shellWritten = join(outside, "shell.txt");
+  writeFileSync(source, "outside-readable");
+  const tools = createPiCodingTools(root);
+  assert.deepEqual(tools.map((tool) => tool.name), ["read", "bash", "edit", "write"]);
+  const read = tools.find((tool) => tool.name === "read")!;
+  const readResult = await read.execute("read-outside", { path: source });
+  assert.match(readResult.content.find((item) => item.type === "text")?.text ?? "", /outside-readable/);
+  const write = tools.find((tool) => tool.name === "write")!;
+  await write.execute("write-outside", { path: written, content: "outside-writable" });
+  assert.equal(readFileSync(written, "utf8"), "outside-writable");
+  const bash = tools.find((tool) => tool.name === "bash")!;
+  await bash.execute("bash-outside", { command: `printf shell-writable > ${JSON.stringify(shellWritten)}`, timeout: 5 });
+  assert.equal(readFileSync(shellWritten, "utf8"), "shell-writable");
 });
 
 test("stopping without handoff is abnormal", async () => {

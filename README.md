@@ -189,7 +189,7 @@ Goah publishes one npm package: `@goah/cli`. The internal workspaces remain sepa
 | `ledger-contract` | `@goah/cli/kernel`, `/transcript`, `/execution` | Generic event kernel, normalized Turn transcript vocabulary/replay, and execution contracts. |
 | `ledger-sqlite` | `@goah/cli/sqlite` | Single-writer SQLite ledger and rebuildable standard projections. |
 | `supervisor` | `@goah/cli/supervisor` | Scheduler, wake lifecycle, Runner exit barriers, Active Context, and Goal coordination. |
-| `runner-pi` | `@goah/cli/runner-pi` | Pi adapter, process runner, normalized transcript events, exact request snapshots, local tools, and compaction. |
+| `runner-pi` | `@goah/cli/runner-pi` | Pi adapter, process runner, normalized transcript events, exact request snapshots, upstream Pi tools, and compaction. |
 | `testkit` | `@goah/cli/testkit` | Simulated clock, faux worker, conformance suite, and fault injection. |
 | `cli` | `@goah/cli` | Configuration, singleton daemon, status/doctor, goals, and dashboard. |
 
@@ -199,7 +199,7 @@ Read this before pointing goah at anything real.
 
 Mechanically enforced today:
 
-- Runner code executes in child processes with bounded, per-request credentials and never receives a ledger connection. Read/write/edit reject Goah state paths, and Bash runs inside a platform sandbox that masks credential/control state; unsupported platforms fail the Bash tool closed. Control state defaults to `~/.goah/state`.
+- Runner code executes in child processes, receives only the active provider credential for that request, and never receives a ledger connection. The supplied provider credential is passed to the model transport rather than exported into the worker environment. Control state defaults to `~/.goah/state`.
 - The events table is append-only (enforced by SQLite triggers); invalid Wake and Schedule transitions are rejected by typed APIs and database constraints.
 - `request.prepared` records model-visible behavior but excludes provider API keys, authorization headers, abort handles, and transport-private objects.
 - Recovery Active Context includes only the failed Turn reason, interruption/compaction markers, and tool calls with unknown outcomes; raw deltas and request snapshots remain in the ledger for explicit inspection.
@@ -209,7 +209,8 @@ Not guaranteed, by design honesty:
 
 - goah does not make the model's judgment correct. It records reasons and evidence; it cannot verify they are good reasons.
 - goah does not defend against prompt injection inside the agent's own context.
-- The Pi Runner is trusted local code, but Bash is constrained to workspace writes, read-only toolchain roots, and explicit Goah-state denial. Unsupported sandbox backends fail closed.
+- The Pi Runner deliberately matches upstream Pi: `cwd` is a working context, not a permission boundary. Its read/write/edit/bash tools inherit the filesystem, process, and network permissions of the operating-system user that launched Goah. Run untrusted models or prompts only inside an external sandbox, container, VM, or restricted system account.
+- The Runner process boundary is a lifecycle and protocol boundary, not a security boundary. Native Pi tools can read local secrets—including Goah state or credential files—whenever the launching operating-system user can read them.
 
 ## Architecture status
 

@@ -23,7 +23,7 @@ const shipped = JSON.parse(readFileSync(join(unpacked, "package", "package.json"
 const files = packed[0].files.map((file) => file.path);
 const nested = files.filter((file) => file.startsWith("node_modules/"));
 const required = [
-  "dist/console/index.html", "dist/console/goah-orbital-mark.png", "dist/LICENSE", "dist/THIRD-PARTY-NOTICES.md",
+  "dist/console/index.html", "dist/console/goah-orbital-mark.png", "dist/LICENSE", "dist/THIRD-PARTY-NOTICES.md", "dist/photon-node.cjs", "dist/photon_rs_bg.wasm",
   "dist/index.d.ts", "dist/cli.d.ts", "dist/kernel.d.ts", "dist/transcript.d.ts", "dist/execution.d.ts",
   "dist/sqlite.d.ts", "dist/supervisor.d.ts", "dist/runner-pi.d.ts", "dist/testkit.d.ts",
   "dist/pi-worker.js", "dist/verification-worker.js", "dist/faux-runner-worker.js",
@@ -51,7 +51,13 @@ execFileSync(process.execPath, ["--input-type=module", "-e", `
   if ('createPiModel' in modules[5] || 'JsonCredentialStore' in modules[5] || 'resolvedApiKey' in modules[5]) throw new Error('runner-pi exposed internal provider or credential implementation');
   const paths = [modules[5].piWorkerPath(), modules[5].verificationWorkerPath(), modules[6].fauxRunnerWorkerPath()];
   const { existsSync } = await import('node:fs');
+  const { dirname, join } = await import('node:path');
+  const { pathToFileURL } = await import('node:url');
   for (const path of paths) if (!existsSync(path)) throw new Error('public worker path does not exist: '+path);
+  const worker = await import(pathToFileURL(paths[0]).href);
+  const read = worker.createPiCodingTools(process.cwd()).find((tool) => tool.name === 'read');
+  const image = await read.execute('packed-image-read', { path: join(dirname(paths[0]), 'console', 'goah-orbital-mark.png') });
+  if (!image.content.some((item) => item.type === 'image')) throw new Error('packed Pi image reader could not load its native asset');
 `], { cwd: app, stdio: "pipe" });
 if (existsSync(join(app, "node_modules", "@goah", "cli", "node_modules"))) throw new Error("installed CLI still nests a dependency tree");
 

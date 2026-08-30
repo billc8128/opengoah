@@ -22,10 +22,16 @@ const internalPackages = new Set(["@goah/cli", "goah-ledger-contract", "goah-led
 const licenseOverrides = new Map([
   ["@earendil-works/pi-agent-core", join(root, "scripts", "third-party-licenses", "earendil-works-pi.txt")],
   ["@earendil-works/pi-ai", join(root, "scripts", "third-party-licenses", "earendil-works-pi.txt")],
+  ["@earendil-works/pi-coding-agent", join(root, "scripts", "third-party-licenses", "earendil-works-pi.txt")],
   ["@earendil-works/pi-telemetry", join(root, "scripts", "third-party-licenses", "earendil-works-pi.txt")],
   ["@earendil-works/pi-tui", join(root, "scripts", "third-party-licenses", "earendil-works-pi.txt")],
   ["data-uri-to-buffer", join(root, "scripts", "third-party-licenses", "data-uri-to-buffer.txt")],
 ]);
+const photonNodeDir = [
+  join(root, "node_modules", "@earendil-works", "pi-coding-agent", "node_modules", "@silvia-odwyer", "photon-node"),
+  join(root, "node_modules", "@silvia-odwyer", "photon-node"),
+].find((path) => existsSync(join(path, "package.json")));
+if (!photonNodeDir) throw new Error("Pi image tool dependency @silvia-odwyer/photon-node is missing");
 
 // Recover an interrupted earlier pack before touching the current build.
 restoreSinglePackageState(root);
@@ -81,6 +87,7 @@ try {
     legalComments: "eof",
     logLevel: "warning",
     metafile: true,
+    plugins: [photonNodeExternal()],
     banner: {
       // Bundled CommonJS dependencies still call require() for Node builtins.
       js: `import { createRequire as __goahCreateRequire } from "node:module";\nconst require = __goahCreateRequire(import.meta.url);`,
@@ -88,9 +95,11 @@ try {
   });
 
   await bundleDeclarations(originalDist, stagedBundle);
+  cpSync(join(photonNodeDir, "photon_rs.js"), join(stagedBundle, "photon-node.cjs"));
+  cpSync(join(photonNodeDir, "photon_rs_bg.wasm"), join(stagedBundle, "photon_rs_bg.wasm"));
   cpSync(join(originalDist, "console"), join(stagedBundle, "console"), { recursive: true });
   cpSync(join(root,"LICENSE"),join(stagedBundle,"LICENSE"));
-  writeFileSync(join(stagedBundle, "THIRD-PARTY-NOTICES.md"), thirdPartyNotices(result.metafile));
+  writeFileSync(join(stagedBundle, "THIRD-PARTY-NOTICES.md"), thirdPartyNotices(result.metafile, [photonNodeDir]));
 
   renameSync(stagedBundle, dist);
   chmodSync(join(dist, "cli.js"), 0o755);
@@ -147,6 +156,15 @@ function internalDeclarationResolver() {
   };
 }
 
+function photonNodeExternal() {
+  return {
+    name: "goah-photon-node-external",
+    setup(build) {
+      build.onResolve({ filter: /^@silvia-odwyer\/photon-node$/ }, () => ({ path: "./photon-node.cjs", external: true }));
+    },
+  };
+}
+
 function packageDeclaration(source) {
   const parts = source.split("/");
   const packageName = source.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
@@ -162,11 +180,15 @@ function packageDeclaration(source) {
   return [candidate, candidate.replace(/\.(mjs|js)$/, ".d.ts"), candidate.replace(/\.mjs$/, ".d.mts")].find(existsSync) ?? null;
 }
 
-function thirdPartyNotices(metafile) {
+function thirdPartyNotices(metafile, extraPackageDirs = []) {
   const packages = new Map();
   for (const key of Object.keys(metafile.inputs)) {
     const entry = packageForInput(key);
     if (entry && !internalPackages.has(entry.manifest.name)) packages.set(`${entry.manifest.name}@${entry.manifest.version}`, entry);
+  }
+  for (const dir of extraPackageDirs) {
+    const manifest = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+    packages.set(`${manifest.name}@${manifest.version}`, { dir, manifest });
   }
   const lines = [
     "# Third-party notices",

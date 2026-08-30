@@ -1,9 +1,8 @@
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
 import type { JsonValue, RunnerCommandResult, RunnerConfigurator, RunnerDiagnostic, RunnerSetupInteraction } from "goah-ledger-contract";
 import { ProcessRunner, piWorkerPath, resolveEnvSpec } from "./index.js";
 import { JsonCredentialStore } from "./credential-store.js";
@@ -78,8 +77,7 @@ export function createPiProcessRunner(configValue: JsonValue, root: string): Pro
       const configured = createPiModel(config.provider, config.model, resolved);
       const auth = await configured.models.getAuth(config.provider);
       if (!auth && config.provider !== "faux" && !["ollama", "lm-studio", "llama.cpp"].includes(config.provider)) throw new Error(`No credentials for ${config.provider}. Run \`goah auth login ${config.provider}\` or configure ${config.apiKeyEnv ?? defaultApiKeyEnv(config.provider)}.`);
-      const authFile = config.authFile ?? defaultAuthFile();
-      return { ...(auth?.auth ?? {}), protectedPaths: [...new Set([dirname(defaultAuthFile()), dirname(authFile)])] } as unknown as JsonValue;
+      return { ...(auth?.auth ?? {}) } as unknown as JsonValue;
     },
   });
 }
@@ -178,13 +176,10 @@ async function doctorPi(value: JsonValue, context?: { root: string }): Promise<R
   const env = resolveEnvSpec(piEnvironment(config), { root: context?.root ?? process.cwd() });
   const configured = createPiModel(config.provider, config.model, env);
   const auth = config.provider === "faux" || ["ollama", "lm-studio", "llama.cpp"].includes(config.provider) ? { source: "local" } : await configured.models.getAuth(config.provider);
-  const sandbox = bashSandboxCapability();
-  const sandboxSmoke = sandbox.available ? await (await import("./pi-worker.js")).runBashCommand(context?.root ?? process.cwd(), { command: "node --version && npm --version && git --version", timeoutMs: 15_000 }, undefined, [dirname(defaultAuthFile())]) : null;
-  const sandboxReady = sandbox.available && sandboxSmoke?.isError !== true;
   return [
     { ok: true, name: "model", detail: `${config.provider}/${config.model} · context ${configured.model.contextWindow} · output ${configured.model.maxTokens}` },
     { ok: Boolean(auth), name: "auth", detail: auth?.source ?? `No credentials for ${config.provider}; use runner auth login or configure ${config.apiKeyEnv ?? defaultApiKeyEnv(config.provider)}` },
-    { ok: sandboxReady, name: "bash-sandbox", detail: sandboxReady ? `${sandbox.detail} · node/npm/git ready` : sandboxSmoke?.content[0]?.text.trim() || sandbox.detail },
+    { ok: true, name: "tool-access", detail: "Pi native tools · host user permissions" },
   ];
 }
 
@@ -197,18 +192,9 @@ function summarizePi(value: JsonValue): Array<{ label: string; value: string }> 
     { label: "Model", value: config.model },
     { label: "Thinking", value: config.thinking ?? "off" },
     { label: "Authentication", value: auth },
-    { label: "Bash sandbox", value: bashSandboxDescription() },
+    { label: "Tool access", value: "Pi native · host user permissions" },
     ...(config.baseUrl ? [{ label: "Endpoint", value: config.baseUrl }] : []),
   ];
-}
-
-function bashSandboxDescription(): string {
-  return bashSandboxCapability().detail;
-}
-function bashSandboxCapability(): { available: boolean; detail: string } {
-  if (process.platform === "darwin") return existsSync("/usr/bin/sandbox-exec") ? { available: true, detail: "sandbox-exec" } : { available: false, detail: "unavailable — Bash fails closed" };
-  if (process.platform === "linux") return ["/usr/bin/bwrap", "/bin/bwrap"].some(existsSync) ? { available: true, detail: "bubblewrap" } : { available: false, detail: "unavailable — install bubblewrap; Bash fails closed" };
-  return { available: false, detail: "unavailable on this platform — Bash fails closed" };
 }
 
 async function runPiCommand(command: string, args: string[], value: JsonValue, interaction: RunnerSetupInteraction): Promise<RunnerCommandResult> {
