@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.13.7
 
 - Reaps detached daemon processes when startup fails and shares one startup implementation between CLI and TUI.
 - Warns before persisting credential-like interactive messages, refuses them non-interactively, and shares one redaction fallback across TUI errors and thread exports.
