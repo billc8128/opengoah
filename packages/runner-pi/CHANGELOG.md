@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Registers Pi's static OAuth flow loaders so standalone Goah bundles include subscription login and token refresh modules.
 - Emits content-addressed Transcript v2 request components and references them from each prepared provider request.
 - Removed `request_human`; CEO writes questions directly in its Assistant Message and `mail.send` remains Agent-only.
 - Replaced Goah's custom path-scoped file tools and Bash sandbox with upstream Pi `createCodingTools`; the reference Runner now inherits host-user access exactly as Pi does.

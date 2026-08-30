@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Goah TUI v2 demo</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --page: #e7ebf1;
+      --terminal: #f3f5f8;
+      --ink: #30384b;
+      --strong: #111a31;
+      --muted: #69738a;
+      --subtle: #657087;
+      --border: #cbd2dd;
+      --rail: #080d62;
+      --brand: #0069ca;
+      --accent: #006fd6;
+      --accent-soft: #e5f2ff;
+      --human-bg: #fff9d9;
+      --activity-bg: #e9edf3;
+      --activity-ink: #4b566d;
+      --success: #087443;
+      --warning: #9a5b00;
+      --danger: #b42318;
+      --danger-bg: #ffedeb;
+      --waiting-bg: #fff2d7;
+      --caret: #d85a56;
+      --selection: #cbe4ff;
+    }
+
+    [data-theme="dark"] {
+      color-scheme: dark;
+      --page: #10141b;
+      --terminal: #171c25;
+      --ink: #d8deea;
+      --strong: #f4f7fb;
+      --muted: #9aa6bb;
+      --subtle: #9aa6bb;
+      --border: #384255;
+      --rail: #0a0f5d;
+      --brand: #0069ca;
+      --accent: #67b7ff;
+      --accent-soft: #172d43;
+      --human-bg: #302d1e;
+      --activity-bg: #202630;
+      --activity-ink: #bac4d4;
+      --success: #55d091;
+      --warning: #f0b45a;
+      --danger: #ff8075;
+      --danger-bg: #3a2022;
+      --waiting-bg: #362b19;
+      --caret: #ff8178;
+      --selection: #24496a;
+    }
+
+    * { box-sizing: border-box; }
+    ::selection { background: var(--selection); color: var(--strong); }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--page);
+      color: var(--ink);
+      font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+      font-variant-numeric: tabular-nums;
+    }
+
+    button { font: inherit; }
+    button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+    .page {
+      width: min(1480px, 100%);
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    .demo-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      margin-bottom: 14px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .demo-toolbar strong { color: var(--strong); font-weight: 650; }
+    .control-groups { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px 16px; }
+    .control-group { display: inline-flex; align-items: center; gap: 4px; }
+    .control-label { margin-right: 4px; color: var(--subtle); }
+
+    .demo-button {
+      border: 1px solid var(--border);
+      background: var(--terminal);
+      color: var(--muted);
+      padding: 5px 9px;
+      cursor: pointer;
+    }
+    .demo-button:hover { color: var(--strong); border-color: var(--muted); }
+    .demo-button[aria-pressed="true"] { color: var(--strong); border-color: var(--accent); background: var(--accent-soft); }
+
+    .stage { overflow: auto; padding-bottom: 18px; }
+    .terminal {
+      margin: 0 auto;
+      min-width: 620px;
+      max-width: 1380px;
+      min-height: 820px;
+      background: var(--terminal);
+      border: 1px solid var(--border);
+      color: var(--ink);
+      line-height: 1.48;
+      letter-spacing: 0.005em;
+      box-shadow: 0 18px 50px rgba(12, 20, 37, 0.14);
+      transition: max-width 180ms ease-out;
+    }
+    .terminal[data-width="80"] { max-width: 840px; }
+    .terminal[data-width="100"] { max-width: 1050px; }
+    .terminal[data-width="120"] { max-width: 1260px; }
+
+    .top-rail {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      background: var(--rail);
+      color: #e9eef9;
+      min-height: 34px;
+      align-items: center;
+      white-space: nowrap;
+    }
+    .brand { background: var(--brand); color: #fff; font-weight: 750; letter-spacing: 0.06em; padding: 4px 14px; }
+    .runtime { padding-left: 14px; overflow: hidden; text-overflow: ellipsis; }
+    .version { padding: 0 12px; color: #bac4dd; }
+
+    .transcript { padding: 34px 0 210px; }
+    .turn { margin-bottom: 48px; }
+    .user-message {
+      padding: 11px 28px;
+      background: var(--human-bg);
+      color: var(--strong);
+      white-space: pre-wrap;
+    }
+
+    .turn-body { padding: 20px 30px 0; }
+    .activity {
+      margin-bottom: 20px;
+      color: var(--activity-ink);
+    }
+    .activity-head {
+      width: 100%;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 10px;
+      border: 0;
+      background: var(--activity-bg);
+      color: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+    .activity-head:hover { color: var(--strong); }
+    .activity-title { color: var(--strong); font-weight: 650; }
+    .activity-summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .shortcut { color: var(--subtle); }
+    .disclosure { color: var(--accent); width: 1ch; }
+
+    .activity-body {
+      padding: 9px 12px 10px 32px;
+      background: var(--activity-bg);
+      border-top: 1px solid var(--border);
+    }
+    .thinking-detail { display: none; margin: 0 0 11px; color: var(--muted); max-width: 74ch; }
+    .activity[data-details="true"] .thinking-detail { display: block; }
+
+    .tool-list { display: grid; gap: 5px; }
+    .tool-row {
+      display: grid;
+      grid-template-columns: 1.5ch minmax(18ch, 24ch) minmax(16ch, 1fr) 7ch;
+      gap: 8px;
+      align-items: baseline;
+    }
+    .tool-state { font-weight: 800; }
+    .tool-state.done { color: var(--success); }
+    .tool-state.running { color: var(--accent); }
+    .tool-state.failed { color: var(--danger); }
+    .tool-name { color: var(--strong); font-weight: 620; }
+    .tool-target { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tool-time { text-align: right; color: var(--subtle); }
+
+    .assistant-message {
+      position: relative;
+      max-width: 76ch;
+      padding: 2px 0 2px 18px;
+      color: var(--strong);
+    }
+    .assistant-message::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 2px;
+      background: var(--accent);
+    }
+    .assistant-message p { margin: 0 0 10px; }
+    .assistant-message p:last-child { margin-bottom: 0; }
+
+    .receipt {
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 0.96em;
+    }
+    .receipt .receipt-state { color: var(--success); font-weight: 750; }
+
+    .error-block, .waiting-block {
+      display: none;
+      margin-top: 18px;
+      max-width: 82ch;
+      padding: 11px 14px;
+      border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
+      background: var(--danger-bg);
+    }
+    .error-block strong { color: var(--danger); }
+    .error-block p, .waiting-block p { margin: 4px 0 0; }
+    .error-action { color: var(--muted); }
+    .waiting-block { border-color: color-mix(in srgb, var(--warning) 45%, var(--border)); background: var(--waiting-bg); }
+    .waiting-block strong { color: var(--warning); }
+
+    .terminal[data-state="error"] .error-block { display: block; }
+    .terminal[data-state="error"] .receipt { display: none; }
+    .terminal[data-state="error"] .assistant-message { display: none; }
+    .terminal[data-state="waiting"] .waiting-block { display: block; }
+    .terminal[data-state="waiting"] .receipt { display: none; }
+    .terminal[data-state="done"] .activity-body { display: none; }
+    .terminal[data-state="done"] .activity[data-details="true"] .activity-body { display: block; }
+    .terminal[data-state="done"] .running-only { display: none; }
+    .terminal[data-state="working"] .done-only,
+    .terminal[data-state="waiting"] .done-only,
+    .terminal[data-state="error"] .done-only { display: none; }
+    .terminal[data-state="done"] .working-only { display: none; }
+    .terminal[data-state="error"] .working-only,
+    .terminal[data-state="waiting"] .working-only { display: none; }
+    .error-only { display: none; }
+    .terminal[data-state="error"] .running-only { display: none; }
+    .terminal[data-state="error"] .error-only { display: grid; }
+    .terminal[data-state="waiting"] .running-only { display: none; }
+
+    .composer {
+      position: sticky;
+      bottom: 0;
+      background: var(--terminal);
+      border-top: 1px solid var(--border);
+    }
+    .context-line, .status-line {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      padding: 5px 16px;
+      white-space: nowrap;
+    }
+    .context-line { border-bottom: 1px solid var(--border); }
+    .status-line { color: var(--muted); }
+    .line-label { min-width: 8ch; color: var(--strong); font-weight: 750; }
+    .goal-label { color: var(--accent); }
+    .mode-working { color: var(--accent); }
+    .mode-ready { color: var(--success); }
+    .mode-failed { color: var(--danger); }
+    .mode-waiting { color: var(--warning); }
+    .line-main { overflow: hidden; text-overflow: ellipsis; }
+    .line-meta { color: var(--subtle); }
+
+    .input-shell { border-top: 1px solid var(--accent); padding: 10px 16px 14px; min-height: 66px; }
+    .input-placeholder { color: var(--subtle); }
+    .caret { display: inline-block; width: 0.7ch; height: 1.25em; margin-right: 8px; vertical-align: -0.22em; background: var(--caret); }
+
+    .annotation {
+      margin: 18px auto 0;
+      max-width: 1050px;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1px;
+      border: 1px solid var(--border);
+      background: var(--border);
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 13px;
+    }
+    .annotation div { background: var(--terminal); padding: 12px 14px; }
+    .annotation strong { display: block; margin-bottom: 4px; color: var(--strong); }
+    .annotation span { color: var(--muted); line-height: 1.45; }
+
+    @media (max-width: 800px) {
+      .page { padding: 12px; }
+      .demo-toolbar { align-items: flex-start; flex-direction: column; }
+      .control-groups { justify-content: flex-start; }
+      .annotation { grid-template-columns: 1fr 1fr; }
+    }
+    @media (prefers-reduced-motion: reduce) { .terminal { transition: none; } }
+  </style>
+</head>
+<body data-theme="light">
+  <main class="page">
+    <h1 class="sr-only">Goah TUI v2 Turn-first presentation demo</h1>
+    <div class="demo-toolbar" role="toolbar" aria-label="Demo controls">
+      <div><strong>Goah TUI v2</strong> · Turn-first presentation demo</div>
+      <div class="control-groups">
+        <div class="control-group" data-control="state">
+          <span class="control-label">State</span>
+          <button class="demo-button" data-value="working" aria-pressed="true">Working</button>
+          <button class="demo-button" data-value="done" aria-pressed="false">Done</button>
+          <button class="demo-button" data-value="waiting" aria-pressed="false">Waiting</button>
+          <button class="demo-button" data-value="error" aria-pressed="false">Error</button>
+        </div>
+        <div class="control-group" data-control="width">
+          <span class="control-label">Columns</span>
+          <button class="demo-button" data-value="80" aria-pressed="false">80</button>
+          <button class="demo-button" data-value="100" aria-pressed="true">100</button>
+          <button class="demo-button" data-value="120" aria-pressed="false">120</button>
+        </div>
+        <div class="control-group">
+          <button id="details" class="demo-button" aria-pressed="false">Ctrl+O details</button>
+          <button id="theme" class="demo-button" aria-pressed="false">Dark terminal</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="stage">
+      <section id="terminal" class="terminal" data-state="working" data-width="100" aria-label="Goah TUI redesign demo">
+        <header class="top-rail">
+          <div class="brand">GOAH</div>
+          <div class="runtime">pi · ark/glm-5.3</div>
+          <div class="version">v0.13.8</div>
+        </header>
+
+        <div class="transcript">
+          <article class="turn">
+            <div class="user-message">帮我核实收入目标，并安排下一次观测。</div>
+            <div class="turn-body">
+              <section id="activity" class="activity" data-details="false">
+                <button id="activity-toggle" class="activity-head" type="button" aria-expanded="false">
+                  <span class="disclosure">›</span>
+                  <span><span class="activity-title">Thinking · 18s · 6 steps</span>　<span class="activity-summary working-only">正在确认基线数据和证据来源…</span><span class="activity-summary done-only">3 tools completed</span></span>
+                  <span class="shortcut">Ctrl+O</span>
+                </button>
+                <div class="activity-body">
+                  <p class="thinking-detail">先确认可引用的收入基线，再核对凭证文件权限和 git ignore，最后写入 Work Record 并安排下一次观测。原始推演按需显示，不再持续挤压主视图。</p>
+                  <div class="tool-list" role="list" aria-label="Tool activity">
+                    <div class="tool-row" role="listitem">
+                      <span class="tool-state done"><span aria-hidden="true">✓</span><span class="sr-only">done</span></span><span class="tool-name">ledger_search</span><span class="tool-target">“余额 ~ 40.40”</span><span class="tool-time">420ms</span>
+                    </div>
+                    <div class="tool-row" role="listitem">
+                      <span class="tool-state done"><span aria-hidden="true">✓</span><span class="sr-only">done</span></span><span class="tool-name">bash</span><span class="tool-target">chmod 600 dataforseo.env</span><span class="tool-time">84ms</span>
+                    </div>
+                    <div class="tool-row running-only" role="listitem">
+                      <span class="tool-state running"><span aria-hidden="true">●</span><span class="sr-only">running</span></span><span class="tool-name">work_record_update</span><span class="tool-target">updating r7…</span><span class="tool-time">08s</span>
+                    </div>
+                    <div class="tool-row done-only" role="listitem">
+                      <span class="tool-state done"><span aria-hidden="true">✓</span><span class="sr-only">done</span></span><span class="tool-name">work_record_update</span><span class="tool-target">Work Record r7</span><span class="tool-time">1.2s</span>
+                    </div>
+                    <div class="tool-row error-only" role="listitem">
+                      <span class="tool-state failed"><span aria-hidden="true">×</span><span class="sr-only">failed</span></span><span class="tool-name">work_record_update</span><span class="tool-target">authentication expired</span><span class="tool-time">08s</span>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <div class="assistant-message">
+                <p>已完成安全检查：凭证文件权限和 git ignore 均正常。</p>
+                <p>当前仍需等待 worker 回执，以及你确认两个待决策项。下一次验收已安排在明天 10:00。</p>
+              </div>
+
+              <div class="receipt"><span class="receipt-state">✓</span> Goal progress saved · Work Record r7 · next wake 10:00</div>
+
+              <div class="waiting-block">
+                <strong>Waiting for you</strong>
+                <p>请选择先验证订阅收入，还是先验证钱包收入。直接回复选项即可继续。</p>
+              </div>
+
+              <div class="error-block">
+                <strong>Turn failed · Provider authentication expired</strong>
+                <p>本轮没有写入新的 Work Record。<span class="error-action">Enter retry · /login openai-codex · /model switch</span></p>
+              </div>
+            </div>
+          </article>
+        </div>
+
+        <footer class="composer">
+          <div class="context-line">
+            <span class="line-label goal-label">GOAL</span>
+            <span class="line-main">Phase 0 · Baseline verification</span>
+            <span class="line-meta">active</span>
+          </div>
+          <div class="status-line">
+            <span id="status-mode" class="line-label mode-working">WORKING</span>
+            <span id="status-main" class="line-main">00:38 · Updating Work Record</span>
+            <span id="status-meta" class="line-meta">3 tools · 1 queued · ^C stop</span>
+          </div>
+          <div class="input-shell"><span class="caret" aria-hidden="true"></span><span id="input-placeholder" class="input-placeholder">Steer this Turn…</span></div>
+        </footer>
+      </section>
+    </div>
+
+    <section class="annotation" aria-label="Design rationale">
+      <div><strong>One Turn, four blocks</strong><span>User → Activity → Answer → Receipt. Protocol structure remains visible.</span></div>
+      <div><strong>Quiet by default</strong><span>Thinking is bounded; completed activity collapses while running and failed tools remain visible.</span></div>
+      <div><strong>Stable status slots</strong><span>Goal context never competes with runtime activity, queue, elapsed time, or recovery actions.</span></div>
+      <div><strong>Color is redundant</strong><span>Prefixes, spacing, rails, and symbols preserve meaning in low-color and NO_COLOR terminals.</span></div>
+    </section>
+  </main>
+
+  <script>
+    const terminal = document.querySelector('#terminal');
+    const activity = document.querySelector('#activity');
+    const activityToggle = document.querySelector('#activity-toggle');
+    const detailsButton = document.querySelector('#details');
+    const themeButton = document.querySelector('#theme');
+    const statusMode = document.querySelector('#status-mode');
+    const statusMain = document.querySelector('#status-main');
+    const statusMeta = document.querySelector('#status-meta');
+    const inputPlaceholder = document.querySelector('#input-placeholder');
+
+    const states = {
+      working: ['WORKING', '00:38 · Updating Work Record', '3 tools · 1 queued · ^C stop', 'Steer this Turn…', 'mode-working'],
+      done: ['READY', 'Last Turn 42s · 3 tools', '/ commands · ? help', 'Ask Goah anything…', 'mode-ready'],
+      waiting: ['WAITING', 'Choose the revenue baseline', 'Enter reply · /status', 'Reply with your decision…', 'mode-waiting'],
+      error: ['FAILED', 'Provider authentication expired', 'Enter retry · /model switch', 'Enter to retry, or type a command…', 'mode-failed']
+    };
+
+    function setDetails(value) {
+      activity.dataset.details = String(value);
+      activityToggle.setAttribute('aria-expanded', String(value));
+      detailsButton.setAttribute('aria-pressed', String(value));
+      activity.querySelector('.disclosure').textContent = value ? '⌄' : '›';
+    }
+
+    function setState(state) {
+      terminal.dataset.state = state;
+      document.querySelectorAll('[data-control="state"] .demo-button').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.value === state)));
+      const [mode, main, meta, placeholder, className] = states[state];
+      statusMode.textContent = mode;
+      statusMode.className = `line-label ${className}`;
+      statusMain.textContent = main;
+      statusMeta.textContent = meta;
+      inputPlaceholder.textContent = placeholder;
+      setDetails(false);
+    }
+
+    document.querySelector('[data-control="state"]').addEventListener('click', event => {
+      const button = event.target.closest('button[data-value]');
+      if (button) setState(button.dataset.value);
+    });
+    document.querySelector('[data-control="width"]').addEventListener('click', event => {
+      const button = event.target.closest('button[data-value]');
+      if (!button) return;
+      terminal.dataset.width = button.dataset.value;
+      document.querySelectorAll('[data-control="width"] .demo-button').forEach(item => item.setAttribute('aria-pressed', String(item === button)));
+    });
+    activityToggle.addEventListener('click', () => setDetails(activity.dataset.details !== 'true'));
+    detailsButton.addEventListener('click', () => setDetails(activity.dataset.details !== 'true'));
+    themeButton.addEventListener('click', () => {
+      const dark = document.body.dataset.theme !== 'dark';
+      document.body.dataset.theme = dark ? 'dark' : 'light';
+      themeButton.textContent = dark ? 'Light terminal' : 'Dark terminal';
+      themeButton.setAttribute('aria-pressed', String(dark));
+    });
+    window.addEventListener('keydown', event => {
+      if (event.ctrlKey && event.key.toLowerCase() === 'o') {
+        event.preventDefault();
+        setDetails(activity.dataset.details !== 'true');
+      }
+    });
+    setState('working');
+  </script>
+</body>
+</html>

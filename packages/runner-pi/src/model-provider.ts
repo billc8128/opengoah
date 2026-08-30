@@ -1,11 +1,17 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createModels, createProvider, defaultProviderAuthContext, envApiKeyAuth, fauxProvider, type Api, type Model, type MutableModels } from "@earendil-works/pi-ai";
+import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
 import { builtinModels, builtinProviders, getBuiltinModels, getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
 import { JsonCredentialStore } from "./credential-store.js";
+
+// Pi keeps OAuth flows behind variable imports for browser builds. Goah's
+// standalone Node distribution must register static loaders so packagers can
+// include the flow modules used for login and token refresh.
+registerBunOAuthFlows();
 
 export const LOCAL_PROVIDERS = ["ollama", "lm-studio", "llama.cpp"] as const;
 export type LocalProvider = typeof LOCAL_PROVIDERS[number];

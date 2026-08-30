@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.13.8
+
+- Rebuilt the full-screen transcript around terminal-native Turn ledgers: Human prompts, bounded thinking, grouped tool timelines, Assistant replies, and receipts retain separate visual roles, with `Ctrl+O` toggling activity detail.
+- Replaced mutable runtime copy beneath the transcript with one organization status line (`GOAL`, current `MODEL`, active `CHILD` Agents, and earliest `WAKE`) and one stable `› Message Goah…` composer.
+- Restores terminal mouse, keyboard, cursor, and alternate-screen state on `SIGTERM` and `SIGHUP` as well as normal exits.
+- Statically registers Pi OAuth flows so the self-contained npm package includes OpenAI Codex login and refresh modules; the installed-package smoke test now loads the OAuth flow before cancelling it.
+
 ## 0.13.7
 
 - Reaps detached daemon processes when startup fails and shares one startup implementation between CLI and TUI.

@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Goah TUI message variants</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --page: #e8ecf2;
+      --term: #f4f6f9;
+      --ink: #30384b;
+      --strong: #111a31;
+      --muted: #566177;
+      --faint: #d3d9e3;
+      --rail: #080d62;
+      --blue: #006fd6;
+      --blue-bg: #dceeff;
+      --green: #087443;
+      --amber: #915600;
+      --red: #b42318;
+      --red-bg: #ffe9e6;
+    }
+    [data-theme="dark"] {
+      color-scheme: dark;
+      --page: #10141b;
+      --term: #171c25;
+      --ink: #d8deea;
+      --strong: #f4f7fb;
+      --muted: #a1acc0;
+      --faint: #374154;
+      --rail: #090e59;
+      --blue: #6abaff;
+      --blue-bg: #16334d;
+      --green: #55d091;
+      --amber: #f0b45a;
+      --red: #ff8178;
+      --red-bg: #3b2022;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: var(--page); color: var(--ink); font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace; font-variant-numeric: tabular-nums; }
+    button { font: inherit; }
+    button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+    ::selection { background: var(--blue-bg); color: var(--strong); }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+
+    .page { width: min(1260px, 100%); margin: 0 auto; padding: 22px; }
+    .controls { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 14px; font-size: 13px; color: var(--muted); }
+    .controls strong { color: var(--strong); }
+    .groups, .group { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+    .groups { justify-content: flex-end; gap: 14px; }
+    .label { margin-right: 4px; }
+    .control { border: 1px solid var(--faint); background: var(--term); color: var(--muted); padding: 5px 9px; cursor: pointer; }
+    .control:hover { color: var(--strong); }
+    .control[aria-pressed="true"] { color: var(--strong); border-color: var(--blue); background: var(--blue-bg); }
+
+    .variant-note { display: grid; grid-template-columns: 13ch 1fr auto; gap: 12px; align-items: baseline; margin: 0 auto 8px; max-width: 1080px; font-size: 13px; color: var(--muted); }
+    .variant-note strong { color: var(--strong); }
+    .variant-note code { color: var(--strong); font-weight: 700; }
+
+    .terminal { max-width: 1080px; min-width: 650px; height: 780px; margin: 0 auto; display: grid; grid-template-rows: 34px minmax(0,1fr) auto 64px; overflow: hidden; background: var(--term); border: 1px solid var(--faint); box-shadow: 0 18px 52px rgba(10,20,38,.13); line-height: 1.5; }
+    .top { display: grid; grid-template-columns: auto 1fr auto; align-items: center; color: #e9eef9; background: var(--rail); white-space: nowrap; }
+    .brand { padding: 4px 14px; background: #0069ca; color: #fff; font-weight: 800; letter-spacing: .05em; }
+    .runtime { padding-left: 13px; overflow: hidden; text-overflow: ellipsis; }
+    .version { padding-right: 12px; color: #bac4dd; }
+    .transcript { overflow: auto; padding: 28px 30px 80px; }
+    .variant { display: none; }
+    .variant.active { display: block; }
+    .prompt { color: var(--strong); margin-bottom: 22px; }
+    .prompt-mark { color: var(--blue); font-weight: 800; margin-right: 1ch; }
+    .think { color: var(--muted); }
+    .work { color: var(--muted); }
+    .tool-name { color: var(--strong); font-weight: 650; }
+    .done { color: var(--green); font-weight: 800; }
+    .run { color: var(--blue); font-weight: 800; }
+    .fail { color: var(--red); font-weight: 800; }
+    .answer { color: var(--strong); max-width: 76ch; }
+    .answer p { margin: 0 0 9px; }
+    .receipt { color: var(--muted); }
+    .receipt strong { color: var(--green); }
+    .shortcut { color: var(--muted); }
+    .only-done, .only-error { display: none; }
+    [data-state="done"] .only-work, [data-state="error"] .only-work { display: none; }
+    [data-state="done"] .only-done { display: inline; }
+    [data-state="error"] .only-error { display: inline; }
+    [data-state="error"] .answer, [data-state="error"] .receipt { display: none; }
+
+    /* A — Linear Ledger */
+    .ledger { padding-left: 2ch; }
+    .ledger .prompt { margin-left: -2ch; }
+    .ledger-tree { margin: 0 0 22px; }
+    .ledger-row { display: grid; grid-template-columns: 2ch minmax(20ch, 27ch) minmax(16ch, 1fr) 7ch; column-gap: 1ch; }
+    .ledger-row .time { text-align: right; color: var(--muted); }
+    .ledger .answer { margin: 0 0 18px 2ch; }
+    .ledger .receipt { margin-left: 2ch; }
+    .ledger-error { display: none; margin: 18px 0 0 2ch; color: var(--red); }
+    [data-state="error"] .ledger-error { display: block; }
+
+    /* B — Dense Operator */
+    .operator { font-size: 15px; }
+    .operator-line { display: grid; grid-template-columns: 8ch minmax(22ch, 1fr) auto; gap: 1ch; margin-bottom: 3px; }
+    .op-tag { display: inline-block; width: 7ch; padding: 0 .5ch; text-align: center; color: var(--term); background: var(--muted); font-weight: 800; }
+    .op-tag.work { background: var(--blue); }
+    .op-tag.ok { background: var(--green); }
+    .op-tag.bad { background: var(--red); }
+    .op-tag.only-done, .op-tag.only-error { display: none; }
+    [data-state="done"] .op-tag.only-done, [data-state="error"] .op-tag.only-error { display: inline-block; }
+    .operator-rule { height: 1px; margin: 15px 0; background: var(--faint); }
+    .operator .answer { margin-left: 9ch; }
+    .operator .receipt { margin: 16px 0 0 9ch; }
+
+    /* C — Quiet Transcript */
+    .quiet .prompt { margin-bottom: 26px; }
+    .quiet-summary { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 24px; color: var(--muted); white-space: nowrap; }
+    .quiet-summary span:first-child { overflow: hidden; text-overflow: ellipsis; }
+    .quiet .answer { margin-left: 2ch; }
+    .quiet .receipt { margin: 18px 0 0 2ch; }
+    .quiet-error { display: none; margin-left: 2ch; color: var(--red); }
+    [data-state="error"] .quiet-summary, [data-state="error"] .quiet .answer { display: none; }
+    [data-state="error"] .quiet-error { display: block; }
+
+    /* D — Channel Gutter */
+    .channel-row { display: grid; grid-template-columns: 7ch 1fr; gap: 2ch; margin-bottom: 6px; }
+    .channel-label { color: var(--muted); text-align: right; font-weight: 650; }
+    .channel-row.activity .channel-label { color: var(--blue); }
+    .channel-row.output .channel-label { color: var(--strong); }
+    .channel-row.saved .channel-label { color: var(--green); }
+    .channel-row.error { display: none; }
+    [data-state="error"] .channel-row.output, [data-state="error"] .channel-row.saved { display: none; }
+    [data-state="error"] .channel-row.error { display: grid; }
+    .channel-content { max-width: 76ch; }
+    .channel-tool { display: grid; grid-template-columns: 2ch 24ch 1fr; }
+
+    .status { display: grid; grid-template-columns: minmax(20ch, 1fr) auto auto auto; gap: 0; border-top: 1px solid var(--faint); border-bottom: 1px solid var(--blue); white-space: nowrap; overflow: hidden; color: var(--muted); }
+    .status span { padding: 5px 10px; overflow: hidden; text-overflow: ellipsis; border-right: 1px solid var(--faint); }
+    .status span:last-child { border-right: 0; }
+    .status strong { color: var(--blue); }
+    .status .state-ready { color: var(--green); }
+    .status .state-failed { color: var(--red); }
+    .input { padding: 10px 16px; color: var(--muted); }
+    .input-prompt { color: var(--blue); font-weight: 800; margin-right: 1ch; }
+
+    .tradeoffs { max-width: 1080px; margin: 16px auto 0; padding-top: 12px; border-top: 1px solid var(--faint); display: grid; grid-template-columns: 11ch 1fr 1fr; gap: 8px 16px; font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 13px; line-height: 1.45; }
+    .tradeoffs strong { color: var(--strong); }
+    .tradeoffs span { color: var(--muted); }
+
+    @media (max-width: 800px) {
+      .page { padding: 12px; }
+      .controls { flex-direction: column; align-items: flex-start; }
+      .groups { justify-content: flex-start; }
+      .tradeoffs { grid-template-columns: 9ch 1fr; }
+      .tradeoffs .best { display: none; }
+    }
+  </style>
+</head>
+<body data-theme="light">
+  <main class="page">
+    <h1 class="sr-only">Goah TUI message design variants</h1>
+    <div class="controls" role="toolbar" aria-label="Variant controls">
+      <div><strong>Goah TUI variants</strong> · terminal-native, one-line status</div>
+      <div class="groups">
+        <div class="group" data-control="variant"><span class="label">Design</span><button class="control" data-value="a" aria-pressed="true">A Ledger</button><button class="control" data-value="b" aria-pressed="false">B Operator</button><button class="control" data-value="c" aria-pressed="false">C Quiet</button><button class="control" data-value="d" aria-pressed="false">D Gutter</button></div>
+        <div class="group" data-control="state"><span class="label">State</span><button class="control" data-value="work" aria-pressed="true">Working</button><button class="control" data-value="done" aria-pressed="false">Done</button><button class="control" data-value="error" aria-pressed="false">Error</button></div>
+        <button id="theme" class="control" aria-pressed="false">Dark</button>
+      </div>
+    </div>
+
+    <div class="variant-note"><strong id="variant-name">A · Linear Ledger</strong><span id="variant-description">Continuous tree rhythm; most native to build output and git history.</span><code id="variant-fit">balanced</code></div>
+
+    <section id="terminal" class="terminal" data-state="work" aria-label="Goah TUI variant preview">
+      <header class="top"><span class="brand">GOAH</span><span class="runtime">pi · ark/glm-5.3</span><span class="version">v0.13.8</span></header>
+      <div class="transcript">
+        <article class="variant ledger active" data-variant="a">
+          <div class="prompt"><span class="prompt-mark">›</span>帮我核实收入目标，并安排下一次观测。</div>
+          <div class="ledger-tree">
+            <div class="ledger-row think"><span>│</span><span>thinking · 18s · 6 steps</span><span>确认基线与证据来源</span><span>^O</span></div>
+            <div class="ledger-row"><span>├</span><span><b class="done">✓</b> <span class="tool-name">ledger_search</span></span><span>“余额 ~ 40.40”</span><span class="time">420ms</span></div>
+            <div class="ledger-row"><span>├</span><span><b class="done">✓</b> <span class="tool-name">bash</span></span><span>chmod 600 dataforseo.env</span><span class="time">84ms</span></div>
+            <div class="ledger-row"><span>└</span><span><b class="run only-work">●</b><b class="done only-done">✓</b><b class="fail only-error">×</b> <span class="tool-name">work_record_update</span></span><span class="only-work">updating r7…</span><span class="only-done">saved r7</span><span class="only-error">authentication expired</span><span class="time">08s</span></div>
+          </div>
+          <div class="answer"><p>已完成安全检查：凭证权限和 git ignore 均正常。</p><p>当前仍需等待 worker 回执，以及你确认两个待决策项。下一次验收安排在明天 10:00。</p></div>
+          <div class="receipt"><strong>✓</strong> progress saved · Work Record r7 · next wake 10:00</div>
+          <div class="ledger-error"><b>failed</b> · Provider authentication expired · /login openai-codex</div>
+        </article>
+
+        <article class="variant operator" data-variant="b">
+          <div class="prompt"><span class="prompt-mark">›</span>帮我核实收入目标，并安排下一次观测。</div>
+          <div class="operator-line"><span class="op-tag work">THINK</span><span>18s / 6 steps · 确认基线与证据来源</span><span>^O</span></div>
+          <div class="operator-line"><span class="op-tag ok">DONE</span><span><span class="tool-name">ledger_search</span>　“余额 ~ 40.40”</span><span>420ms</span></div>
+          <div class="operator-line"><span class="op-tag ok">DONE</span><span><span class="tool-name">bash</span>　chmod 600 dataforseo.env</span><span>84ms</span></div>
+          <div class="operator-line"><span class="op-tag work only-work">RUN</span><span class="op-tag ok only-done">DONE</span><span class="op-tag bad only-error">FAIL</span><span><span class="tool-name">work_record_update</span>　<span class="only-work">updating r7…</span><span class="only-done">saved r7</span><span class="only-error">authentication expired</span></span><span>08s</span></div>
+          <div class="operator-rule"></div>
+          <div class="answer"><p>已完成安全检查：凭证权限和 git ignore 均正常。</p><p>当前仍需等待 worker 回执，以及你确认两个待决策项。下一次验收安排在明天 10:00。</p></div>
+          <div class="receipt"><strong>DONE</strong>　progress saved · Work Record r7 · next wake 10:00</div>
+          <div class="only-error" style="margin-left:9ch;color:var(--red)">FAIL　Provider authentication expired · /login openai-codex</div>
+        </article>
+
+        <article class="variant quiet" data-variant="c">
+          <div class="prompt"><span class="prompt-mark">›</span>帮我核实收入目标，并安排下一次观测。</div>
+          <div class="quiet-summary"><span><b class="run only-work">●</b><b class="done only-done">✓</b> <span class="only-work">work · 2/3 done · work_record_update 08s</span><span class="only-done">work · 3 tools · 18s</span></span><span>ctrl+o details</span></div>
+          <div class="answer"><p>已完成安全检查：凭证权限和 git ignore 均正常。</p><p>当前仍需等待 worker 回执，以及你确认两个待决策项。下一次验收安排在明天 10:00。</p></div>
+          <div class="receipt"><strong>✓</strong> progress saved · r7 · wake 10:00</div>
+          <div class="quiet-error"><b>failed</b> · Provider authentication expired<br><span class="shortcut">/login openai-codex · /model</span></div>
+        </article>
+
+        <article class="variant gutter" data-variant="d">
+          <div class="channel-row"><span class="channel-label">›</span><span class="channel-content">帮我核实收入目标，并安排下一次观测。</span></div>
+          <div style="height:12px"></div>
+          <div class="channel-row activity"><span class="channel-label">work</span><span class="channel-content">thinking · 18s · 6 steps　确认基线与证据来源　<span class="shortcut">^O</span></span></div>
+          <div class="channel-row activity"><span class="channel-label"></span><span class="channel-tool"><b class="done">✓</b><span class="tool-name">ledger_search</span><span>“余额 ~ 40.40”</span></span></div>
+          <div class="channel-row activity"><span class="channel-label"></span><span class="channel-tool"><b class="done">✓</b><span class="tool-name">bash</span><span>chmod 600 dataforseo.env</span></span></div>
+          <div class="channel-row activity"><span class="channel-label"></span><span class="channel-tool"><b class="run only-work">●</b><b class="done only-done">✓</b><b class="fail only-error">×</b><span class="tool-name">work_record_update</span><span class="only-work">updating r7…</span><span class="only-done">saved r7</span><span class="only-error">authentication expired</span></span></div>
+          <div style="height:14px"></div>
+          <div class="channel-row output"><span class="channel-label">reply</span><span class="channel-content">已完成安全检查：凭证权限和 git ignore 均正常。<br><br>当前仍需等待 worker 回执，以及你确认两个待决策项。下一次验收安排在明天 10:00。</span></div>
+          <div class="channel-row saved"><span class="channel-label">saved</span><span class="channel-content">Work Record r7 · next wake 10:00</span></div>
+          <div class="channel-row error"><span class="channel-label">failed</span><span class="channel-content" style="color:var(--red)">Provider authentication expired · /login openai-codex</span></div>
+        </article>
+      </div>
+
+      <div class="status" role="status" aria-label="One-line status">
+        <span><strong>GOAL</strong>　baseline verification</span>
+        <span><strong>MODEL</strong>　ark/glm-5.3</span>
+        <span><strong>CHILD</strong>　2</span>
+        <span><strong>WAKE</strong>　tomorrow 10:00</span>
+      </div>
+      <div class="input"><span class="input-prompt" aria-hidden="true">›</span><span>Message Goah…</span></div>
+    </section>
+
+    <div class="tradeoffs" role="region" aria-label="Variant tradeoffs">
+      <strong>A Ledger</strong><span>最平衡；过程清楚，仍保留普通对话感。</span><span class="best">推荐作为默认基线。</span>
+      <strong>B Operator</strong><span>最高密度、最快扫读；标签稍强，适合重工具用户。</span><span class="best">更像 build system / CI console。</span>
+      <strong>C Quiet</strong><span>最安静，回答优先；复杂工具链默认不可见。</span><span class="best">最接近 Codex/Claude Code 的对话体验。</span>
+      <strong>D Gutter</strong><span>channel 最明确；固定 gutter 在窄终端会消耗宽度。</span><span class="best">最适合长期 Goal 和多种系统事件。</span>
+    </div>
+  </main>
+
+  <script>
+    const terminal = document.querySelector('#terminal');
+    const names = {
+      a: ['A · Linear Ledger', 'Continuous tree rhythm; most native to build output and git history.', 'balanced'],
+      b: ['B · Dense Operator', 'Reverse-video labels and tight rows; optimized for scanning many tools.', 'dense'],
+      c: ['C · Quiet Transcript', 'One activity summary line; the Assistant answer owns the viewport.', 'quiet'],
+      d: ['D · Channel Gutter', 'A fixed text gutter separates process, reply, receipt, and failure channels.', 'explicit']
+    };
+    function setVariant(id) {
+      document.querySelectorAll('.variant').forEach(item => item.classList.toggle('active', item.dataset.variant === id));
+      document.querySelectorAll('[data-control="variant"] button').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.value === id)));
+      const [name, description, fit] = names[id];
+      document.querySelector('#variant-name').textContent = name;
+      document.querySelector('#variant-description').textContent = description;
+      document.querySelector('#variant-fit').textContent = fit;
+    }
+    function setState(state) {
+      terminal.dataset.state = state;
+      document.querySelectorAll('[data-control="state"] button').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.value === state)));
+    }
+    document.querySelector('[data-control="variant"]').addEventListener('click', event => { const button = event.target.closest('button[data-value]'); if (button) setVariant(button.dataset.value); });
+    document.querySelector('[data-control="state"]').addEventListener('click', event => { const button = event.target.closest('button[data-value]'); if (button) setState(button.dataset.value); });
+    document.querySelector('#theme').addEventListener('click', event => { const dark = document.body.dataset.theme !== 'dark'; document.body.dataset.theme = dark ? 'dark' : 'light'; event.currentTarget.textContent = dark ? 'Light' : 'Dark'; event.currentTarget.setAttribute('aria-pressed', String(dark)); });
+  </script>
+</body>
+</html>

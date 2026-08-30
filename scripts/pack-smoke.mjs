@@ -49,6 +49,20 @@ execFileSync(process.execPath, ["--input-type=module", "-e", `
   const names = ['controlStream','replayTranscript','assertHandoff','SqliteLedger','Supervisor','ProcessRunner','SimulatedClock','controlEndpoint'];
   for (let index = 0; index < names.length; index += 1) if (typeof modules[index][names[index]] !== 'function') throw new Error('missing public subpath export: '+names[index]);
   if ('createPiModel' in modules[5] || 'JsonCredentialStore' in modules[5] || 'resolvedApiKey' in modules[5]) throw new Error('runner-pi exposed internal provider or credential implementation');
+  let oauthPrompt = 0;
+  try {
+    await modules[5].piRunnerConfigurator().runCommand('auth', ['login', 'openai-codex'], {
+      provider: 'faux', model: 'faux-goah', authMode: 'local', authFile: process.cwd() + '/oauth-smoke-auth.json'
+    }, {
+      select: async () => ++oauthPrompt === 1 ? 'oauth' : null,
+      input: async () => null,
+      notify: () => undefined
+    });
+    throw new Error('packed OpenAI Codex OAuth smoke unexpectedly completed');
+  } catch (error) {
+    if (!String(error).includes('Authentication cancelled')) throw error;
+  }
+  if (oauthPrompt !== 2) throw new Error('packed OpenAI Codex OAuth flow did not load');
   const paths = [modules[5].piWorkerPath(), modules[5].verificationWorkerPath(), modules[6].fauxRunnerWorkerPath()];
   const { existsSync } = await import('node:fs');
   const { dirname, join } = await import('node:path');

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reworked the TUI into a Turn-oriented Ledger presentation with a stable Human composer and a compact organization status read model; reasoning, tools, replies, receipts, and errors no longer collapse into one visual log.
+- Made terminal signal cleanup and bundled Pi OAuth loaders explicit, including installed-package regression coverage for OpenAI Codex OAuth.
 - Aligned the reference Pi Runner with upstream Pi by composing its native read/bash/edit/write tools directly: `cwd` is no longer a Goah permission boundary, absolute paths and commands inherit host-user access, and isolation is left to custom Runners or deployment wrappers. The single-package build now preserves Pi's Photon image runtime and verifies installed image reads.
 - Transcript v2 content-addresses exact request components so repeated model calls remain reconstructable without copying full context; SQLite schema v28 intentionally rejects earlier development state.
 - Child completion now requires its owner's current Work Record from a completed Turn and evidence citing that record or matching Handoff; failed daemon starts are reaped, and credential-like TUI input requires explicit confirmation.

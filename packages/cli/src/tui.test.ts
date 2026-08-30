@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import test from "node:test";
-import { resetCapabilitiesCache, setCapabilities } from "@earendil-works/pi-tui";
-import { classifyTuiControlKey, classifyTuiInput, commandAwaitingArgument, ConversationView, createTuiAutocompleteProvider, findLiveTurnId, renderFrame, renderTuiCommandHelp, renderTuiHeader, renderUserMessage, sensitiveMessageWarning, StreamCoordinator, TUI_COMMANDS, WelcomeLockup } from "./tui.js";
+import { resetCapabilitiesCache, setCapabilities, TuiAltScreen } from "@earendil-works/pi-tui";
+import { bindTuiTerminationSignals, classifyTuiControlKey, classifyTuiInput, commandAwaitingArgument, ConversationView, createTuiAutocompleteProvider, findLiveTurnId, organizationStatusFromValue, renderFrame, renderMessagePlaceholder, renderOrganizationStatus, renderTuiCommandHelp, renderTuiHeader, renderUserMessage, sensitiveMessageWarning, StreamCoordinator, TUI_COMMANDS, WelcomeLockup } from "./tui.js";
 import type { WelcomeSnapshot } from "./welcome.js";
 import { stripAnsi } from "./tui-theme.js";
 import { looksLikeCredential } from "./sensitive-text.js";
@@ -37,7 +38,29 @@ test("TUI control keys clear drafts, interrupt work, and exit only from an idle 
   assert.equal(classifyTuiControlKey("\x04", "", false), "exit");
   assert.equal(classifyTuiControlKey("\x04", "draft", false), "forward");
   assert.equal(classifyTuiControlKey("\x04", "", true), "forward");
+  assert.equal(classifyTuiControlKey("\x0f", "", true), "toggle_details");
   assert.equal(classifyTuiControlKey("x", "", false), "forward");
+});
+
+test("TUI termination signals use the graceful shutdown path and can be unbound", () => {
+  const signals = new EventEmitter();
+  const output: string[] = [];
+  const terminal = {
+    columns: 80, rows: 24,
+    write: (text: string) => { output.push(text); },
+    start: () => undefined, stop: () => undefined,
+    hideCursor: () => undefined, showCursor: () => undefined,
+  };
+  const tui = new TuiAltScreen(terminal as never, true, undefined, { mouse: true });
+  const unbind = bindTuiTerminationSignals(() => tui.stop(), signals);
+  tui.start();
+  signals.emit("SIGTERM");
+  assert.match(output.join(""), /\x1b\[\?1003h/);
+  assert.match(output.join(""), /\x1b\[\?1003l/);
+  unbind();
+  const writesAfterUnbind = output.length;
+  signals.emit("SIGHUP");
+  assert.equal(output.length, writesAfterUnbind);
 });
 
 test("welcome lockup is horizontal, compact, and falls back to the official Braille mark", () => {
@@ -115,10 +138,35 @@ test("TUI header is a stable full-width brand rail", () => {
   assert.doesNotMatch(narrow, /v0\.11\.2/);
 });
 
-test("user messages render as unlabeled full-width background blocks", () => {
+test("user messages render as terminal-native prompt lines", () => {
   const rendered = renderUserMessage("你好", 30);
-  assert.deepEqual(rendered.map(stripAnsi), [`  你好${" ".repeat(24)}`]);
+  assert.deepEqual(rendered.map(stripAnsi), [`  › 你好${" ".repeat(22)}`]);
   assert.doesNotMatch(rendered.join("\n"), /you/i);
+});
+
+test("organization status keeps only Goal, Model, Child, and Wake fields",()=>{
+  const wake=new Date(2030,0,2,10,0).toISOString();
+  const value=organizationStatusFromValue({root:{objective:"Baseline verification"},team:[{agent:"ceo",motion:"scheduled",nextWakeAt:wake},{agent:"worker",motion:"idle",nextWakeAt:null},{agent:"retired",motion:"retired",nextWakeAt:null}]},null,"ark/glm-5.3");
+  assert.deepEqual(value,{goal:"Baseline verification",model:"ark/glm-5.3",childAgents:1,nextWakeAt:wake});
+  const line=stripAnsi(renderOrganizationStatus(value,100,new Date(2030,0,1,9,0)));
+  assert.match(line,/GOAL Baseline verification.*MODEL ark\/glm-5\.3.*CHILD 1.*WAKE tomorrow 10:00/);
+  assert.doesNotMatch(line,/HUMAN/);
+  assert.doesNotMatch(line,/WORK|READY|queued|retry/);
+  const narrow=stripAnsi(renderOrganizationStatus(value,40,new Date(2030,0,1,9,0)));
+  assert.equal(narrow.length,40);assert.match(narrow,/GOAL.*M ark.*C1.*W10:00/);assert.doesNotMatch(narrow,/H\d/);
+});
+
+test("message composer uses one stable Human-message placeholder",()=>{
+  const line=stripAnsi(renderMessagePlaceholder(40,false));
+  assert.equal(line,` › Message Goah…${" ".repeat(24)}`);
+  assert.doesNotMatch(line,/Steer|retry|working/i);
+});
+
+test("Ledger presentation groups thinking and tools while Ctrl+O collapses activity",()=>{
+  const view=new ConversationView([]);view.addUser("核实收入");view.updateThinking({phase:"done",text:"Confirm the baseline"});view.updateTool({kind:"tool",callId:"search",name:"ledger_search",detail:"balance",status:"done"});view.updateTool({kind:"tool",callId:"record",name:"work_record_update",detail:"r7",status:"running"});view.addMarkdown("正在核实。");
+  const expanded=stripAnsi(view.render(100).join("\n"));
+  assert.match(expanded,/› 核实收入/);assert.match(expanded,/│ thinking/);assert.match(expanded,/├ ✓ ledger_search/);assert.match(expanded,/└ ● work_record_update/);assert.match(expanded,/正在核实/);
+  view.toggleDetails();const collapsed=stripAnsi(view.render(100).join("\n"));assert.match(collapsed,/work · 1\/2 done · work_record_update/);assert.doesNotMatch(collapsed,/ledger_search/);
 });
 
 test("stream takeover marks orphaned running tools as failed", () => {
@@ -127,16 +175,16 @@ test("stream takeover marks orphaned running tools as failed", () => {
   view.updateTool({ kind: "tool", callId: "done", name: "write", detail: "out.txt", status: "done" });
   view.stopRunningTools();
   const rendered = stripAnsi(view.render(80).join("\n"));
-  assert.match(rendered, /failed\s+read/);
-  assert.match(rendered, /done\s+write/);
-  assert.doesNotMatch(rendered, /running\s+read/);
+  assert.match(rendered, /× read/);
+  assert.match(rendered, /✓ write/);
+  assert.doesNotMatch(rendered, /● read/);
 });
 
 test("stream ownership preserves the active stream on rejection and fences it after acceptance",()=>{const streams=new StreamCoordinator();const first=new AbortController();const rejected=new AbortController();const accepted=new AbortController();assert.equal(streams.begin(first).owns,true);assert.equal(streams.begin(rejected).owns,false);streams.reject(rejected);assert.equal(streams.isCurrent(first),true);assert.equal(first.signal.aborted,false);assert.equal(streams.begin(accepted).owns,false);streams.accept(accepted);assert.equal(first.signal.aborted,true);assert.equal(streams.isCurrent(first),false);assert.equal(streams.isCurrent(accepted),true);streams.retire();assert.equal(accepted.signal.aborted,true);assert.equal(streams.active,null);});
 
 test("a newer durable Turn supersedes both active and pending streams before attach",()=>{const streams=new StreamCoordinator();const active=new AbortController();const pending=new AbortController();const attached=new AbortController();streams.begin(active);streams.begin(pending);streams.supersede();assert.equal(active.signal.aborted,true);assert.equal(pending.signal.aborted,true);assert.equal(streams.hasPending,false);assert.equal(streams.begin(attached).owns,true);assert.equal(streams.isCurrent(attached),true);});
 
-test("ending a transient Turn clears partial prose and thinking while closing running tools",()=>{const view=new ConversationView([]);view.appendLiveMarkdown("partial answer");view.updateThinking({phase:"delta",text:"private"});view.updateTool({kind:"tool",callId:"call",name:"read",detail:"file",status:"running"});view.endTransientTurn();const rendered=stripAnsi(view.render(80).join("\n"));assert.doesNotMatch(rendered,/partial answer|private|running/);assert.match(rendered,/failed\s+read/);});
+test("ending a transient Turn clears partial prose and thinking while closing running tools",()=>{const view=new ConversationView([]);view.appendLiveMarkdown("partial answer");view.updateThinking({phase:"delta",text:"private"});view.updateTool({kind:"tool",callId:"call",name:"read",detail:"file",status:"running"});view.endTransientTurn();const rendered=stripAnsi(view.render(80).join("\n"));assert.doesNotMatch(rendered,/partial answer|private|running/);assert.match(rendered,/× read/);});
 
 test("consecutive duplicate terminal errors render once",()=>{const view=new ConversationView([]);view.addText("error  failed");view.addText("error  failed");assert.equal(stripAnsi(view.render(80).join("\n")).match(/error  failed/g)?.length,1);});
 
