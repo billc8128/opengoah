@@ -10,7 +10,7 @@ Goal storage already carried `phase` and `revision`, but `phase` was an unconstr
 
 ## Decision
 
-Transcript streams now declare `formatVersion: 1` in `transcript.started`. Readers pass the complete stream through `upgradeTranscriptEvents()` before replay:
+Transcript streams originally declared `formatVersion: 1` in `transcript.started`; Transcript v2 content-addressed request capture now supersedes that format and pre-v2 development state is recreated. Readers pass the complete stream through `upgradeTranscriptEvents()` before replay:
 
 - an absent version is legacy format 0 and upgrades in memory to format 1;
 - source events are never rewritten;

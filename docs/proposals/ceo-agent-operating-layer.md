@@ -79,7 +79,6 @@ Lower-level commands remain available for inspection, automation, and recovery:
 goah goal start --objective "Launch a profitable store"
 goah goal update <root-goal-id> --objective "..."
 goah ceo status
-goah ceo inbox
 goah goal complete <root-goal-id>
 ```
 
@@ -345,9 +344,10 @@ The default CEO receives high-level tools:
 | `send_message` | Durable non-delegation communication |
 | `ledger_search` | Read facts/evidence on demand |
 | `schedule_review` | Set CEO’s next review wake |
-| `request_human` | Durable human decision/completion request |
 
 Low-level `goal.put` remains an internal/advanced mutation tool, but every accepted mutation commits the same authoritative `goal.changed` event.
+
+CEO asks the Human directly in its readable Assistant Message. Human replies as the next User Message in the same Thread; no Human Mail or request tool exists.
 
 Child Agents keep the smaller Goah control surface: owned Goal plus observation method, ledger search, mail, own schedule, Work Record, and handoff. They still retain the four Pi coding tools. They cannot delegate unless a deployment explicitly grants that role.
 
@@ -559,14 +559,14 @@ Acceptance: no probe can produce a child Goal without its decision mail and queu
 - derived `team_list`
 - default CEO system prompt/skill
 - motion validation before handoff
-- human request/completion recommendation events
+- direct CEO Assistant Messages for Human questions and completion recommendations
 
 Acceptance: CEO cannot finish an active root while leaving an `idle_unplanned` child.
 
 ### Milestone C — lower-level product flow (implemented)
 
 - `goah goal start`
-- `goah ceo send/status/inbox`
+- `goah ceo send/status`
 - default init creates CEO profile
 - root creation automatically wakes CEO
 - status/dashboard show CEO recommendation and team roster

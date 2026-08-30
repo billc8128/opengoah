@@ -23,7 +23,6 @@ export type ControlRequest =
   | { op: "goal.complete"; id: string; reason: string; evidence: number[] }
   | { op: "ceo.send"; message: string }
   | { op: "ceo.status" }
-  | { op: "ceo.inbox" }
   | { op: "work.records" }
   | { op: "work.record"; goalId: string }
   | { op: "work.history"; goalId: string }
@@ -148,7 +147,6 @@ async function dispatch(request: ControlRequest, socket: Socket, supervisor: Sup
   else if (request.op === "goal.complete") value = supervisor.completeGoal({ goalId: request.id, revision: requiredGoal(ledger, request.id).revision, reason: request.reason, evidence: request.evidence }, "human");
   else if (request.op === "ceo.send") value = await supervisor.sendToCeo({ message: request.message });
   else if (request.op === "ceo.status") value = ceoStatus(ledger, supervisor);
-  else if (request.op === "ceo.inbox") value = ledger.unreadMail("human");
   else if (request.op === "work.records") value = ledger.workRecords();
   else if (request.op === "work.record") value = ledger.workRecord(request.goalId);
   else if (request.op === "work.history") value = ledger.workRecordHistory(request.goalId);
@@ -191,7 +189,7 @@ function snapshot(ledger: Ledger, supervisor: Supervisor): JsonValue {
   return { seq: ledger.events().at(-1)?.seq ?? 0, threads: ledger.threads(), turns: ledger.turns().map((turn)=>({...turn,leaseToken:null})), goals: ledger.goals(), team: supervisor.teamList(), wakes: ledger.wakes(), wakeTriggers:ledger.wakes().flatMap((wake)=>ledger.wakeTriggers(wake.id)), schedules: ledger.schedules() } as unknown as JsonValue;
 }
 function ceoStatus(ledger: Ledger, supervisor: Supervisor): JsonValue {
-  return { root:supervisor.currentRoot(),roots: ledger.goals().filter((goal) => goal.parentId === null && goal.owner === "ceo"), team: supervisor.teamList(), pendingHuman: ledger.unreadMail("human"), recentCeoHandoffs: ledger.eventsSince(0, ["handoff.recorded"]).filter((event) => event.actor === "ceo").slice(-10) } as unknown as JsonValue;
+  return { root:supervisor.currentRoot(),roots: ledger.goals().filter((goal) => goal.parentId === null && goal.owner === "ceo"), team: supervisor.teamList(), recentCeoHandoffs: ledger.eventsSince(0, ["handoff.recorded"]).filter((event) => event.actor === "ceo").slice(-10) } as unknown as JsonValue;
 }
 function requiredGoal(ledger: Ledger, id: string) { const goal = ledger.goal(id); if (!goal) throw new Error("goal not found"); return goal; }
 export function isTurnPresentationEvent(type:string):boolean{return type.startsWith("message.")||type.startsWith("tool.")||type.startsWith("item.")||type.startsWith("turn.")||type==="response.committed"||type==="handoff.recorded"||type==="transcript.interrupted"||type==="transcript.completed";}

@@ -58,7 +58,7 @@ Provider retry remains inside the same Turn and is represented by `turn.retry_st
 
 Wake is only a durable schedule for future Goal or system motion. Its state machine is `queued → claimed → consumed`, with `cancelled` for pending work that is suppressed. Goal Wakes and Schedules carry the exact Goal revision they target; one Agent may own several Goals without cross-Goal coalescing or cancellation. Claiming a Wake creates one matching Turn and links `wake.turnId` to it. Human input starts a Turn directly, and any in-progress Human Turn blocks automatic Wake claims globally.
 
-Mail is only asynchronous Agent-to-Agent or Agent/Human decision communication. Ordinary Human conversation, steering, retry, cancellation, and transcript history do not use Mail.
+Mail is only asynchronous Agent-to-Agent communication. CEO/Human questions and answers, steering, retry, cancellation, and transcript history use canonical Thread Messages and never Mail.
 
 ### Ownership and recovery
 

@@ -1,6 +1,6 @@
-import { homedir } from "node:os";
-import { replayTranscript, type EventRecord, type JsonValue, type ReplayedTranscript, type RequestSnapshot, type TurnItemSnapshot, type TurnSnapshot } from "goah-ledger-contract";
+import { replayTranscript, type EventRecord, type JsonValue, type ReplayedTranscript, type TurnItemSnapshot, type TurnSnapshot } from "goah-ledger-contract";
 import type { SqliteLedger } from "goah-ledger-sqlite";
+import { redactSensitiveValue } from "./sensitive-text.js";
 
 export interface ThreadListItem {
   threadId: string;
@@ -74,15 +74,7 @@ export function exportThread(ledger: SqliteLedger, threadId: string, options: { 
 }
 
 export function redactValue(value: unknown, key = ""): unknown {
-  if (SENSITIVE_KEY.test(key)) return "[REDACTED]";
-  if (Array.isArray(value)) return value.map((item) => redactValue(item));
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([childKey, child]) => [childKey, redactValue(child, childKey)]));
-  if (typeof value !== "string") return value;
-  return value
-    .replaceAll(homedir(), "<HOME>")
-    .replace(/\bBearer\s+[^\s"']+/gi, "Bearer [REDACTED]")
-    .replace(/\b(?:sk|ak|key)[-_][A-Za-z0-9_-]{12,}\b/gi, "[REDACTED]")
-    .replace(/((?:api[_-]?key|token|secret|password|authorization)\s*[=:]\s*)[^\s,;"']+/gi, "$1[REDACTED]");
+  return redactSensitiveValue(value,key);
 }
 
 function summarizeThread(ledger: SqliteLedger, threadId: string): ThreadListItem {
@@ -93,7 +85,8 @@ function summarizeThread(ledger: SqliteLedger, threadId: string): ThreadListItem
 function contextSnapshot(events: EventRecord[]): TurnContextSnapshot | null {
   const event = events.findLast((candidate) => candidate.type === "request.prepared");
   if (!event) return null;
-  const request = event.data as unknown as RequestSnapshot;
+  const request = replayTranscript(events).lastRequest;
+  if(!request)return null;
   return {
     eventSeq: event.seq,
     provider: request.provider,
@@ -106,5 +99,3 @@ function contextSnapshot(events: EventRecord[]): TurnContextSnapshot | null {
     modelConfig: request.modelConfig,
   };
 }
-
-const SENSITIVE_KEY = /^(?:api[_-]?key|token|(?:lease|fencing|access|refresh|auth)[_-]?token|secret|password|authorization|cookie|set-cookie)$/i;

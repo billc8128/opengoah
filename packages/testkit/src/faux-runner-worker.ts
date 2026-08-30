@@ -60,6 +60,7 @@ function resolveParams(value: JsonValue, context: JsonValue): JsonValue {
   const latest = Math.max(0, ...sourceSeqs(context));
   const visit = (item: JsonValue): JsonValue => {
     if (item === "$LATEST_SOURCE_SEQ") return latest;
+    if(typeof item==="string"&&item.startsWith("$WORK_RECORD_SEQ:")){const goalId=item.slice("$WORK_RECORD_SEQ:".length);const record=sharedWorkRecords(context).find((candidate)=>candidate.goalId===goalId);if(!record)throw new Error(`missing Work Record in faux context: ${goalId}`);return record.lastEventSeq;}
     if (Array.isArray(item)) return item.map(visit);
     if (item && typeof item === "object") return Object.fromEntries(Object.entries(item).map(([key, nested]) => [key, visit(nested)]));
     return item;
@@ -68,6 +69,7 @@ function resolveParams(value: JsonValue, context: JsonValue): JsonValue {
 }
 
 function sourceSeqs(context: JsonValue): number[] { return context && typeof context === "object" && !Array.isArray(context) && Array.isArray(context.sourceSeqs) ? context.sourceSeqs.filter((item): item is number => typeof item === "number") : []; }
+function sharedWorkRecords(context:JsonValue):Array<{goalId:string;lastEventSeq:number}>{if(!context||typeof context!=="object"||Array.isArray(context)||!Array.isArray(context.sharedWorkRecords))return[];return context.sharedWorkRecords.flatMap((value)=>value&&typeof value==="object"&&!Array.isArray(value)&&typeof value.goalId==="string"&&typeof value.lastEventSeq==="number"?[{goalId:value.goalId,lastEventSeq:value.lastEventSeq}]:[]);}
 function commitmentFrom(value: JsonValue): { goalId: string; goalRevision: number } | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value) || !value.goalCommitment || typeof value.goalCommitment !== "object" || Array.isArray(value.goalCommitment)) return undefined;
   const binding = value.goalCommitment as Record<string, JsonValue>;

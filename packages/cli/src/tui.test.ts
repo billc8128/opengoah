@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { resetCapabilitiesCache, setCapabilities } from "@earendil-works/pi-tui";
-import { classifyTuiControlKey, classifyTuiInput, commandAwaitingArgument, ConversationView, createTuiAutocompleteProvider, findLiveTurnId, renderFrame, renderTuiCommandHelp, renderTuiHeader, renderUserMessage, StreamCoordinator, TUI_COMMANDS, WelcomeLockup } from "./tui.js";
+import { classifyTuiControlKey, classifyTuiInput, commandAwaitingArgument, ConversationView, createTuiAutocompleteProvider, findLiveTurnId, renderFrame, renderTuiCommandHelp, renderTuiHeader, renderUserMessage, sensitiveMessageWarning, StreamCoordinator, TUI_COMMANDS, WelcomeLockup } from "./tui.js";
 import type { WelcomeSnapshot } from "./welcome.js";
 import { stripAnsi } from "./tui-theme.js";
+import { looksLikeCredential } from "./sensitive-text.js";
 
 test("TUI routes ordinary text, queued follow-ups, and commands", () => {
   assert.deepEqual(classifyTuiInput("Launch the store", false), { action: "send", text: "Launch the store" });
@@ -22,6 +23,8 @@ test("TUI routes ordinary text, queued follow-ups, and commands", () => {
   assert.equal(classifyTuiInput("/help", false).action, "help");
   assert.equal(classifyTuiInput("/status extra", false).action, "unknown");
 });
+
+test("credential-like messages require an explicit second submission",()=>{assert.equal(looksLikeCredential("API password: very-secret-value"),true);assert.equal(looksLikeCredential("review the password field validation"),false);assert.match(stripAnsi(sensitiveMessageWarning()),/Press Enter again/);assert.match(stripAnsi(sensitiveMessageWarning()),/ignored local file/);});
 
 test("slash commands share one discoverable registry and preserve required argument input",async()=>{assert.equal(commandAwaitingArgument("/goal"),"/goal ");assert.equal(commandAwaitingArgument("/history "),"/history ");assert.equal(commandAwaitingArgument("/status"),null);const provider=createTuiAutocompleteProvider(process.cwd());const suggestions=await provider.getSuggestions(["/"],0,1,{signal:new AbortController().signal});assert.ok(suggestions);assert.deepEqual(suggestions!.items.slice(0,4).map((item)=>item.value),["goal","model","status","setup"]);const completed=provider.applyCompletion(["/g"],0,2,suggestions!.items[0]!,"/g");assert.deepEqual(completed.lines,["/goal "]);const help=stripAnsi(renderTuiCommandHelp());for(const command of TUI_COMMANDS)assert.match(help,new RegExp(`/${command.name}\\b`));assert.match(help,/Ctrl\+C.*Clear input/);assert.match(help,/Ctrl\+D.*Exit when idle/);});
 

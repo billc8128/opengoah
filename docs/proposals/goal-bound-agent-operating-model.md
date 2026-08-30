@@ -745,7 +745,7 @@ Hide by default:
 
 ## 18. Migration
 
-This development release has no external users, so schema v27 does not migrate earlier development schemas. Development workspaces are recreated. Thread persists canonical Agent role, including the unique `ceo` identity; Turn persists `user_message|wake` trigger plus optional Goal commitment and temporary terminal Runner cleanup ownership; Wake and Schedule retain only Goal or Specialist automatic targets. Mail uses a discriminated Goal, Human-inbox, Human-request, or Specialist-inbox route. Human replacement is one Ledger transaction, Turn admission freezes the current active Goal revision, and automatic Turns can start only from a claimed Wake.
+This development release has no external users, so schema v28 does not migrate earlier development schemas. Development workspaces are recreated. Thread persists canonical Agent role, including the unique `ceo` identity; Turn persists `user_message|wake` trigger plus optional Goal commitment and temporary terminal Runner cleanup ownership; Transcript v2 content-addresses exact request components; Wake and Schedule retain only Goal or Specialist automatic targets. Mail is Agent-only and uses discriminated Goal, CEO-inbox, or Specialist-inbox routes. Human replacement is one Ledger transaction, Turn admission freezes the current active Goal revision, and automatic Turns can start only from a claimed Wake.
 
 ## 19. Implementation sequence
 

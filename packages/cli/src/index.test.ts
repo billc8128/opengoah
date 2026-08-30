@@ -7,14 +7,17 @@ import { join } from "node:path";
 import { createConnection } from "node:net";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { specialistAutomaticTarget,type Clock,type RunRequest,type Runner,type RunnerCandidateResult } from "goah-ledger-contract";
+import { goalAutomaticTarget,specialistAutomaticTarget,TRANSCRIPT_FORMAT_VERSION,type Clock,type RunRequest,type Runner,type RunnerCandidateResult } from "goah-ledger-contract";
 import { SqliteLedger } from "goah-ledger-sqlite";
 import { Supervisor } from "goah-supervisor";
 import { CONTROL_LINE_LIMIT,interactFrames,isTurnPresentationEvent,streamControl } from "./control.js";
 import { welcomeSnapshot } from "./welcome.js";
+import { ensureDaemon } from "./daemon-client.js";
 import { controlAvailable, controlEndpoint, diagnoseConfig, loadConfig, persistRunnerProfile, profilePath, readDefaultRunnerProfile, redactValue, statusSnapshot,SupervisorLock } from "./index.js";
 
 const cli = fileURLToPath(new URL("./cli.js", import.meta.url));
+const daemonFixture=fileURLToPath(new URL("./daemon-test-fixture.js",import.meta.url));
+const testStateRoot=mkdtempSync("/tmp/goah-test-");
 let completedMessageSequence=0;
 function completedResult(request:RunRequest,text:string,id=`cli-test:assistant:${++completedMessageSequence}`):RunnerCandidateResult{request.emit({type:"message.assistant.completed",data:{message:{id,role:"assistant",content:[{type:"text",text}]},commitState:"committed"}});return{outcome:"completed",finalMessageId:id};}
 
@@ -28,10 +31,10 @@ function repository(): string {
 }
 
 function invoke(directory: string, ...args: string[]): string {
-  return execFileSync(process.execPath, [cli, ...args], { cwd: directory, encoding: "utf8", env: { ...process.env, GOAH_STATE_HOME: join(tmpdir(), "goah-cli-test-state") } });
+  return execFileSync(process.execPath, [cli, ...args], { cwd: directory, encoding: "utf8", env: { ...process.env, GOAH_STATE_HOME: testStateRoot } });
 }
 function invokeFailure(directory: string, ...args: string[]): string {
-  const result = spawnSync(process.execPath, [cli, ...args], { cwd: directory, encoding: "utf8", env: { ...process.env, GOAH_STATE_HOME: join(tmpdir(), "goah-cli-test-state") } });
+  const result = spawnSync(process.execPath, [cli, ...args], { cwd: directory, encoding: "utf8", env: { ...process.env, GOAH_STATE_HOME: testStateRoot } });
   assert.notEqual(result.status, 0);
   return result.stderr;
 }
@@ -141,8 +144,9 @@ test("Turn presentation includes Handoff and transcript terminal events",()=>{as
 
 test("welcome snapshot restores ordinary Human conversation", async () => {
   const state = mkdtempSync(join(tmpdir(), "goah-welcome-conversation-")); const clock: Clock = { now: () => new Date("2026-08-25T00:00:00.000Z") }; const ledger = new SqliteLedger(join(state, "ledger.sqlite"), { clock });
-  const runner: Runner = { isolation: "process", prepare: (request) => ({ pid: null, begin: () => undefined, result: Promise.resolve(completedResult(request,"restored answer")), terminate: async () => undefined }), terminateProcess: async () => undefined }; const supervisor = new Supervisor(ledger, runner, clock); const accepted = await supervisor.startHumanTurn("remember this question"); await supervisor.waitForTurn(accepted.turnId);const now=clock.now().toISOString();const ceo=ledger.threads().find((thread)=>thread.agent==="ceo")!;ledger.putThread({id:"child-thread",agent:"worker",role:"verifier",parentThreadId:ceo.id,createdAt:now,updatedAt:now},"supervisor");putSyntheticTurn(ledger,"worker","child-thread","child-turn",now);ledger.putTurnItem({id:"child-message",turnId:"child-turn",ordinal:1,type:"user_message",status:"completed",data:{text:"internal worker prompt"},createdAt:now,completedAt:now},"worker");ledger.putTurnItem({id:"child-answer",turnId:"child-turn",ordinal:2,type:"assistant_message",status:"completed",data:{text:"internal worker answer"},createdAt:now,completedAt:now},"worker");ledger.commitTurnResponse("child-turn","child-answer",now,"supervisor");ledger.close();
-  assert.deepEqual(welcomeSnapshot(state, { runner: "pi", target: "test/model" }).conversation.map((row) => row.text), ["remember this question", "restored answer"]);
+  const runner: Runner = { isolation: "process", prepare: (request) => ({ pid: null, begin: () => undefined, result: Promise.resolve(completedResult(request,"restored answer")), terminate: async () => undefined }), terminateProcess: async () => undefined }; const supervisor = new Supervisor(ledger, runner, clock); const accepted = await supervisor.startHumanTurn("remember this question"); await supervisor.waitForTurn(accepted.turnId);const now=clock.now().toISOString();const ceo=ledger.threads().find((thread)=>thread.agent==="ceo")!;ledger.putThread({id:"child-thread",agent:"worker",role:"verifier",parentThreadId:ceo.id,createdAt:now,updatedAt:now},"supervisor");putSyntheticTurn(ledger,"worker","child-thread","child-turn",now);ledger.putTurnItem({id:"child-message",turnId:"child-turn",ordinal:1,type:"user_message",status:"completed",data:{text:"internal worker prompt"},createdAt:now,completedAt:now},"worker");ledger.putTurnItem({id:"child-answer",turnId:"child-turn",ordinal:2,type:"assistant_message",status:"completed",data:{text:"internal worker answer"},createdAt:now,completedAt:now},"worker");ledger.commitTurnResponse("child-turn","child-answer",now,"supervisor");
+  ledger.putGoal({id:"root",parentId:null,objective:"operate",observationMethod:"observe",verificationMethod:"verify",owner:"ceo",phase:"active",revision:0},"human");const wake={id:"automatic-ceo",...goalAutomaticTarget("ceo","root"),triggerRef:"schedule:review",status:"queued" as const,attempt:0,enqueuedSeq:0,claimedAt:null,consumedAt:null,turnId:null};ledger.enqueueWake(wake,"supervisor");ledger.claimNextWake(now);const automaticTurn={id:"automatic-turn",threadId:ceo.id,triggerKind:"wake" as const,goalId:"root",goalRevision:0,status:"in_progress" as const,attempt:1,error:null,startedAt:now,endedAt:null,leaseUntil:"2026-08-25T00:10:00.000Z",leaseToken:"lease",runnerPid:null};ledger.startTurnFromWake(wake.id,automaticTurn,now);const evidence=ledger.appendEvent({streamId:"observation",ts:now,actor:"ceo",type:"observation.recorded",data:{ok:true}});const record=ledger.updateWorkRecord({goalId:"root",goalRevision:0,expectedRevision:0,content:"# Current State\n\nWaiting for Human input.\n",reason:"record question",evidence:[evidence.seq],turnId:automaticTurn.id},"ceo");ledger.putTurnItem({id:"automatic-answer",turnId:automaticTurn.id,ordinal:1,type:"assistant_message",status:"completed",data:{text:"Please choose the deployment timing."},createdAt:now,completedAt:now},"ceo");const handoff={goalId:"root",goalRevision:0,recordRevision:record.recordRevision,outcome:"waiting" as const,evidence:[evidence.seq]};ledger.commitHandoff({agent:"ceo",turnId:automaticTurn.id,sourceWakeId:wake.id,mailIds:[],ts:now,output:{handoff},responseItemId:"automatic-answer",item:{id:"automatic-handoff",turnId:automaticTurn.id,ordinal:2,type:"handoff",status:"completed",data:handoff,createdAt:now,completedAt:now}});ledger.close();
+  assert.deepEqual(welcomeSnapshot(state, { runner: "pi", target: "test/model" }).conversation.map((row) => row.text), ["remember this question", "restored answer", "Please choose the deployment timing."]);
 });
 
 test("welcome snapshot excludes every Item from a failed Human Turn",()=>{const state=mkdtempSync(join(tmpdir(),"goah-welcome-provisional-"));const clock:Clock={now:()=>new Date("2030-01-01T00:00:00.000Z")};const ledger=new SqliteLedger(join(state,"ledger.sqlite"),{clock});const now=clock.now().toISOString();const thread={id:"ceo",agent:"ceo",role:"ceo" as const,parentThreadId:null,createdAt:now,updatedAt:now};ledger.putGoal({id:"g",parentId:null,objective:"g",observationMethod:null,verificationMethod:null,owner:"ceo",phase:"active",revision:0},"human");const turn={id:"t",threadId:"ceo",triggerKind:"user_message" as const,goalId:null,goalRevision:null,status:"in_progress" as const,attempt:1,error:null,startedAt:now,endedAt:null,leaseUntil:"2030-01-01T00:10:00.000Z",leaseToken:"lease",runnerPid:null};ledger.admitHumanTurn({thread,turn,messageItem:{id:"human",turnId:"t",ordinal:1,type:"user_message",status:"completed",data:{text:"work"},createdAt:now,completedAt:now},replaceTurnId:null});ledger.commitTurnToGoal("t",{goalId:"g",goalRevision:0},"supervisor");ledger.putTurnItem({id:"provisional",turnId:"t",ordinal:2,type:"assistant_message",status:"completed",data:{text:"not committed"},createdAt:now,completedAt:now},"ceo");ledger.finishTurn("t","failed",{message:"Handoff rejected"},now,"supervisor");ledger.close();assert.deepEqual(welcomeSnapshot(state,{runner:"pi",target:"test/model"}).conversation,[]);});
@@ -200,20 +204,22 @@ test("CLI runs the install-to-first-handoff path with the faux provider", () => 
 test("CLI rejects an unsupported legacy Ark provider", () => {
   const directory = repository();
   invoke(directory, "init", "--provider", "ark-coding", "--model", "glm-test");
-  const result = spawnSync(process.execPath, [cli, "run-once"], { cwd: directory, encoding: "utf8", env: { ...process.env, GOAH_STATE_HOME: join(tmpdir(), "goah-cli-test-state") } });
+  const result = spawnSync(process.execPath, [cli, "run-once"], { cwd: directory, encoding: "utf8", env: { ...process.env, GOAH_STATE_HOME: testStateRoot } });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Model not found/);
 });
 
+test("non-interactive CLI refuses credential-like messages before creating a Turn",()=>{const directory=repository();invoke(directory,"init","--provider","faux");const state=join(tmpdir(),`goah-sensitive-${process.pid}-${Date.now()}`);const result=spawnSync(process.execPath,[cli,"API password: very-secret-value"],{cwd:directory,encoding:"utf8",env:{...process.env,GOAH_STATE_HOME:state}});assert.notEqual(result.status,0);assert.match(result.stderr,/not accepted non-interactively/);assert.doesNotMatch(result.stderr,/very-secret-value/);});
+
 test("thread export redaction preserves structure while removing common secrets and home paths", () => {
-  const redacted = redactValue({ token: "top-secret",leaseToken:"fencing-secret",lease_token:"snake-secret", nested: { text: `Bearer abcdef /Users/example key-abcdefghijklmnop ${process.env.HOME}` } }) as { token: string;leaseToken:string;lease_token:string;nested: { text: string } };
+  const redacted = redactValue({ token: "top-secret",leaseToken:"fencing-secret",lease_token:"snake-secret", nested: { text: `Bearer abcdef /Users/example key-abcdefghijklmnop API password:very-secret-value ${process.env.HOME}` } }) as { token: string;leaseToken:string;lease_token:string;nested: { text: string } };
   assert.equal(redacted.token, "[REDACTED]");
   assert.equal(redacted.leaseToken,"[REDACTED]");assert.equal(redacted.lease_token,"[REDACTED]");
-  assert.doesNotMatch(redacted.nested.text, /abcdef|abcdefghijklmnop/);
+  assert.doesNotMatch(redacted.nested.text, /abcdef|abcdefghijklmnop|very-secret-value/);
   if (process.env.HOME) assert.doesNotMatch(redacted.nested.text, new RegExp(process.env.HOME.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });
 
-test("status reports model capabilities per Agent and keeps CEO as the primary summary",()=>{const clock:Clock={now:()=>new Date("2030-01-01T00:00:00.000Z")};const ledger=new SqliteLedger(":memory:",{clock});const now=clock.now().toISOString();ledger.putThread({id:"ceo-thread",agent:"ceo",role:"ceo",parentThreadId:null,createdAt:now,updatedAt:now},"supervisor");ledger.putThread({id:"worker-thread",agent:"worker",role:"verifier",parentThreadId:"ceo-thread",createdAt:now,updatedAt:now},"supervisor");for(const [agent,threadId,model] of [["ceo","ceo-thread","ceo-model"],["worker","worker-thread","worker-model"]] as const){const id=`${agent}-turn`;putSyntheticTurn(ledger,agent,threadId,id,now);ledger.appendTurnEvent({streamId:`turn:${id}`,ts:now,actor:agent,type:"transcript.started",data:{formatVersion:1,provider:agent,model,runner:"pi",contextWindowTokens:1,maxOutputTokensPerTurn:1}},id);const responseId=`${id}:answer`;ledger.putTurnItem({id:responseId,turnId:id,ordinal:ledger.turnItems(id).length+1,type:"assistant_message",status:"completed",data:{text:"done"},createdAt:now,completedAt:now},agent);ledger.commitTurnResponse(id,responseId,now,"supervisor");}const status=statusSnapshot(ledger) as {modelCapabilities:{model:string};modelCapabilitiesByAgent:Record<string,{model:string}>};assert.equal(status.modelCapabilities.model,"ceo-model");assert.deepEqual(Object.fromEntries(Object.entries(status.modelCapabilitiesByAgent).map(([agent,value])=>[agent,value.model])),{ceo:"ceo-model",worker:"worker-model"});ledger.close();});
+test("status reports model capabilities per Agent and keeps CEO as the primary summary",()=>{const clock:Clock={now:()=>new Date("2030-01-01T00:00:00.000Z")};const ledger=new SqliteLedger(":memory:",{clock});const now=clock.now().toISOString();ledger.putThread({id:"ceo-thread",agent:"ceo",role:"ceo",parentThreadId:null,createdAt:now,updatedAt:now},"supervisor");ledger.putThread({id:"worker-thread",agent:"worker",role:"verifier",parentThreadId:"ceo-thread",createdAt:now,updatedAt:now},"supervisor");for(const [agent,threadId,model] of [["ceo","ceo-thread","ceo-model"],["worker","worker-thread","worker-model"]] as const){const id=`${agent}-turn`;putSyntheticTurn(ledger,agent,threadId,id,now);ledger.appendTurnEvent({streamId:`turn:${id}`,ts:now,actor:agent,type:"transcript.started",data:{formatVersion:TRANSCRIPT_FORMAT_VERSION,provider:agent,model,runner:"pi",contextWindowTokens:1,maxOutputTokensPerTurn:1}},id);const responseId=`${id}:answer`;ledger.putTurnItem({id:responseId,turnId:id,ordinal:ledger.turnItems(id).length+1,type:"assistant_message",status:"completed",data:{text:"done"},createdAt:now,completedAt:now},agent);ledger.commitTurnResponse(id,responseId,now,"supervisor");}const status=statusSnapshot(ledger) as {modelCapabilities:{model:string};modelCapabilitiesByAgent:Record<string,{model:string}>};assert.equal(status.modelCapabilities.model,"ceo-model");assert.deepEqual(Object.fromEntries(Object.entries(status.modelCapabilitiesByAgent).map(([agent,value])=>[agent,value.model])),{ceo:"ceo-model",worker:"worker-model"});ledger.close();});
 
 test("CLI exposes the complete goal lifecycle with revisioned transitions", () => {
   const directory = repository();
@@ -262,14 +268,13 @@ test("CLI exposes one-objective CEO entry and coalesces human corrections", () =
   assert.equal(status.root.id,"company");
   assert.equal(status.roots[0].id, "company");
   assert.equal(status.team.find((member: { agent: string }) => member.agent === "ceo").motion, "queued");
-  assert.deepEqual(JSON.parse(invoke(directory, "ceo", "inbox")), []);
 });
 
 test("CLI revises and confirms a root through the resident Supervisor control socket", async () => {
   const directory = repository();
   invoke(directory, "init", "--provider", "faux");
   const config = loadConfig(join(directory, "goah.config.json"));
-  const env = { ...process.env, GOAH_STATE_HOME: join(tmpdir(), "goah-cli-test-state") };
+  const env = { ...process.env, GOAH_STATE_HOME: testStateRoot };
   const daemon = spawn(process.execPath, [cli, "start"], { cwd: directory, env, stdio: "ignore" });
   try {
     await waitFor(async () => controlAvailable(config.stateDir));
@@ -299,6 +304,8 @@ test("daemon lifecycle is inspectable and stoppable", () => {
   assert.match(invoke(directory, "daemon", "status"), /running/);
   assert.match(invoke(directory, "daemon", "stop"), /stopped/);
 });
+
+test("failed detached daemon startup is reaped",async()=>{const directory=mkdtempSync(join(tmpdir(),"goah-daemon-fail-"));const stateDir=join(directory,"state");const pidFile=join(directory,"pid");await assert.rejects(ensureDaemon(pidFile,stateDir,{entryPath:daemonFixture,startupTimeoutMs:150,cwd:directory}),/did not start/);const pid=Number(readFileSync(pidFile,"utf8"));assert.ok(Number.isInteger(pid));assert.throws(()=>process.kill(pid,0));});
 
 function putSyntheticTurn(ledger:SqliteLedger,agent:string,threadId:string,id:string,now:string):void{const common={id,threadId,goalId:null,goalRevision:null,status:"in_progress" as const,attempt:1,error:null,startedAt:now,endedAt:null,leaseUntil:new Date(Date.parse(now)+600_000).toISOString(),leaseToken:id,runnerPid:null};if(agent==="ceo"){const turn={...common,triggerKind:"user_message" as const};const thread=ledger.thread(threadId)!;ledger.admitHumanTurn({thread,turn,messageItem:{id:`message:${id}`,turnId:id,ordinal:1,type:"user_message",status:"completed",data:{text:"synthetic"},createdAt:now,completedAt:now},replaceTurnId:null});return;}const wakeId=`wake:${id}`;ledger.enqueueWake({id:wakeId,...specialistAutomaticTarget(agent,"verifier"),triggerRef:`test:${id}`,status:"queued",attempt:0,enqueuedSeq:0,claimedAt:null,consumedAt:null,turnId:null},"supervisor");if(ledger.claimNextWake(now)?.id!==wakeId)throw new Error("test failed to claim synthetic Wake");ledger.startTurnFromWake(wakeId,{...common,triggerKind:"wake"},now);}
 

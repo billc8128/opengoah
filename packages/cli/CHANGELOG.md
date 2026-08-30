@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Reaps detached daemon processes when startup fails and shares one startup implementation between CLI and TUI.
+- Warns before persisting credential-like interactive messages, refuses them non-interactively, and shares one redaction fallback across TUI errors and thread exports.
+- Inspects Transcript v2 request references by materializing their content-addressed components.
+- Removed pending-Human mailbox UI and restores committed Assistant Messages from automatic CEO Turns in the welcome conversation.
+
 ## 0.13.6
 
 - The Pi Runner now uses upstream Pi's native read/bash/edit/write tools. `cwd` is a working context rather than a Goah permission boundary, so absolute paths and commands inherit host-user access; isolation belongs to custom Runners or deployment wrappers.

@@ -81,7 +81,7 @@ Runner does not submit response prose a second time. Supervisor requires `finalM
 - Goal queries can see the active Goal without accidentally entering Goal execution.
 - Child Agents remain Goal-only and Specialists remain unbound without creating separate Turn kinds.
 - Wake, Schedule, Mail, Work Record, Goal revision fencing, Handoff validation, leases, recovery, and one-Agent execution lanes remain in force.
-- Development schema v27 is rebuilt rather than migrated; it makes the persisted Thread role canonical, reserves `ceo` bidirectionally for the canonical CEO Agent, admits Human replacement as one transaction, and retains terminal Runner cleanup ownership until release.
+- Development schema v28 is rebuilt rather than migrated; it makes the persisted Thread role canonical, reserves `ceo` bidirectionally for the canonical CEO Agent, admits Human replacement as one transaction, retains terminal Runner cleanup ownership until release, and adopts Transcript v2 content-addressed request capture.
 
 ## Superseded decisions
 

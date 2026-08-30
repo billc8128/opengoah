@@ -13,8 +13,7 @@ export type AutomaticTarget =
   | { targetKind: "specialist"; agent: string; goalId: null; specialistRole: SpecialistRole };
 export type MailRoute =
   | { routeKind: "goal"; goalId: string; specialistRole: null }
-  | { routeKind: "human_inbox"; goalId: null; specialistRole: null }
-  | { routeKind: "human_request"; goalId: null; specialistRole: null }
+  | { routeKind: "ceo_inbox"; goalId: null; specialistRole: null }
   | { routeKind: "specialist_inbox"; goalId: null; specialistRole: SpecialistRole };
 export function goalAutomaticTarget(agent: string, goalId: string): Extract<AutomaticTarget, { targetKind: "goal" }> {
   return { targetKind: "goal", agent, goalId, specialistRole: null };
@@ -23,8 +22,7 @@ export function specialistAutomaticTarget(agent: string, role: SpecialistRole): 
   return { targetKind: "specialist", agent, goalId: null, specialistRole: role };
 }
 export function goalRoute(goalId:string):Extract<MailRoute,{routeKind:"goal"}>{return{routeKind:"goal",goalId,specialistRole:null};}
-export function humanInboxRoute():Extract<MailRoute,{routeKind:"human_inbox"}>{return{routeKind:"human_inbox",goalId:null,specialistRole:null};}
-export function humanRequestRoute():Extract<MailRoute,{routeKind:"human_request"}>{return{routeKind:"human_request",goalId:null,specialistRole:null};}
+export function ceoInboxRoute():Extract<MailRoute,{routeKind:"ceo_inbox"}>{return{routeKind:"ceo_inbox",goalId:null,specialistRole:null};}
 export function specialistInboxRoute(role:SpecialistRole):Extract<MailRoute,{routeKind:"specialist_inbox"}>{return{routeKind:"specialist_inbox",goalId:null,specialistRole:role};}
 export type TurnItemType = "user_message" | "assistant_message" | "reasoning" | "tool_call" | "tool_result" | "plan" | "handoff";
 export type TurnItemStatus = "in_progress" | "completed" | "failed";
@@ -145,7 +143,7 @@ export interface RunnerLiveEvent {type:"message.assistant.delta";data:{messageId
 export interface TurnLiveSnapshot {revision:number;messageId:string;text:string;thinking:string;thinkingActive:boolean}
 
 export type AgentCapability = "ledger.search" | "mail.send" | "schedule.set" | "goal.put"
-  | "team.list" | "goal.get" | "goal.create" | "goal.work" | "goal.delegate" | "goal.reassign" | "goal.revise" | "goal.pause" | "goal.resume" | "goal.complete" | "human.request"
+  | "team.list" | "goal.get" | "goal.create" | "goal.work" | "goal.delegate" | "goal.reassign" | "goal.revise" | "goal.pause" | "goal.resume" | "goal.complete"
   | "work_record.list" | "work_record.read" | "work_record.history" | "work_record.diff" | "work_record.search" | "work_record.update"
   | "memory.append";
 export type RunnerControlMethod="goal.handoff.validate";

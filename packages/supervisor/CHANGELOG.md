@@ -2,12 +2,14 @@
 
 ## Unreleased
 
+- Deduplicates request components across Runner retries while leaving Child Work Record repair decisions to the Agents.
+- Removed the Human request RPC and mailbox path; CEO asks and receives answers only through canonical Thread Messages.
 - Added an in-memory cumulative Turn LiveBus; assistant deltas no longer enter Ledger, and complete thinking materializes once from the completed Assistant message.
 - Goal role prompts now treat Wake as the start of sustained work, require Agents to exhaust the current actionable frontier before Handoff, and make CEO the execution fallback when no suitable Child profile exists.
 - Human Turn replacement now uses one atomic Ledger admission and a persisted Runner cleanup fence; Runner completion and Handoff reference one canonical Assistant Item, persisted Thread role remains the sole Agent-role authority, and committed direct Turns participate in live/restart recovery.
 - Separated active Goal visibility from Turn commitment, made user priority trigger-based, removed Human Wakes, and moved explicit Goal control onto a directly committed CEO user Turn.
 - Human Turns that become Goal-bound rebuild Goal context on retry; live Handoff validation returns correctable issues to the Agent and binds accepted drafts to one-use tokens.
-- Uses typed Mail routes, reserves Human requests for CEO, commits effect-free Handoffs, scopes outcome context by Goal, and separates Team motion/outcome.
+- Uses typed Agent-only Mail routes, keeps Human communication in the CEO Thread, commits effect-free Handoffs, scopes outcome context by Goal, and separates Team motion/outcome.
 - Child Agents now admit only owned Child Goal Turns, CEO admits only Human/owned Root Goal Turns, and unbound system execution is reserved for Verifier/Audit specialists.
 - Profile validation enforces one primary identity: exactly the `ceo` Agent has the CEO role.
 - Agent Mail requires an owned Goal route, delivery is scoped to the bound Goal, and inactive routed Mail remains dormant until resume.

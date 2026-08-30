@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import { runGoahTui } from "./tui.js";
@@ -10,6 +10,7 @@ import { controlAvailable, createRuntime, diagnoseConfig, exportThread, listThre
 import { runnerPlugin } from "./runner-registry.js";
 import { stdioQueue } from "./prompt-queue.js";
 import { runUpdate } from "./update.js";
+import { ensureDaemon } from "./daemon-client.js";
 const args = normalizeArgs(process.argv.slice(2));
 
 try {
@@ -112,7 +113,7 @@ async function main(): Promise<void> {
     if (command === "start") {
       const controller = new AbortController();
       const stop = () => controller.abort(); process.on("SIGINT", stop); process.on("SIGTERM", stop);
-      await Promise.all([
+      const services = [
         run(supervisor, controller.signal),
         runControlServer(supervisor, ledger, config.stateDir, controller.signal, {
           stop: () => controller.abort(),
@@ -125,7 +126,9 @@ async function main(): Promise<void> {
           },
         }),
         runWebConsole(supervisor, ledger, config.stateDir, controller.signal, { onListening: ({ url }) => console.log(`Goah Console: ${url}`) }),
-      ]);
+      ];
+      try{await Promise.all(services);}
+      finally{controller.abort();await Promise.allSettled(services);process.off("SIGINT",stop);process.off("SIGTERM",stop);}
     } else if (command === "run-once") {
       await supervisor.recover();
       console.log(JSON.stringify({ wake: await supervisor.tick() }, null, 2));
@@ -144,11 +147,8 @@ async function main(): Promise<void> {
         root:supervisor.currentRoot(),
         roots: ledger.goals().filter((goal) => goal.parentId === null && goal.owner === "ceo"),
         team: supervisor.teamList(),
-        pendingHuman: ledger.unreadMail("human"),
         recentCeoHandoffs: ledger.eventsSince(0, ["handoff.recorded"]).filter((event) => event.actor === "ceo").slice(-10),
       }, null, 2));
-    } else if (command === "ceo-inbox") {
-      console.log(JSON.stringify(ledger.unreadMail("human"), null, 2));
     } else if (command === "thread") {
       const subcommand = requiredPositional(1, "thread command");
       if (subcommand === "list") console.log(JSON.stringify(listThreads(ledger), null, 2));
@@ -223,29 +223,6 @@ async function waitForConsole(stateDir: string): Promise<ConsoleMetadata> {
   }
   throw new Error("Goah Console did not start; restart the resident Supervisor");
 }
-async function ensureDaemon(configPath: string, stateDir: string): Promise<void> {
-  if (await controlAvailable(stateDir)) {
-    const version = await requestControl(stateDir, { op: "daemon.version" }).catch(() => null);
-    if (version === packageVersion()) return;
-    await requestControl(stateDir, { op: "daemon.stop" }).catch(() => undefined);
-    const stopDeadline = Date.now() + 5_000;
-    while (await controlAvailable(stateDir) && Date.now() < stopDeadline) await new Promise((resolveWait) => setTimeout(resolveWait, 50));
-  }
-  mkdirSync(stateDir, { recursive: true });
-  const log = openSync(join(stateDir, "daemon.log"), "a");
-  const child = spawn(process.execPath, [process.argv[1]!, "start", "--config", resolve(configPath)], { cwd: process.cwd(), detached: true, stdio: ["ignore", log, log], env: process.env });
-  closeSync(log);
-  child.unref();
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
-    if (await controlAvailable(stateDir)) return;
-    const { promise: tick, resolve: resolveWait } = Promise.withResolvers<void>();
-    setTimeout(resolveWait, 100);
-    await tick;
-  }
-  throw new Error("Goah Supervisor did not start; run `goah doctor` and inspect the configured provider credentials");
-}
-
 function openUrl(url: string): void {
   const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
   const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
@@ -262,7 +239,6 @@ function remoteRequest(command: string): ControlRequest | null {
   if (command === "goal-complete") return { op: "goal.complete", id: requiredPositional(1, "goal id"), reason: required("--reason"), evidence: evidence() };
   if (command === "ceo-send") return { op: "ceo.send", message: required("--message") };
   if (command === "ceo-status") return { op: "ceo.status" };
-  if (command === "ceo-inbox") return { op: "ceo.inbox" };
   return null;
 }
 
@@ -280,7 +256,7 @@ goah daemon status|logs|restart|stop
 goah web [--open]
 goah goal start --objective TEXT [--id ID]
 goah ceo send --message TEXT
-goah ceo status | ceo inbox
+goah ceo status
 goah goal-create --id ID --owner ceo --objective TEXT
 goah goal-create --id ID --parent ROOT --owner AGENT --objective TEXT --observation-method TEXT [--wake-now]
 goah goal-show ID | goal-list
@@ -341,7 +317,7 @@ function normalizeArgs(values: string[]): string[] {
   if ((values[0] === "goal" || values[0] === "ceo") && values[1] && !values[1].startsWith("--")) return [`${values[0]}-${values[1]}`, ...values.slice(2)];
   return values;
 }
-function knownCommand(value: string): boolean { return ["setup", "help", "version", "update", "runner", "daemon", "auth", "login", "logout", "model", "init", "doctor", "web", "start", "run-once", "wake", "status", "thread", "context", "events", "memory", "goal-list", "goal-show", "goal-create", "goal-update", "goal-pause", "goal-resume", "goal-complete", "goal-start", "ceo-send", "ceo-status", "ceo-inbox", "dashboard"].includes(value); }
+function knownCommand(value: string): boolean { return ["setup", "help", "version", "update", "runner", "daemon", "auth", "login", "logout", "model", "init", "doctor", "web", "start", "run-once", "wake", "status", "thread", "context", "events", "memory", "goal-list", "goal-show", "goal-create", "goal-update", "goal-pause", "goal-resume", "goal-complete", "goal-start", "ceo-send", "ceo-status", "dashboard"].includes(value); }
 function asRecord(value: JsonValue): Record<string, JsonValue> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("expected an object"); return value; }
 function firstRecord(value: JsonValue | undefined): Record<string, JsonValue> | null { return Array.isArray(value) && value[0] && typeof value[0] === "object" && !Array.isArray(value[0]) ? value[0] : null; }
 function messageText(value: JsonValue | undefined): string {

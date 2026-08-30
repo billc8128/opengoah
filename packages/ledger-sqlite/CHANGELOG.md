@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Schema v28 adopts Transcript v2 request components and requires a current owner-written Work Record plus matching evidence before Child Goal completion.
+- Schema v28 removes Human mailbox routes and constrains Mail to Agent-only Goal, CEO-inbox, and Specialist-inbox delivery.
 - Schema v27 atomically admits Human Turn replacement, retains terminal Runner cleanup ownership until explicit release, persists canonical Thread role, reserves the unique CEO identity, and keeps Human input free of Wake representation.
 - Schema v24 makes Wake-to-Turn linkage unique, restricts new direct Turns to CEO Human interactions, validates the current Goal fence at atomic Wake admission, and replays Turn/Wake state through typed transition reducers.
 - Goal completion atomically marks an existing readable Assistant Item committed, records the exact Handoff, acknowledges Mail, and closes the Turn; replay validates the fact set without an adjacency requirement.
@@ -10,7 +12,7 @@
 - Goal phase and owner transitions now cancel queued/claimed Goal Wakes in the same transaction as Schedule supersession.
 - Reassigning a paused or blocked Goal atomically records routed Mail without a Wake; parent and Child Goals cannot share an owner.
 - Schema v21 persists Turn bindings alongside Wake/Schedule binding and Mail-route discriminants; earlier development databases are intentionally recreated.
-- Wake admission validates active Goal ownership, Wake consumption validates the full execution binding, and mailbox CHECK constraints preserve Human inbox/request sender-recipient boundaries during replay.
+- Wake admission validates active Goal ownership, Wake consumption validates the full execution binding, and mailbox CHECK constraints preserve Goal/CEO/Specialist Agent routing during replay.
 
 - Schema v18 removes Goal revision fences from Wake and Schedule so queued motion adopts the current revision at Turn admission.
 - Schema v17 adds replayable WakeTrigger state, derives Wake identity through canonical admission, and resolves triggers atomically on consume/cancel.

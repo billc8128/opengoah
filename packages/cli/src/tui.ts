@@ -7,10 +7,10 @@ import { GOAH_TERMINAL_MARK, welcomeSnapshot, type WelcomeSnapshot } from "./wel
 import { chooseSetupSection, runRunnerCommandWizard, runSetupWizard, applyWizardResult, type SetupSection } from "./setup-wizard.js";
 import { installedVersion } from "./update.js";
 import { tuiTheme } from "./tui-theme.js";
+import { ensureDaemon } from "./daemon-client.js";
 import { normalizeAssistantText } from "goah-ledger-contract";
-import { spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { looksLikeCredential, redactSensitiveText } from "./sensitive-text.js";
+import { existsSync, readFileSync } from "node:fs";
 
 interface CancellableState { active: boolean }
 class HeaderBar implements Component {
@@ -239,6 +239,7 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   let configuring = false;
   let exiting = false;
   let interrupting = false;
+  let sensitiveConfirmation: string | null = null;
 
   const push = (line: string): void => {
     transcriptView.addText(line);
@@ -389,6 +390,8 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
   input.onSubmit = (line) => {
     const waiting=commandAwaitingArgument(line);if(waiting){input.setText(waiting);return;}
     const { action, text } = classifyTuiInput(line, busy.active);
+    if(["send","steer","goal"].includes(action)&&looksLikeCredential(text)&&sensitiveConfirmation!==text){sensitiveConfirmation=text;input.setText(text);push(sensitiveMessageWarning());return;}
+    sensitiveConfirmation=null;
     input.setText("");
     if (action === "quit") { exiting = true; streams.abortAll(); tui.stop(); resolveExit(); return; }
     if (action === "help") { push(renderTuiCommandHelp()); return; }
@@ -430,7 +433,8 @@ export async function runGoahTui(configPath: string, stateDir: string, initialMe
     return { consume: true };
   });
   tui.start();
-  if (initialMessage) void send(initialMessage); else if (typeof liveInteractionTurnId === "string") void attachTurn(liveInteractionTurnId);
+  if(initialMessage&&looksLikeCredential(initialMessage)){sensitiveConfirmation=initialMessage;input.setText(initialMessage);push(sensitiveMessageWarning());}
+  else if (initialMessage) void send(initialMessage); else if (typeof liveInteractionTurnId === "string") void attachTurn(liveInteractionTurnId);
   await exited;
 }
 
@@ -440,6 +444,7 @@ export function findLiveTurnId(turns: Array<Record<string, unknown>>): string | 
 }
 
 async function runNonInteractive(configPath: string, stateDir: string, initialMessage: string | null): Promise<void> {
+  if(initialMessage&&looksLikeCredential(initialMessage))throw new Error("Credential-like input is not accepted non-interactively. Put the secret in an ignored local file, then tell Goah only its path.");
   await ensureDaemon(configPath, stateDir);
   console.log(`Console: ${(await waitForConsoleMetadata(stateDir)).url}`);
   if (!initialMessage) return;
@@ -523,8 +528,6 @@ export function renderFrame(frame: ControlFrame, push: (line: string) => void, a
     if(typeof data.text==="string"&&data.text.trim())commitLive(data.text.trim(),typeof data.messageItemId==="string"?data.messageItemId:undefined);
   } else if (record.type === "handoff.recorded") {
     if (typeof data.goalId === "string") push(`${data.outcome === "blocked" ? tuiTheme.error("goal blocked") : tuiTheme.success("goal saved")}  ${tuiTheme.muted(`${String(data.outcome).replaceAll("_", " ")} · record r${String(data.recordRevision)}`)}`);
-  } else if (record.type === "ceo.human_requested") {
-    push(`${tuiTheme.warning("needs you")}  ${safeError(compact(record.data ?? {}))}`);
   } else if (record.type === "transcript.interrupted") {
     updateThinking({ phase: "clear", text: "" });
     clearLive();
@@ -553,8 +556,7 @@ async function printStatus(stateDir: string, push: (line: string) => void): Prom
     const value = status && typeof status === "object" && !Array.isArray(status) ? status as Record<string, unknown> : {};
     const root = value.root&&typeof value.root==="object"&&!Array.isArray(value.root)?value.root as Record<string,unknown>:null;
     const team = Array.isArray(value.team) ? value.team as Array<Record<string, unknown>> : [];
-    const pending = Array.isArray(value.pendingHuman) ? value.pendingHuman.length : 0;
-    push([tuiTheme.strong("Status"), root ? `  ${tuiTheme.active(" GOAL ")}  ${String(root.objective)}  ${tuiTheme.muted(String(root.phase))}` : `  ${tuiTheme.muted("No current Goal")}`, `  ${tuiTheme.muted(team.length ? team.map((member) => `${String(member.agent)} ${String(member.motion)}${member.lastOutcome?`/${String(member.lastOutcome)}`:""}`).join(" · ") : "No Goal Agents")}`, ...(pending ? [`  ${tuiTheme.warning(`${pending} decision${pending === 1 ? "" : "s"} need you`)}`] : []), ""].join("\n"));
+    push([tuiTheme.strong("Status"), root ? `  ${tuiTheme.active(" GOAL ")}  ${String(root.objective)}  ${tuiTheme.muted(String(root.phase))}` : `  ${tuiTheme.muted("No current Goal")}`, `  ${tuiTheme.muted(team.length ? team.map((member) => `${String(member.agent)} ${String(member.motion)}${member.lastOutcome?`/${String(member.lastOutcome)}`:""}`).join(" · ") : "No Goal Agents")}`, ""].join("\n"));
   } catch (error) { push(errorLine(error)); }
 }
 
@@ -615,35 +617,13 @@ async function slashGoal(text: string, stateDir: string, push: (line: string) =>
   } catch (error) { push(errorLine(error)); }
 }
 
-async function ensureDaemon(configPath: string, stateDir: string): Promise<void> {
-  if (await controlAvailable(stateDir)) {
-    const version = await requestControl(stateDir, { op: "daemon.version" }).catch(() => null);
-    if (version === installedVersion()) return;
-    await requestControl(stateDir, { op: "daemon.stop" }).catch(() => undefined);
-    const stopDeadline = Date.now() + 5_000;
-    while (await controlAvailable(stateDir) && Date.now() < stopDeadline) await new Promise((resolveWait) => setTimeout(resolveWait, 50));
-  }
-  mkdirSync(stateDir, { recursive: true });
-  const log = openSync(join(stateDir, "daemon.log"), "a");
-  spawn(process.execPath, [process.argv[1]!, "start", "--config", resolve(configPath)], { cwd: process.cwd(), detached: true, stdio: ["ignore", log, log], env: process.env }).unref();
-  closeSync(log);
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
-    if (await controlAvailable(stateDir)) return;
-    const { promise: tick, resolve: resolveWait } = Promise.withResolvers<void>();
-    setTimeout(resolveWait, 100);
-    await tick;
-  }
-  throw new Error("Goah Supervisor did not start; run `goah doctor` and inspect the configured provider credentials");
-}
-
 function compact(value: unknown): string {
   const json = JSON.stringify(value) ?? "";
   return json.length > 160 ? `${json.slice(0, 157)}…` : json;
 }
 function errorLine(error: unknown): string { return `${tuiTheme.error("error")}  ${safeError(error instanceof Error ? error.message : String(error))}\n`; }
 function safeError(value: string): string {
-  const sanitized = value
+  const sanitized = redactSensitiveText(value)
     .replace(/environment variable is missing:\s*[^\s(]+/gi, "environment variable is missing: [REDACTED]")
     .replace(/(?:sk|key|token)[-_][A-Za-z0-9._-]{12,}/gi, "[REDACTED]");
   const provider = sanitized.match(/^(\d{3}):\s*(\{.*\})$/s);
@@ -654,6 +634,7 @@ function safeError(value: string): string {
   if (named) return named;
   return sanitized.split("\n").map((line) => line.trim()).find((line) => line && !line.startsWith("file://") && !line.startsWith("at ") && line !== "^") ?? "Turn failed";
 }
+export function sensitiveMessageWarning():string{return `${tuiTheme.warning("credential-like message")}  ${tuiTheme.muted("Press Enter again to send it to the model and Ledger, or put the secret in an ignored local file and mention only its path.")}`;}
 
 function messageText(value: unknown): string {
   if (typeof value === "string") return normalizeAssistantText(value);

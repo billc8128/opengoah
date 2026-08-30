@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { request } from "node:http"
 import test from "node:test"
-import { goalAutomaticTarget,humanInboxRoute } from "goah-ledger-contract"
+import { ceoInboxRoute,goalAutomaticTarget } from "goah-ledger-contract"
 import { deriveRecoveryViews } from "goah-supervisor"
 import { createRuntime, defaultConfig, loadConfig } from "./index.js"
 import { consoleMetadataPath, readConsoleMetadata, runWebConsole } from "./web-console.js"
@@ -15,7 +15,7 @@ test("local Console serves assets, redacted snapshots, and CEO control through S
   const config = { ...defaultConfig(root, { provider: "faux" }), stateDir: join(root, "state") }
   writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`)
   const runtime = createRuntime(loadConfig(configPath))
-  runtime.ledger.putMail({ id: "secret-mail", to: "ceo", from: "human", level: "decision", ...humanInboxRoute(),body: { apiKey: "sk-do-not-expose-123456789" }, readAt: null }, "human")
+  runtime.ledger.putMail({ id: "secret-mail", to: "ceo", from: "verifier", level: "decision", ...ceoInboxRoute(),body: { apiKey: "sk-do-not-expose-123456789" }, readAt: null }, "verifier")
   await assert.rejects(()=>runWebConsole(runtime.supervisor,runtime.ledger,config.stateDir,new AbortController().signal,{host:"0.0.0.0"}),/loopback/)
 
   const controller = new AbortController()

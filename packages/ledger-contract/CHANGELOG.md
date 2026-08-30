@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Transcript v2 replaces repeated full request payloads with SHA-256-addressed prompt/context/message/toolset components and ordered `request.prepared` references.
+- Removed `human.request` and Human Mail routes; Agent Mail now uses only Goal, CEO-inbox, and Specialist-inbox routes.
 - Added the ephemeral `RunnerLiveEvent` / `TurnLiveSnapshot` contract so provider deltas never become durable Transcript facts.
 - Replaced Turn source/binding discriminants with Thread role, Turn trigger, visible Goal context, and optional Goal commitment; successful Runner results now reference one canonical Assistant Item through `finalMessageId` plus optional Handoff.
 - Added runner-agnostic Handoff attempts/issues/tokens and internal Runner control RPC; each result carries an attemptId, `TurnOutput` binds the current attempt/token plus Handoff, tokens omit transient Work Record revision, and the duplicate `consumeWake` transition has been removed.

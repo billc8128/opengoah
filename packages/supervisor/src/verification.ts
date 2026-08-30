@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { goalRoute,humanInboxRoute,specialistInboxRoute,type EventRecord,type JsonValue,type Ledger,type MailSnapshot } from "goah-ledger-contract";
+import { ceoInboxRoute,goalRoute,specialistInboxRoute,type EventRecord,type JsonValue,type Ledger,type MailSnapshot } from "goah-ledger-contract";
 import { spawn } from "node:child_process";
 import type { Supervisor } from "./index.js";
 
@@ -52,7 +52,7 @@ export class VerificationPlane {
     const result = await this.model.verifyTurn({ turnId, handoff, trace });
     this.#validate(result);
     const thread=this.ledger.thread(turn.threadId);if(!thread)throw new Error("verified Turn has no Thread");
-    const level=result.findings.length?"decision" as const:"fyi" as const;const body={type:"verification_result",turnId,agent:thread.agent,findings:result.findings,tokensUsed:result.tokensUsed} as unknown as JsonValue;let route:ReturnType<typeof goalRoute>|ReturnType<typeof humanInboxRoute>|ReturnType<typeof specialistInboxRoute>;if(turn.goalId){const goal=this.ledger.goal(turn.goalId);if(!goal||goal.owner!==thread.agent)throw new Error("verified committed Turn no longer matches its owner");route=goalRoute(turn.goalId);}else if(thread.role==="ceo"){route=humanInboxRoute();}else{if(thread.role!=="verifier"&&thread.role!=="audit")throw new Error("verified uncommitted Turn is not a Specialist");route=specialistInboxRoute(thread.role);}const mail:MailSnapshot={id:this.#mailId("verification",turnId,thread.agent,result),to:thread.agent,from:"verifier",level,...route,body,readAt:null};this.ledger.putMail(mail,"verifier");
+    const level=result.findings.length?"decision" as const:"fyi" as const;const body={type:"verification_result",turnId,agent:thread.agent,findings:result.findings,tokensUsed:result.tokensUsed} as unknown as JsonValue;let route:ReturnType<typeof goalRoute>|ReturnType<typeof ceoInboxRoute>|ReturnType<typeof specialistInboxRoute>;if(turn.goalId){const goal=this.ledger.goal(turn.goalId);if(!goal||goal.owner!==thread.agent)throw new Error("verified committed Turn no longer matches its owner");route=goalRoute(turn.goalId);}else if(thread.role==="ceo"){route=ceoInboxRoute();}else{if(thread.role!=="verifier"&&thread.role!=="audit")throw new Error("verified uncommitted Turn is not a Specialist");route=specialistInboxRoute(thread.role);}const mail:MailSnapshot={id:this.#mailId("verification",turnId,thread.agent,result),to:thread.agent,from:"verifier",level,...route,body,readAt:null};this.ledger.putMail(mail,"verifier");
     return result;
   }
 
@@ -60,7 +60,7 @@ export class VerificationPlane {
     const facts = this.ledger.eventsSince(sinceSeq).filter((event) => !["handoff.recorded", "runner.note"].includes(event.type));
     const result = await this.model.blindAudit(facts);
     this.#validate(result);
-    this.ledger.putMail({id:this.#mailId("audit",String(sinceSeq),"ceo",result),to:"ceo",from:"audit",level:result.findings.length?"decision":"fyi",...humanInboxRoute(),body:{type:"audit_result",sinceSeq,findings:result.findings as unknown as JsonValue,tokensUsed:result.tokensUsed},readAt:null},"audit");
+    this.ledger.putMail({id:this.#mailId("audit",String(sinceSeq),"ceo",result),to:"ceo",from:"audit",level:result.findings.length?"decision":"fyi",...ceoInboxRoute(),body:{type:"audit_result",sinceSeq,findings:result.findings as unknown as JsonValue,tokensUsed:result.tokensUsed},readAt:null},"audit");
     return result;
   }
 
