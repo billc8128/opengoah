@@ -1,0 +1,6 @@
+# Commits to ignore in git blame / git log -L.
+# Format: one full commit hash per line, comments start with '#'.
+# Use with: git blame --ignore-revs-file .git-blame-ignore-revs
+
+# b1cf79a style: reformat compressed sources with prettier
+b1cf79a4dd58ac7fbaf5bf2c7fe19cc2503c593b

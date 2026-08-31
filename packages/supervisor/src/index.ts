@@ -1,34 +1,24 @@
 import { randomUUID } from "node:crypto";
 import {
-  assertAgentHandoff,
-  assertHandoff,
-  assertTurnOutput,
   goalStream,
-  goalRoute,
   goalAutomaticTarget,
   goalCommitment,
   specialistAutomaticTarget,
   noGoalCommitment,
   type AgentCapability,
-  type AgentHandoff,
   type AgentProfile,
   type AgentRole,
   type Clock,
-  type CommittedTurnOutput,
   type DelegationRequest,
   type DelegationResult,
   type EventRecord,
   type AutomaticTarget,
   type GoalSnapshot,
-  type HandoffValidationRequest,
-  type HandoffValidationResult,
   type GoalCompletionRequest,
-  type GoalHandoff,
   type GoalPhase,
   type JsonValue,
   type Ledger,
   type MailSnapshot,
-  memoryStream,
   normalizeAssistantText,
   type ReassignmentRequest,
   type ReassignmentResult,
@@ -36,7 +26,6 @@ import {
   type RunnerHandle,
   type RunnerLiveEvent,
   type RunnerProfile,
-  type RunnerRpcMethod,
   type ScheduleSnapshot,
   type TeamMemberView,
   type TurnContext,
@@ -49,6 +38,21 @@ import {
   wakeStream,
 } from "goah-ledger-contract";
 import { composeActiveContext, selectRecoveryEvents, selectWorkingMemory } from "./context-view.js";
+import { commitTurnGoalWork, HandoffValidator, type HandoffCommitDeps } from "./handoff.js";
+import {
+  mailDeliveryAttempt,
+  recoveryRef,
+  scheduleTurnRecovery,
+  type TurnRecoveryDeps,
+} from "./recovery.js";
+import { dispatchAgentRpc, type AgentRpcDeps } from "./rpc-dispatch.js";
+import {
+  contextMail,
+  goalContext,
+  humanContext,
+  turnContextForWake,
+  type TurnContextDeps,
+} from "./turn-context.js";
 import { defaultTurnPrompt } from "./roles.js";
 
 export {
@@ -57,6 +61,7 @@ export {
   type ActiveContextInput,
   type ActiveContextView,
 } from "./context-view.js";
+export { deriveRecoveryViews, type RecoveryView } from "./recovery.js";
 
 /** Dispatches each wake to the runner selected by its opaque Runner Profile. */
 export class RunnerRouter implements Runner {
@@ -132,22 +137,11 @@ export class Supervisor {
   readonly #executions = new Map<string, Promise<void>>();
   readonly #agentExecutions = new Map<string, Promise<void>>();
   readonly #goalExecutionBarriers = new Map<string, Promise<void>>();
-  readonly #handoffValidations = new Map<
-    string,
-    {
-      turnId: string;
-      attemptId: number;
-      agent: string;
-      attempt: number;
-      leaseToken: string;
-      goalId: string;
-      goalRevision: number;
-      messageItemId: string;
-      message: string;
-      handoff: AgentHandoff;
-    }
-  >();
-  readonly #handoffAttemptSeq = new Map<string, number>();
+  readonly #handoff = new HandoffValidator();
+  #contextDeps!: TurnContextDeps;
+  #recoveryDeps!: TurnRecoveryDeps;
+  #rpcDeps!: AgentRpcDeps;
+  #handoffCommitDeps!: HandoffCommitDeps;
   readonly #liveTurns = new Map<string, LiveTurnState>();
   readonly #requestComponents = new Map<string, Map<string, string>>();
 
@@ -191,6 +185,73 @@ export class Supervisor {
     this.#runnerProfiles = new Map(
       (options.runnerProfiles ?? []).map((profile) => [profile.id, profile] as const),
     );
+    this.#contextDeps = {
+      ledger,
+      profiles: this.#profiles,
+      runnerProfiles: this.#runnerProfiles,
+      memoryTailChars: this.#memoryTailChars,
+      role: (agent) => this.#role(agent),
+      goal: (id) => this.#goal(id),
+      currentRoot: () => this.currentRoot(),
+      teamList: () => this.teamList(),
+    };
+    this.#recoveryDeps = {
+      ledger,
+      clock,
+      now: () => this.#now(),
+      role: (agent) => this.#role(agent),
+      retryPolicy: this.#retryPolicy,
+      enqueueTrigger: (agent, triggerRef, target) =>
+        this.#enqueueTrigger(agent, triggerRef, target),
+    };
+    this.#handoffCommitDeps = {
+      ledger,
+      now: () => this.#now(),
+      goal: (id) => this.#goal(id),
+      validator: this.#handoff,
+    };
+    this.#rpcDeps = {
+      ledger,
+      now: () => this.#now(),
+      profiles: this.#profiles,
+      handoff: this.#handoff,
+      role: (agent) => this.#role(agent),
+      goal: (id) => this.#goal(id),
+      validGoalOwner: (agent, goal) => this.#validGoalOwner(agent, goal),
+      knownAgent: (agent) => this.#knownAgent(agent),
+      teamList: () => this.teamList(),
+      createRootGoal: (objective, id, sourceTurnId) =>
+        this.createRootGoal(objective, id, sourceTurnId),
+      delegate: (request, actor, wakeId) => this.delegate(request, actor, wakeId),
+      reassignGoal: (request, actor, wakeId) => this.reassignGoal(request, actor, wakeId),
+      reviseChildGoal: (
+        id,
+        objective,
+        observationMethod,
+        verificationMethod,
+        actor,
+        reason,
+        evidence,
+        wakeId,
+        sourceTurnId,
+      ) =>
+        this.reviseChildGoal(
+          id,
+          objective,
+          observationMethod,
+          verificationMethod,
+          actor,
+          reason,
+          evidence,
+          wakeId,
+          sourceTurnId,
+        ),
+      transitionGoal: (id, phase, actor, scheduleMotion, sourceTurnId) =>
+        this.transitionGoal(id, phase, actor, scheduleMotion, sourceTurnId),
+      completeGoal: (request, actor, wakeId) => this.completeGoal(request, actor, wakeId),
+      planWake: (agent, at, reason, setBy, target) =>
+        this.planWake(agent, at, reason, setBy, target),
+    };
   }
 
   /**
@@ -447,7 +508,7 @@ export class Supervisor {
       activeGoal: newRoot ?? this.currentRoot(),
       goalCommitment: newRoot ? { goalId: newRoot.id, goalRevision: newRoot.revision } : null,
     };
-    const deliveredMail = this.#contextMail("ceo", newRoot?.id ?? null);
+    const deliveredMail = contextMail(this.#contextDeps, "ceo", newRoot?.id ?? null);
     const recordRevisionAtStart = newRoot
       ? (this.ledger.workRecord(newRoot.id)?.recordRevision ?? -1)
       : -1;
@@ -468,7 +529,7 @@ export class Supervisor {
     const turn = this.ledger.turn(turnId);
     if (!turn || turn.status !== "in_progress") throw new Error("active Turn not found");
     this.#liveTurns.delete(turn.id);
-    this.#clearHandoffState(turn.id);
+    this.#handoff.clear(turn.id);
     this.ledger.finishTurn(turn.id, "interrupted", { message: reason }, this.#now(), actor);
     await this.#cleanupTerminalTurn(turn);
     return this.ledger.turn(turn.id)!;
@@ -502,7 +563,15 @@ export class Supervisor {
             this.#recordTurnTrace(initial.id, leaseToken, trace.type, trace.data, agent),
           emitLive: (trace) => this.#recordLiveTrace(initial.id, leaseToken, trace),
           rpc: (method, params) =>
-            this.#agentRpcForTurn(initial.id, agent, turnContext, method, params, sourceWake?.id),
+            dispatchAgentRpc(
+              this.#rpcDeps,
+              initial.id,
+              agent,
+              turnContext,
+              method,
+              params,
+              sourceWake?.id,
+            ),
         });
         this.#handles.set(initial.id, handle);
         if (handle.pid) this.ledger.attachTurnProcess(initial.id, leaseToken, handle.pid);
@@ -570,13 +639,20 @@ export class Supervisor {
             continue;
           }
           this.#failTurn(current.id, result.reason);
-          this.#scheduleTurnRecovery(sourceWake, sourceWakeTriggers, current.id, agent);
+          scheduleTurnRecovery(
+            this.#recoveryDeps,
+            sourceWake,
+            sourceWakeTriggers,
+            current.id,
+            agent,
+          );
           return;
         }
         const responseItem = this.#finalAssistantItem(current.id, result.finalMessageId);
         if (turnContext.goalCommitment) {
           if (!result.handoff) throw new Error("committed Turn requires Handoff");
-          this.#commitTurnGoalWork(
+          commitTurnGoalWork(
+            this.#handoffCommitDeps,
             current.id,
             agent,
             turnContext,
@@ -610,7 +686,13 @@ export class Supervisor {
         }
         if (current?.status === "in_progress") {
           this.#failTurn(current.id, error instanceof Error ? error.message : String(error));
-          this.#scheduleTurnRecovery(sourceWake, sourceWakeTriggers, current.id, agent);
+          scheduleTurnRecovery(
+            this.#recoveryDeps,
+            sourceWake,
+            sourceWakeTriggers,
+            current.id,
+            agent,
+          );
         }
         return;
       }
@@ -653,10 +735,10 @@ export class Supervisor {
     recordRevisionAtStart: number,
   ): Promise<void> {
     if (replaced) {
-      this.#clearHandoffState(replaced.id);
+      this.#handoff.clear(replaced.id);
       if (!(await this.#cleanupTerminalTurn(replaced))) {
         this.#failTurn(turn.id, "previous Runner cleanup did not complete");
-        this.#scheduleTurnRecovery(null, [], turn.id, "ceo");
+        scheduleTurnRecovery(this.#recoveryDeps, null, [], turn.id, "ceo");
         return;
       }
     } else await this.#awaitAgentExecution("ceo");
@@ -665,7 +747,7 @@ export class Supervisor {
       .filter((candidate) => candidate.status !== "in_progress" && candidate.runnerPid !== null)) {
       if (!(await this.#cleanupTerminalTurn(fence))) {
         this.#failTurn(turn.id, "previous Runner cleanup did not complete");
-        this.#scheduleTurnRecovery(null, [], turn.id, "ceo");
+        scheduleTurnRecovery(this.#recoveryDeps, null, [], turn.id, "ceo");
         return;
       }
     }
@@ -680,7 +762,7 @@ export class Supervisor {
       activated,
       "ceo",
       context,
-      () => this.#humanContext(turn.id, "ceo", mail),
+      () => humanContext(this.#contextDeps, turn.id, "ceo", mail),
       null,
       mail.map((item) => item.id),
       recordRevisionAtStart,
@@ -717,122 +799,12 @@ export class Supervisor {
     if (running) await running;
   }
 
-  #humanContext(turnId: string, agent: string, mail: MailSnapshot[]): JsonValue {
-    const turn = this.ledger.turn(turnId)!;
-    const current = this.#turnHistory(turn.id);
-    const turnSourceSeqs = this.ledger
-      .readStream(`turn:${turn.id}`)
-      .filter((event) => event.type === "item.user_message.started")
-      .map((event) => event.seq);
-    if (turn.goalId !== null && turn.goalRevision !== null) {
-      const goal = this.#goal(turn.goalId);
-      const context: TurnContext = {
-        trigger: { kind: "user_message" },
-        activeGoal: goal,
-        goalCommitment: { goalId: turn.goalId, goalRevision: turn.goalRevision },
-      };
-      const base = this.#loadContext(
-        { ...goalAutomaticTarget(agent, turn.goalId), attempt: turn.attempt },
-        context,
-        mail,
-        [],
-      ) as Record<string, JsonValue>;
-      const sourceSeqs = Array.isArray(base.sourceSeqs)
-        ? base.sourceSeqs.filter((value): value is number => typeof value === "number")
-        : [];
-      return {
-        ...base,
-        text: `${String(base.text ?? "")}\n\n# Current Turn\n\n${current}`,
-        sourceSeqs: [...new Set([...sourceSeqs, ...turnSourceSeqs])].sort((a, b) => a - b),
-      } as unknown as JsonValue;
-    }
-    const profile = this.#profiles.get(agent) ?? { agent, role: "ceo" as const };
-    const runnerProfile = this.#runnerProfiles.get(profile.runnerProfile ?? "default");
-    const recent = this.ledger
-      .turns(turn.threadId)
-      .filter((candidate) => candidate.id !== turn.id && candidate.status === "completed")
-      .slice(-8)
-      .flatMap((candidate) =>
-        this.ledger
-          .turnItems(candidate.id)
-          .filter((item) => item.type === "user_message" || item.type === "assistant_message")
-          .map(
-            (item) =>
-              `${item.type === "user_message" ? "Human" : "Assistant"}: ${String((item.data as { text?: unknown }).text ?? "")}`,
-          ),
-      );
-    const sourceSeqs = [...turnSourceSeqs, ...this.#mailSourceSeqs(mail)];
-    const incoming = mail.map(
-      (item) => `- [${item.level}] ${item.id} from ${item.from}: ${boundedJson(item.body)}`,
-    );
-    const activeGoal = this.currentRoot();
-    const context: TurnContext = {
-      trigger: { kind: "user_message" },
-      activeGoal,
-      goalCommitment: null,
-    };
-    const goalText = activeGoal
-      ? [
-          `# Active Goal context\n\n[${activeGoal.id}] ${activeGoal.objective} (phase: ${activeGoal.phase}, revision: ${activeGoal.revision}). This is visible context, not a commitment to advance it.`,
-        ]
-      : [];
-    return {
-      text: [
-        ...(recent.length ? [`# Recent conversation\n\n${recent.join("\n")}`] : []),
-        ...goalText,
-        ...(incoming.length ? [`# Incoming\n\n${incoming.join("\n")}`] : []),
-        `# Current Turn\n\n${current}`,
-      ].join("\n\n"),
-      sourceSeqs,
-      activeGoal,
-      capabilities: profile.capabilities ?? defaultCapabilities(profile.role),
-      systemPrompt: profile.systemPrompt ?? defaultTurnPrompt(profile.role, agent, context),
-      ...(runnerProfile ? { runnerProfile } : {}),
-    } as unknown as JsonValue;
-  }
-
-  #goalContext(
-    wake: WakeSnapshot,
-    turn: TurnContext,
-    turnId: string,
-    mail: MailSnapshot[],
-    wakeTriggers: WakeTriggerSnapshot[],
-  ): JsonValue {
-    const base = this.#loadContext(wake, turn, mail, wakeTriggers);
-    if (!base || typeof base !== "object" || Array.isArray(base)) return base;
-    const value = base as Record<string, JsonValue>;
-    const history = this.#turnHistory(turnId);
-    return {
-      ...value,
-      ...(history
-        ? { text: `${String(value.text ?? "")}\n\n# Current Turn retry history\n\n${history}` }
-        : {}),
-    };
-  }
-
   #threadAgent(threadId: string): string {
     const thread = this.ledger.thread(threadId);
     if (!thread) throw new Error("Turn Thread not found");
     return thread.agent;
   }
 
-  #turnHistory(turnId: string): string {
-    const items = this.ledger.turnItems(turnId).map((item) => {
-      const data = item.data as { text?: unknown; tool?: unknown; result?: unknown };
-      if (item.type === "user_message") return `Human: ${String(data.text ?? "")}`;
-      if (item.type === "assistant_message") return `Assistant: ${String(data.text ?? "")}`;
-      if (item.type === "tool_call")
-        return `Tool call: ${String(data.tool ?? "")} ${JSON.stringify(item.data)}`;
-      if (item.type === "tool_result")
-        return `Tool result: ${JSON.stringify(data.result ?? item.data)}`;
-      return `${item.type}: ${JSON.stringify(item.data)}`;
-    });
-    const facts = this.ledger
-      .readStream(`turn:${turnId}`)
-      .filter((event) => event.type === "turn.retry_started")
-      .map((event) => `${event.type}: ${JSON.stringify(event.data)}`);
-    return [...items, ...facts].join("\n");
-  }
   #assistantMessageEvent(turnId: string, messageItemId: string): EventRecord | undefined {
     return this.ledger.readStream(`turn:${turnId}`).findLast((candidate) => {
       if (
@@ -885,7 +857,7 @@ export class Supervisor {
     const current = this.ledger.turn(turnId);
     if (!current || current.status !== "in_progress") return;
     this.#liveTurns.delete(turnId);
-    this.#clearHandoffState(turnId);
+    this.#handoff.clear(turnId);
     this.ledger.finishTurn(turnId, "failed", { message: reason }, this.#now(), "supervisor");
   }
   #preemptGoalTurn(goalId: string, reason: string): void {
@@ -894,7 +866,7 @@ export class Supervisor {
       .find((candidate) => candidate.status === "in_progress" && candidate.goalId === goalId);
     if (!turn) return;
     this.#liveTurns.delete(turn.id);
-    this.#clearHandoffState(turn.id);
+    this.#handoff.clear(turn.id);
     this.ledger.finishTurn(turn.id, "interrupted", { message: reason }, this.#now(), "supervisor");
     void this.#cleanupTerminalTurn(turn);
   }
@@ -925,51 +897,6 @@ export class Supervisor {
       data: { message: error instanceof Error ? error.message : String(error) },
       ignorable: true,
     });
-  }
-
-  #scheduleTurnRecovery(
-    sourceWake: WakeSnapshot | null,
-    triggers: WakeTriggerSnapshot[],
-    turnId: string,
-    agent: string,
-  ): void {
-    const turn = this.ledger.turn(turnId);
-    if (!turn) return;
-    const role = this.#role(agent);
-    const goal = turn.goalId ? this.ledger.goal(turn.goalId) : null;
-    if (
-      (turn.goalId && (!goal || goal.phase !== "active" || goal.owner !== agent)) ||
-      (!turn.goalId && (turn.triggerKind !== "wake" || (role !== "verifier" && role !== "audit")))
-    )
-      return;
-    const prior = Math.max(
-      0,
-      ...triggers.map((trigger) => parseRecoveryTrigger(trigger.triggerRef)?.attempt ?? 0),
-    );
-    const next = prior + 1;
-    if (next < this.#retryPolicy.maxAttempts) {
-      const delay = this.#retryPolicy.baseDelayMs * 2 ** prior;
-      const target = goal
-        ? goalAutomaticTarget(agent, goal.id)
-        : specialistAutomaticTarget(agent, role as "verifier" | "audit");
-      this.ledger.putSchedule(
-        {
-          id: recoveryScheduleId(turnId, next),
-          ...target,
-          nextWakeAt: new Date(this.clock.now().getTime() + delay).toISOString(),
-          reason: recoveryRef(turnId),
-          setBy: "supervisor",
-          status: "pending",
-          resolvedAt: null,
-        },
-        "supervisor",
-        sourceWake?.id,
-      );
-    } else if (role === "child" && goal?.parentId) {
-      const parent = this.ledger.goal(goal.parentId);
-      if (parent?.phase === "active")
-        this.#enqueueTrigger(parent.owner, childRetryExhaustedRef(turnId), { goalId: parent.id });
-    }
   }
 
   #closeStreamingItems(turnId: string): void {
@@ -1486,7 +1413,7 @@ export class Supervisor {
       const wakeTriggers = this.ledger
         .wakeTriggers(currentWake.id)
         .filter((trigger) => trigger.status === "pending");
-      const turnContext = this.#turnContext(currentWake, wakeTriggers);
+      const turnContext = turnContextForWake(this.#contextDeps, currentWake, wakeTriggers);
       if (!this.#validExecution(currentWake.agent, turnContext)) {
         this.ledger.cancelWake(currentWake.id, this.#now());
         return this.#wake(currentWake.id);
@@ -1513,7 +1440,8 @@ export class Supervisor {
       this.ledger.putThread({ ...thread, updatedAt: this.#now() }, "supervisor");
       this.ledger.startTurnFromWake(currentWake.id, execution, now);
       createdTurnId = execution.id;
-      const deliveredMail = this.#contextMail(
+      const deliveredMail = contextMail(
+        this.#contextDeps,
         currentWake.agent,
         currentWake.targetKind === "goal" ? currentWake.goalId : null,
       );
@@ -1534,7 +1462,14 @@ export class Supervisor {
         currentWake.agent,
         turnContext,
         () =>
-          this.#goalContext(currentWake, turnContext, execution.id, deliveredMail, wakeTriggers),
+          goalContext(
+            this.#contextDeps,
+            currentWake,
+            turnContext,
+            execution.id,
+            deliveredMail,
+            wakeTriggers,
+          ),
         currentWake,
         deliveredMailIds,
         revision,
@@ -1742,202 +1677,6 @@ export class Supervisor {
     if (turn.trigger.kind === "user_message") return agent === "ceo" && role === "ceo";
     return role === "verifier" || role === "audit";
   }
-  #commitTurnGoalWork(
-    turnId: string,
-    agent: string,
-    turn: TurnContext,
-    responseItem: TurnItemSnapshot,
-    raw: TurnOutput,
-    sourceWakeId: string | null,
-    mailIds: string[],
-    revisionAtStart: number,
-  ): void {
-    const binding = turn.goalCommitment!;
-    const goal = this.#goal(binding.goalId);
-    if (goal.revision !== binding.goalRevision)
-      throw new Error("Goal revision changed during the Turn");
-    const record = this.ledger.workRecord(goal.id);
-    if (
-      !record ||
-      record.recordRevision <= revisionAtStart ||
-      record.updatedInTurn !== turnId ||
-      record.goalRevision !== goal.revision
-    )
-      throw new Error("committed Turn must update its Work Record before handoff");
-    assertTurnOutput(raw);
-    const validation = this.#handoffValidations.get(raw.validationToken);
-    const execution = this.ledger.turn(turnId);
-    const response = normalizeAssistantText(
-      String((responseItem.data as { text?: unknown }).text ?? ""),
-    );
-    if (
-      !validation ||
-      !execution ||
-      validation.turnId !== turnId ||
-      validation.attemptId !== raw.validationAttemptId ||
-      this.#handoffAttemptSeq.get(turnId) !== raw.validationAttemptId ||
-      validation.agent !== agent ||
-      validation.attempt !== execution.attempt ||
-      validation.leaseToken !== execution.leaseToken ||
-      validation.goalId !== goal.id ||
-      validation.goalRevision !== goal.revision ||
-      validation.messageItemId !== responseItem.id ||
-      validation.message !== response ||
-      validation.handoff.outcome !== raw.handoff.outcome ||
-      !isSameNumbers(validation.handoff.evidence, raw.handoff.evidence)
-    )
-      throw new Error("Handoff validation token is stale or does not match this Turn result");
-    const output = this.#committedTurnOutput(raw, binding);
-    assertHandoff(output.handoff);
-    const now = this.#now();
-    const item: TurnItemSnapshot = {
-      id: randomUUID(),
-      turnId,
-      ordinal: this.ledger.turnItems(turnId).length + 1,
-      type: "handoff",
-      status: "completed",
-      data: output.handoff as unknown as JsonValue,
-      createdAt: now,
-      completedAt: now,
-    };
-    this.ledger.commitHandoff({
-      agent,
-      turnId,
-      sourceWakeId,
-      mailIds,
-      ts: now,
-      output,
-      responseItemId: responseItem.id,
-      item,
-    });
-    this.#clearHandoffState(turnId);
-  }
-
-  #committedTurnOutput(
-    output: TurnOutput,
-    binding: NonNullable<TurnContext["goalCommitment"]>,
-  ): CommittedTurnOutput {
-    const record = this.ledger.workRecord(binding.goalId);
-    if (!record) throw new Error("Goal Work Record is missing");
-    const handoff: GoalHandoff = {
-      goalId: binding.goalId,
-      goalRevision: binding.goalRevision,
-      recordRevision: record.recordRevision,
-      outcome: output.handoff.outcome,
-      evidence: output.handoff.evidence,
-    };
-    return { handoff };
-  }
-
-  #turnContext(
-    wake: WakeSnapshot,
-    triggers = this.ledger.wakeTriggers(wake.id).filter((trigger) => trigger.status === "pending"),
-  ): TurnContext {
-    const trigger = { kind: "wake" as const, reasons: triggers.map((item) => item.triggerRef) };
-    if (wake.targetKind === "specialist")
-      return { trigger, activeGoal: null, goalCommitment: null };
-    const goal = this.#goal(wake.goalId);
-    return {
-      trigger,
-      activeGoal: goal,
-      goalCommitment: { goalId: goal.id, goalRevision: goal.revision },
-    };
-  }
-
-  #loadContext(
-    wake: AutomaticTarget & { attempt: number },
-    turn: TurnContext,
-    mail: MailSnapshot[],
-    wakeTriggers: WakeTriggerSnapshot[],
-  ): JsonValue {
-    const profile: AgentProfile = this.#profiles.get(wake.agent) ?? {
-      agent: wake.agent,
-      role: "child",
-    };
-    const role = profile.role;
-    const capabilities = profile.capabilities ?? defaultCapabilities(role);
-    const runnerProfile = this.#runnerProfiles.get(profile.runnerProfile ?? "default");
-    const goals = role === "ceo" ? this.ledger.goals() : this.ledger.goalsForOwner(wake.agent);
-    const handoff = turn.goalCommitment
-      ? this.ledger.lastGoalHandoff(turn.goalCommitment.goalId)
-      : null;
-    const recoveryIds = [
-      ...new Set(
-        wakeTriggers.flatMap((trigger) => {
-          const parsed = parseRecoveryTrigger(trigger.triggerRef);
-          const exhausted = childRetryExhaustedTurnId(trigger.triggerRef);
-          return parsed ? [parsed.turnId] : exhausted ? [exhausted] : [];
-        }),
-      ),
-    ];
-    const recoveryEvents = recoveryIds.flatMap((recoveryId) =>
-      selectRecoveryEvents(
-        this.ledger.turn(recoveryId)
-          ? this.ledger.readStream(`turn:${recoveryId}`)
-          : this.ledger.eventsForWake(recoveryId),
-      ),
-    );
-    const teamHandoffs =
-      role === "ceo"
-        ? [...this.ledger.eventsSince(0, ["handoff.recorded"])]
-            .reverse()
-            .filter(
-              (event, index, all) =>
-                all.findIndex((candidate) => candidate.actor === event.actor) === index,
-            )
-        : [];
-    const workingMemory = selectWorkingMemory(
-      this.ledger.readStream(memoryStream(wake.agent)),
-      this.#memoryTailChars,
-    );
-    const active = composeActiveContext({
-      role,
-      capabilities,
-      systemPrompt: profile.systemPrompt ?? defaultTurnPrompt(role, wake.agent, turn),
-      wake,
-      wakeTriggers,
-      goals,
-      mail,
-      lastHandoff: handoff,
-      teamHandoffs,
-      team: role === "ceo" ? this.teamList() : [],
-      recoveryEvents,
-      workingMemory,
-    });
-    const records = this.ledger.workRecords();
-    const currentRecord = turn.goalCommitment
-      ? this.ledger.workRecord(turn.goalCommitment.goalId)
-      : null;
-    const currentGoal = turn.goalCommitment ? this.ledger.goal(turn.goalCommitment.goalId) : null;
-    const parentRecord = currentGoal?.parentId
-      ? this.ledger.workRecord(currentGoal.parentId)
-      : null;
-    const recordIndex = records.map(
-      (record) =>
-        `- /goals/${record.goalId}.md · r${record.recordRevision} · ${this.ledger.goal(record.goalId)?.owner ?? "unknown"} · ${this.ledger.goal(record.goalId)?.phase ?? "unknown"}`,
-    );
-    const workText = [
-      `# Shared Work Record Index\n\n${recordIndex.join("\n")}`,
-      ...(currentRecord ? [`# Your Work Record\n\n${currentRecord.content}`] : []),
-      ...(parentRecord ? [`# Parent Work Record\n\n${parentRecord.content}`] : []),
-    ].join("\n\n");
-    return {
-      ...active,
-      text: `${active.text}\n\n${workText}`,
-      activeGoal: turn.activeGoal,
-      goalCommitment: turn.goalCommitment,
-      sourceSeqs: [
-        ...new Set([
-          ...active.sourceSeqs,
-          ...this.#mailSourceSeqs(mail),
-          ...records.map((record) => record.lastEventSeq),
-        ]),
-      ].sort((a, b) => a - b),
-      workRecord: currentRecord,
-      sharedWorkRecords: records,
-      ...(runnerProfile ? { runnerProfile } : {}),
-    } as unknown as JsonValue;
-  }
 
   #wake(id: string): WakeSnapshot {
     const value = this.ledger.wake(id);
@@ -1969,475 +1708,6 @@ export class Supervisor {
   }
   #runnerProfileId(agent: string): string {
     return this.#profiles.get(agent)?.runnerProfile ?? "default";
-  }
-  #contextMail(agent: string, goalId: string | null): MailSnapshot[] {
-    const selected: MailSnapshot[] = [];
-    let used = 0;
-    const role = this.#role(agent);
-    const matches = (mail: MailSnapshot) =>
-      goalId
-        ? mail.routeKind === "goal" && mail.goalId === goalId
-        : role === "ceo"
-          ? mail.routeKind === "ceo_inbox"
-          : mail.routeKind === "specialist_inbox" && mail.specialistRole === role;
-    for (const mail of this.ledger.unreadMail(agent).filter(matches)) {
-      const cost = Math.min(JSON.stringify(mail.body).length, 2_000) + 128;
-      if (selected.length >= 20 || (selected.length > 0 && used + cost > this.#memoryTailChars))
-        break;
-      selected.push(mail);
-      used += cost;
-    }
-    return selected;
-  }
-  #mailSourceSeqs(mail: MailSnapshot[]): number[] {
-    const ids = new Set(mail.map((item) => item.id));
-    if (!ids.size) return [];
-    return this.ledger
-      .eventsSince(0, ["mail.put"])
-      .filter((event) => {
-        const data =
-          event.data && typeof event.data === "object" && !Array.isArray(event.data)
-            ? (event.data as { snapshot?: { id?: unknown } })
-            : {};
-        return typeof data.snapshot?.id === "string" && ids.has(data.snapshot.id);
-      })
-      .map((event) => event.seq);
-  }
-
-  async #agentRpcForTurn(
-    turnId: string,
-    agent: string,
-    context: TurnContext,
-    method: RunnerRpcMethod,
-    params: JsonValue,
-    sourceWakeId?: string,
-  ): Promise<JsonValue> {
-    const handoffAttemptId =
-      method === "goal.handoff.validate" ? this.#beginHandoffAttempt(turnId) : null;
-    const execution = this.ledger.turn(turnId);
-    if (
-      !execution ||
-      execution.status !== "in_progress" ||
-      !execution.leaseToken ||
-      !execution.leaseUntil ||
-      execution.leaseUntil < this.#now()
-    )
-      throw new Error("stale Turn RPC rejected");
-    if (context.goalCommitment) {
-      const goal = this.ledger.goal(context.goalCommitment.goalId);
-      const thread = this.ledger.thread(execution.threadId);
-      if (
-        !goal ||
-        goal.phase !== "active" ||
-        goal.revision !== context.goalCommitment.goalRevision ||
-        goal.owner !== agent ||
-        execution.goalId !== goal.id ||
-        execution.goalRevision !== goal.revision ||
-        thread?.agent !== agent
-      )
-        throw new Error("stale committed Turn RPC rejected");
-    }
-    const input = asRecord(params);
-    if (method === "goal.handoff.validate") {
-      const candidate = String(input.candidateMessage ?? "");
-      const candidateMessageId = String(input.candidateMessageId ?? "");
-      this.ledger.appendEvent({
-        streamId: `turn:${turnId}`,
-        ts: this.#now(),
-        actor: agent,
-        type: "rpc.goal.handoff.validate",
-        data: {
-          attemptId: handoffAttemptId!,
-          handoff: input.handoff ?? null,
-          candidateMessageId,
-          candidateMessagePresent: Boolean(candidate.trim()),
-          candidateMessageChars: candidate.length,
-        },
-        ignorable: true,
-      });
-      return this.#validateHandoffDraft(
-        turnId,
-        handoffAttemptId!,
-        agent,
-        execution,
-        context,
-        input,
-      ) as unknown as JsonValue;
-    }
-    const profile = this.#profiles.get(agent) ?? { agent, role: "child" as const };
-    const allowed = new Set(profile.capabilities ?? defaultCapabilities(profile.role));
-    if (!allowed.has(method))
-      throw new Error(`${profile.role} agent is not allowed to call ${method}`);
-    if (!context.goalCommitment && goalBoundCapability(method))
-      throw new Error(`${method} requires a Goal commitment`);
-    this.ledger.appendEvent({
-      streamId: `turn:${turnId}`,
-      ts: this.#now(),
-      actor: agent,
-      type: `rpc.${method}`,
-      data: params,
-      ignorable: true,
-    });
-    if (method === "ledger.search")
-      return this.ledger.searchEvents(
-        String(input.query),
-        Number(input.limit ?? 20),
-      ) as unknown as JsonValue;
-    if (method === "team.list") return this.teamList() as unknown as JsonValue;
-    if (method === "goal.get") {
-      const visibleId = context.goalCommitment?.goalId ?? context.activeGoal?.id;
-      return (visibleId ? this.ledger.goal(visibleId) : null) as unknown as JsonValue;
-    }
-    if (method === "goal.create") {
-      if (context.trigger.kind !== "user_message" || context.goalCommitment || agent !== "ceo")
-        throw new Error("Root Goal creation requires an uncommitted direct CEO Turn");
-      const goal = this.createRootGoal(
-        String(input.objective),
-        typeof input.id === "string" ? input.id : undefined,
-        turnId,
-      );
-      context.activeGoal = goal;
-      context.goalCommitment = { goalId: goal.id, goalRevision: goal.revision };
-      this.ledger.commitTurnToGoal(turnId, context.goalCommitment, "supervisor");
-      return { goal, goalCommitment: context.goalCommitment } as unknown as JsonValue;
-    }
-    if (method === "goal.work") {
-      if (context.trigger.kind !== "user_message" || context.goalCommitment)
-        throw new Error("work_on_goal requires an uncommitted direct CEO Turn");
-      const goal = this.#goal(String(input.goalId));
-      if (goal.phase !== "active" || !this.#validGoalOwner(agent, goal))
-        throw new Error("work_on_goal requires the active owned Root Goal");
-      context.activeGoal = goal;
-      context.goalCommitment = { goalId: goal.id, goalRevision: goal.revision };
-      this.ledger.commitTurnToGoal(turnId, context.goalCommitment, "supervisor");
-      return { goal, goalCommitment: context.goalCommitment } as unknown as JsonValue;
-    }
-    if (method === "work_record.list") return this.ledger.workRecords() as unknown as JsonValue;
-    if (method === "work_record.read")
-      return this.ledger.workRecord(
-        String(input.goalId ?? context.goalCommitment?.goalId ?? context.activeGoal?.id ?? ""),
-      ) as unknown as JsonValue;
-    if (method === "work_record.history")
-      return this.ledger.workRecordHistory(
-        String(input.goalId ?? context.goalCommitment?.goalId ?? context.activeGoal?.id ?? ""),
-      ) as unknown as JsonValue;
-    if (method === "work_record.diff")
-      return this.ledger.workRecordDiff(
-        String(input.goalId ?? context.goalCommitment?.goalId ?? context.activeGoal?.id ?? ""),
-        Number(input.fromRevision),
-        Number(input.toRevision),
-      ) as unknown as JsonValue;
-    if (method === "work_record.search")
-      return this.ledger.searchWorkRecords(
-        String(input.query),
-        Number(input.limit ?? 20),
-      ) as unknown as JsonValue;
-    if (method === "work_record.update") {
-      const binding = context.goalCommitment!;
-      return this.ledger.updateWorkRecord(
-        {
-          goalId: binding.goalId,
-          goalRevision: binding.goalRevision,
-          expectedRevision: Number(input.expectedRevision),
-          content: String(input.content),
-          reason: String(input.reason),
-          evidence: numberArray(input.evidence),
-          turnId,
-          ...(sourceWakeId ? { sourceWakeId } : {}),
-        },
-        agent,
-      ) as unknown as JsonValue;
-    }
-    if (method === "goal.delegate") {
-      const binding = context.goalCommitment!;
-      if (String(input.parentGoalId) !== binding.goalId)
-        throw new Error("delegation parent must be the Goal committed to this Turn");
-      return this.delegate(
-        {
-          id: String(input.id),
-          parentGoalId: binding.goalId,
-          expectedParentRevision: Number(input.expectedParentRevision),
-          childGoal: asChildGoal(input.childGoal),
-          brief: (input.brief ?? null) as JsonValue,
-          reason: String(input.reason),
-          evidence: numberArray(input.evidence),
-          sourceTurnId: turnId,
-        },
-        agent,
-        sourceWakeId,
-      ) as unknown as JsonValue;
-    }
-    if (method === "goal.reassign") {
-      const goal = this.#goal(String(input.goalId));
-      if (goal.parentId !== context.goalCommitment!.goalId)
-        throw new Error("reassignment target must be a child of the Goal committed to this Turn");
-      return (await this.reassignGoal(
-        {
-          id: String(input.id),
-          goalId: goal.id,
-          expectedGoalRevision: Number(input.expectedGoalRevision),
-          newOwner: String(input.newOwner),
-          brief: (input.brief ?? null) as JsonValue,
-          reason: String(input.reason),
-          evidence: numberArray(input.evidence),
-          sourceTurnId: turnId,
-        },
-        agent,
-        sourceWakeId,
-      )) as unknown as JsonValue;
-    }
-    if (method === "goal.revise")
-      return this.reviseChildGoal(
-        String(input.goalId),
-        String(input.objective),
-        String(input.observationMethod),
-        String(input.verificationMethod),
-        agent,
-        String(input.reason),
-        numberArray(input.evidence),
-        sourceWakeId,
-        turnId,
-      ) as unknown as JsonValue;
-    if (method === "goal.pause" || method === "goal.resume") {
-      const goal = this.#goal(String(input.goalId));
-      const directRoot =
-        !context.goalCommitment &&
-        context.trigger.kind === "user_message" &&
-        goal.parentId === null;
-      if (!context.goalCommitment && !directRoot)
-        throw new Error(`${method} requires a Goal commitment`);
-      const next = this.transitionGoal(
-        goal.id,
-        method === "goal.pause" ? "paused" : "active",
-        directRoot ? "human" : agent,
-        !directRoot,
-        turnId,
-      );
-      if (method === "goal.resume" && directRoot) {
-        context.activeGoal = next;
-        context.goalCommitment = { goalId: next.id, goalRevision: next.revision };
-        this.ledger.commitTurnToGoal(turnId, context.goalCommitment, "supervisor");
-        return { goal: next, goalCommitment: context.goalCommitment } as unknown as JsonValue;
-      }
-      return next as unknown as JsonValue;
-    }
-    if (method === "goal.complete") {
-      const goal = this.#goal(String(input.goalId));
-      const directRoot =
-        !context.goalCommitment &&
-        context.trigger.kind === "user_message" &&
-        goal.parentId === null;
-      if (!context.goalCommitment && !directRoot)
-        throw new Error("goal.complete requires a Goal commitment or direct Human Root authority");
-      return this.completeGoal(
-        {
-          goalId: goal.id,
-          revision: Number(input.revision),
-          reason: String(input.reason),
-          evidence: numberArray(input.evidence),
-          sourceTurnId: turnId,
-        },
-        directRoot ? "human" : agent,
-        sourceWakeId,
-      ) as unknown as JsonValue;
-    }
-    if (method === "mail.send") {
-      const to = String(input.to);
-      if (!this.#knownAgent(to))
-        throw new Error(`unknown Agent recipient: ${to}; Mail addresses Agents only`);
-      const goalId = String(input.goalId ?? "").trim();
-      if (!goalId) throw new Error("Agent Mail requires a Goal route");
-      const goal = this.#goal(goalId);
-      if (!this.#validGoalOwner(to, goal))
-        throw new Error("Agent Mail Goal route does not match the recipient role and ownership");
-      const mail: MailSnapshot = {
-        id: randomUUID(),
-        to,
-        from: agent,
-        level: String(input.level) as MailSnapshot["level"],
-        ...goalRoute(goalId),
-        body: (input.body ?? null) as JsonValue,
-        readAt: null,
-      };
-      this.ledger.putMail(mail, agent, sourceWakeId);
-      return mail as unknown as JsonValue;
-    }
-    if (method === "schedule.set")
-      return (this.planWake(
-        agent,
-        String(input.at),
-        String(input.reason),
-        agent,
-        context.goalCommitment ?? undefined,
-      ) ?? { scheduled: true }) as unknown as JsonValue;
-    if (method === "goal.put") {
-      const next = input.goal as unknown as GoalSnapshot;
-      if (!this.#validGoalOwner(next.owner, next))
-        throw new Error("Goal owner role does not match Root/Child position");
-      const current = this.ledger.goal(next.id);
-      const operation = !current
-        ? "create"
-        : current.phase !== next.phase
-          ? next.phase === "paused"
-            ? "pause"
-            : next.phase === "active"
-              ? "resume"
-              : next.phase === "blocked"
-                ? "block"
-                : "complete"
-          : current.owner !== next.owner
-            ? "reassign"
-            : "revise";
-      this.ledger.putGoal(next, agent, sourceWakeId, {
-        operation,
-        reason: String(input.reason ?? "Advanced Goal mutation"),
-        evidence: numberArray(input.evidence ?? []),
-        sourceTurnId: turnId,
-        ...(sourceWakeId ? { sourceWakeId } : {}),
-      });
-      return input.goal as JsonValue;
-    }
-    if (method === "memory.append") {
-      const note = String(input.note ?? "").trim();
-      if (!note) throw new Error("memory note cannot be empty");
-      const event = this.ledger.appendEvent({
-        streamId: memoryStream(agent),
-        ts: this.#now(),
-        actor: agent,
-        type: "memory.appended",
-        data: { note, turnId },
-      });
-      return { seq: event.seq } as unknown as JsonValue;
-    }
-    throw new Error(`unsupported Agent capability: ${method}`);
-  }
-
-  #validateHandoffDraft(
-    turnId: string,
-    attemptId: number,
-    agent: string,
-    execution: TurnSnapshot,
-    context: TurnContext,
-    input: Record<string, JsonValue>,
-  ): HandoffValidationResult {
-    if (!context.goalCommitment || execution.goalId === null)
-      return {
-        accepted: false,
-        fatal: true,
-        attemptId,
-        issues: [
-          { code: "turn_not_committed", message: "This Turn no longer has a Goal commitment." },
-        ],
-      };
-    const request: HandoffValidationRequest = {
-      handoff: (input.handoff ?? null) as unknown as HandoffValidationRequest["handoff"],
-      candidateMessageId: String(input.candidateMessageId ?? "").trim(),
-      candidateMessage: String(input.candidateMessage ?? ""),
-    };
-    const issues: import("goah-ledger-contract").HandoffValidationIssue[] = [];
-    try {
-      assertAgentHandoff(request.handoff);
-    } catch {
-      issues.push({
-        code: "handoff_invalid",
-        message: "Handoff requires a valid outcome and at least one evidence event.",
-      });
-    }
-    const message = normalizeAssistantText(request.candidateMessage);
-    const existingMessage = request.candidateMessageId
-      ? this.ledger.turnItems(turnId).find((item) => item.id === request.candidateMessageId)
-      : undefined;
-    if (!request.candidateMessageId || !message)
-      issues.push({
-        code: "message_missing",
-        message:
-          "This committed Turn needs a readable assistant message Item before it can finish.",
-      });
-    else if (
-      existingMessage &&
-      (existingMessage.type !== "assistant_message" ||
-        existingMessage.status !== "completed" ||
-        normalizeAssistantText(String((existingMessage.data as { text?: unknown }).text ?? "")) !==
-          message)
-    )
-      issues.push({
-        code: "message_mismatch",
-        message: "Handoff message identity does not match its assistant Item.",
-      });
-    const goal = this.ledger.goal(context.goalCommitment.goalId);
-    if (
-      !goal ||
-      goal.phase !== "active" ||
-      goal.owner !== agent ||
-      goal.revision !== context.goalCommitment.goalRevision
-    )
-      return {
-        accepted: false,
-        fatal: true,
-        attemptId,
-        issues: [
-          {
-            code: "goal_fence_changed",
-            message:
-              "Goal ownership, phase, or revision changed; this Turn can no longer finish against the old commitment.",
-          },
-        ],
-      };
-    const record = this.ledger.workRecord(goal.id);
-    if (!record || record.updatedInTurn !== turnId || record.goalRevision !== goal.revision)
-      issues.push({
-        code: "work_record_not_updated",
-        message: "Update this Goal's Work Record in the current Turn before Handoff.",
-        details: { goalId: goal.id, recordRevision: record?.recordRevision ?? null },
-      });
-    const evidence = Array.isArray(request.handoff?.evidence) ? request.handoff.evidence : [];
-    for (const seq of evidence)
-      if (
-        !Number.isInteger(seq) ||
-        !this.ledger.eventsSince(seq - 1).some((event) => event.seq === seq)
-      )
-        issues.push({
-          code: "evidence_not_found",
-          message: `Evidence event ${String(seq)} does not exist in the Ledger.`,
-          details: { seq },
-        });
-    if (issues.length) return { accepted: false, fatal: false, attemptId, issues };
-    const token = randomUUID();
-    this.#handoffValidations.set(token, {
-      turnId,
-      attemptId,
-      agent,
-      attempt: execution.attempt,
-      leaseToken: execution.leaseToken!,
-      goalId: goal.id,
-      goalRevision: goal.revision,
-      messageItemId: request.candidateMessageId,
-      message,
-      handoff: { outcome: request.handoff.outcome, evidence: [...request.handoff.evidence] },
-    });
-    return {
-      accepted: true,
-      fatal: false,
-      attemptId,
-      token,
-      goalId: goal.id,
-      goalRevision: goal.revision,
-      messageItemId: request.candidateMessageId,
-    };
-  }
-  #beginHandoffAttempt(turnId: string): number {
-    this.#invalidateHandoffTokens(turnId);
-    const attemptId = (this.#handoffAttemptSeq.get(turnId) ?? 0) + 1;
-    this.#handoffAttemptSeq.set(turnId, attemptId);
-    return attemptId;
-  }
-  #invalidateHandoffTokens(turnId: string): void {
-    for (const [token, value] of this.#handoffValidations)
-      if (value.turnId === turnId) this.#handoffValidations.delete(token);
-  }
-  #clearHandoffState(turnId: string): void {
-    this.#invalidateHandoffTokens(turnId);
-    this.#handoffAttemptSeq.delete(turnId);
   }
 }
 
@@ -2540,111 +1810,6 @@ export function deriveTeam(ledger: Ledger, now = new Date().toISOString()): Team
   });
 }
 
-export interface RecoveryView {
-  turnId: string;
-  agent: string;
-  state: "scheduled" | "queued" | "running" | "recovered" | "escalated" | "superseded" | "needed";
-  actionable: boolean;
-}
-
-export function deriveRecoveryViews(ledger: Ledger): RecoveryView[] {
-  const views: RecoveryView[] = [];
-  const wakes = ledger.wakes();
-  const schedules = ledger.schedules();
-  const triggers = wakes.flatMap((wake) => ledger.wakeTriggers(wake.id));
-  for (const turn of ledger.turns()) {
-    if (turn.status !== "failed") continue;
-    const sourceWake = wakes.find((wake) => wake.turnId === turn.id);
-    const thread = ledger.thread(turn.threadId);
-    const goal = turn.goalId ? ledger.goal(turn.goalId) : null;
-    const goalFailure = Boolean(
-      thread && goal && goal.phase === "active" && goal.owner === thread.agent,
-    );
-    const specialistFailure = Boolean(
-      !turn.goalId &&
-      thread &&
-      (thread.role === "verifier" || thread.role === "audit") &&
-      sourceWake?.targetKind === "specialist" &&
-      sourceWake.agent === thread.agent &&
-      sourceWake.specialistRole === thread.role,
-    );
-    if (!thread || (!goalFailure && !specialistFailure)) continue;
-    const base = { turnId: turn.id, agent: thread.agent };
-    const scheduled = schedules.some((schedule) => {
-      const recovery = parseRecoveryTrigger(schedule.id);
-      const sameTarget = goalFailure
-        ? schedule.targetKind === "goal" && schedule.goalId === goal!.id
-        : schedule.targetKind === "specialist" && thread && schedule.specialistRole === thread.role;
-      return (
-        schedule.status === "pending" &&
-        schedule.setBy === "supervisor" &&
-        schedule.agent === thread.agent &&
-        sameTarget &&
-        schedule.reason === recoveryRef(turn.id) &&
-        recovery?.turnId === turn.id &&
-        recovery.attempt > 0
-      );
-    });
-    if (scheduled) {
-      views.push({ ...base, state: "scheduled", actionable: false });
-      continue;
-    }
-    const recoveryWake = triggers
-      .flatMap((trigger) => {
-        const recovery = parseRecoveryTrigger(trigger.triggerRef);
-        const wake =
-          recovery?.turnId === turn.id
-            ? wakes.find((candidate) => candidate.id === trigger.wakeId)
-            : null;
-        const sameTarget = goalFailure
-          ? wake?.targetKind === "goal" && wake.goalId === goal!.id
-          : wake?.targetKind === "specialist" && thread && wake.specialistRole === thread.role;
-        return wake?.agent === thread.agent && sameTarget ? [wake] : [];
-      })
-      .sort((left, right) => right.enqueuedSeq - left.enqueuedSeq)[0];
-    if (recoveryWake?.status === "queued" || recoveryWake?.status === "claimed") {
-      views.push({ ...base, state: "queued", actionable: false });
-      continue;
-    }
-    if (recoveryWake?.status === "consumed" && recoveryWake.turnId) {
-      const retry = ledger.turn(recoveryWake.turnId);
-      const state: RecoveryView["state"] =
-        retry?.status === "in_progress"
-          ? "running"
-          : retry?.status === "completed"
-            ? "recovered"
-            : "superseded";
-      views.push({ ...base, state, actionable: false });
-      continue;
-    }
-    const parent = goalFailure && goal!.parentId ? ledger.goal(goal!.parentId) : null;
-    const escalation = triggers
-      .flatMap((trigger) => {
-        const wake =
-          trigger.triggerRef === childRetryExhaustedRef(turn.id)
-            ? wakes.find((candidate) => candidate.id === trigger.wakeId)
-            : null;
-        return wake?.targetKind === "goal" &&
-          parent &&
-          wake.agent === parent.owner &&
-          wake.goalId === parent.id &&
-          parent.phase === "active"
-          ? [wake]
-          : [];
-      })
-      .find(
-        (wake) =>
-          wake.status === "queued" || wake.status === "claimed" || wake.status === "consumed",
-      );
-    if (escalation) {
-      views.push({ ...base, state: "escalated", actionable: false });
-      continue;
-    }
-    views.push({ ...base, state: "needed", actionable: true });
-  }
-  return views;
-}
-
 export function renderDashboard(ledger: Ledger): string {
   const rows = (values: unknown[]) =>
     values
@@ -2698,115 +1863,6 @@ function joinLiveChunks(target: Map<number, string[]>): string {
     .sort(([left], [right]) => left - right)
     .map(([, chunks]) => chunks.join(""))
     .join("\n");
-}
-function goalBoundCapability(method: AgentCapability): boolean {
-  return [
-    "goal.delegate",
-    "goal.reassign",
-    "goal.revise",
-    "goal.put",
-    "work_record.update",
-    "schedule.set",
-  ].includes(method);
-}
-function asRecord(value: JsonValue): Record<string, JsonValue> {
-  if (typeof value !== "object" || value === null || Array.isArray(value))
-    throw new Error("RPC params must be an object");
-  return value;
-}
-function boundedJson(value: JsonValue, maxChars = 2_000): string {
-  const text = typeof value === "string" ? value : JSON.stringify(value);
-  return text.length <= maxChars ? text : `${text.slice(0, maxChars)}…`;
-}
-function recoveryRef(turnId: string): string {
-  return `recovery:${turnId}`;
-}
-function recoveryScheduleId(turnId: string, attempt: number): string {
-  return `${recoveryRef(turnId)}:${attempt}`;
-}
-function childRetryExhaustedRef(turnId: string): string {
-  return `child-retry-exhausted:${turnId}`;
-}
-function childRetryExhaustedTurnId(triggerRef: string): string | null {
-  return triggerRef.startsWith("child-retry-exhausted:")
-    ? triggerRef.slice("child-retry-exhausted:".length) || null
-    : null;
-}
-function parseRecoveryTrigger(triggerRef: string): { turnId: string; attempt: number } | null {
-  if (!triggerRef.startsWith("recovery:")) return null;
-  const [turnId, rawAttempt] = triggerRef.slice("recovery:".length).split("@")[0]!.split(":");
-  if (!turnId) return null;
-  const attempt = rawAttempt === undefined ? 0 : Number(rawAttempt);
-  return Number.isInteger(attempt) && attempt >= 0 ? { turnId, attempt } : null;
-}
-function mailDeliveryAttempt(triggerRef: string, base: string): number | null {
-  if (triggerRef === base) return 0;
-  const prefix = `${base}@redelivery:`;
-  if (!triggerRef.startsWith(prefix)) return null;
-  const attempt = Number(triggerRef.slice(prefix.length));
-  return Number.isInteger(attempt) && attempt > 0 ? attempt : null;
-}
-function numberArray(value: JsonValue | undefined): number[] {
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "number"))
-    throw new Error("RPC evidence must be a number array");
-  return value as number[];
-}
-function isSameNumbers(left: number[], right: number[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-function asChildGoal(value: JsonValue | undefined): {
-  id: string;
-  objective: string;
-  observationMethod: string;
-  verificationMethod: string;
-  owner: string;
-} {
-  const input = asRecord(value ?? null);
-  return {
-    id: String(input.id),
-    objective: String(input.objective),
-    observationMethod: String(input.observationMethod),
-    verificationMethod: String(input.verificationMethod),
-    owner: String(input.owner),
-  };
-}
-function defaultCapabilities(role: AgentRole): AgentCapability[] {
-  if (role === "ceo")
-    return [
-      "ledger.search",
-      "mail.send",
-      "schedule.set",
-      "team.list",
-      "goal.get",
-      "goal.create",
-      "goal.work",
-      "goal.delegate",
-      "goal.reassign",
-      "goal.revise",
-      "goal.pause",
-      "goal.resume",
-      "goal.complete",
-      "work_record.list",
-      "work_record.read",
-      "work_record.history",
-      "work_record.diff",
-      "work_record.search",
-      "work_record.update",
-    ];
-  if (role === "verifier" || role === "audit")
-    return ["ledger.search", "mail.send", "memory.append"];
-  return [
-    "ledger.search",
-    "mail.send",
-    "schedule.set",
-    "goal.get",
-    "work_record.list",
-    "work_record.read",
-    "work_record.history",
-    "work_record.diff",
-    "work_record.search",
-    "work_record.update",
-  ];
 }
 
 export * from "./verification.js";
