@@ -14,6 +14,7 @@ import {
   type RunnerProfile,
   type TeamMemberView,
   type TurnContext,
+  type TurnContextPayload,
   type WakeSnapshot,
   type WakeTriggerSnapshot,
 } from "goah-ledger-contract";
@@ -101,7 +102,7 @@ export function loadContext(
   turn: TurnContext,
   mail: MailSnapshot[],
   wakeTriggers: WakeTriggerSnapshot[],
-): JsonValue {
+): TurnContextPayload {
   const profile: AgentProfile = deps.profiles.get(wake.agent) ?? {
     agent: wake.agent,
     role: "child",
@@ -178,7 +179,7 @@ export function loadContext(
     workRecord: currentRecord,
     sharedWorkRecords: records,
     ...(runnerProfile ? { runnerProfile } : {}),
-  } as unknown as JsonValue;
+  };
 }
 
 export function humanContext(
@@ -186,7 +187,7 @@ export function humanContext(
   turnId: string,
   agent: string,
   mail: MailSnapshot[],
-): JsonValue {
+): TurnContextPayload {
   const turn = deps.ledger.turn(turnId)!;
   const current = turnHistory(deps.ledger, turn.id);
   const turnSourceSeqs = deps.ledger
@@ -206,15 +207,12 @@ export function humanContext(
       context,
       mail,
       [],
-    ) as Record<string, JsonValue>;
-    const sourceSeqs = Array.isArray(base.sourceSeqs)
-      ? base.sourceSeqs.filter((value): value is number => typeof value === "number")
-      : [];
+    );
     return {
       ...base,
-      text: `${String(base.text ?? "")}\n\n# Current Turn\n\n${current}`,
-      sourceSeqs: [...new Set([...sourceSeqs, ...turnSourceSeqs])].sort((a, b) => a - b),
-    } as unknown as JsonValue;
+      text: `${base.text}\n\n# Current Turn\n\n${current}`,
+      sourceSeqs: [...new Set([...base.sourceSeqs, ...turnSourceSeqs])].sort((a, b) => a - b),
+    };
   }
   const profile = deps.profiles.get(agent) ?? { agent, role: "ceo" as const };
   const runnerProfile = deps.runnerProfiles.get(profile.runnerProfile ?? "default");
@@ -257,7 +255,7 @@ export function humanContext(
     capabilities: profile.capabilities ?? defaultCapabilities(profile.role),
     systemPrompt: profile.systemPrompt ?? defaultTurnPrompt(profile.role, agent, context),
     ...(runnerProfile ? { runnerProfile } : {}),
-  } as unknown as JsonValue;
+  };
 }
 
 export function goalContext(
@@ -267,16 +265,12 @@ export function goalContext(
   turnId: string,
   mail: MailSnapshot[],
   wakeTriggers: WakeTriggerSnapshot[],
-): JsonValue {
+): TurnContextPayload {
   const base = loadContext(deps, wake, turn, mail, wakeTriggers);
-  if (!base || typeof base !== "object" || Array.isArray(base)) return base;
-  const value = base as Record<string, JsonValue>;
   const history = turnHistory(deps.ledger, turnId);
   return {
-    ...value,
-    ...(history
-      ? { text: `${String(value.text ?? "")}\n\n# Current Turn retry history\n\n${history}` }
-      : {}),
+    ...base,
+    ...(history ? { text: `${base.text}\n\n# Current Turn retry history\n\n${history}` } : {}),
   };
 }
 

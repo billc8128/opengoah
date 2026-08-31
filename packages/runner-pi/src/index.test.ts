@@ -131,7 +131,13 @@ test("PiRunnerAdapter turns session initialization failure into an abnormal resu
   const handle = runner.prepare({
     ...requestBase,
     turn: { trigger: { kind: "user_message" }, activeGoal: null, goalCommitment: null },
-    context: {},
+    context: {
+      text: "",
+      sourceSeqs: [],
+      activeGoal: null,
+      capabilities: [],
+      systemPrompt: "",
+    },
     now: () => execution.startedAt,
     emit: () => undefined,
   });
@@ -153,7 +159,13 @@ test("runner policy is external and a multi-step driver can hand off", async () 
   const request: RunRequest = {
     ...requestBase,
     turn: goalTurn,
-    context: {},
+    context: {
+      text: "",
+      sourceSeqs: [],
+      activeGoal: null,
+      capabilities: [],
+      systemPrompt: "",
+    },
     now: () => now,
     emit: () => undefined,
     rpc: async (method, params) =>
@@ -200,7 +212,13 @@ test("PiRunnerAdapter feeds correctable Handoff issues back and continues the se
   const request: RunRequest = {
     ...requestBase,
     turn: goalTurn,
-    context: {},
+    context: {
+      text: "",
+      sourceSeqs: [],
+      activeGoal: null,
+      capabilities: [],
+      systemPrompt: "",
+    },
     now: () => execution.startedAt,
     emit: () => undefined,
     rpc: async (method, params) => {
@@ -257,7 +275,13 @@ test("PiRunnerAdapter stops a revoked session without requesting another step", 
   const handle = runner.prepare({
     ...requestBase,
     turn: goalTurn,
-    context: {},
+    context: {
+      text: "",
+      sourceSeqs: [],
+      activeGoal: null,
+      capabilities: [],
+      systemPrompt: "",
+    },
     now: () => execution.startedAt,
     emit: () => undefined,
     rpc: async () => ({
@@ -277,7 +301,13 @@ test("an unbound Turn returns a normal assistant response without handoff", asyn
     ...requestBase,
     execution: { ...execution, triggerKind: "user_message", goalId: null, goalRevision: null },
     turn: { trigger: { kind: "user_message" }, activeGoal: goal, goalCommitment: null },
-    context: {},
+    context: {
+      text: "",
+      sourceSeqs: [],
+      activeGoal: null,
+      capabilities: [],
+      systemPrompt: "",
+    },
     now: () => "2026-08-18T00:00:00.000Z",
     emit: () => undefined,
   };
@@ -322,7 +352,13 @@ test("stopping without handoff is abnormal", async () => {
   const handle = new PiRunnerAdapter(driver([{ stop: true }])).prepare({
     ...requestBase,
     turn: goalTurn,
-    context: {},
+    context: {
+      text: "",
+      sourceSeqs: [],
+      activeGoal: null,
+      capabilities: [],
+      systemPrompt: "",
+    },
     now: () => "2026-08-18T00:00:00.000Z",
     emit: () => undefined,
   });
@@ -341,7 +377,13 @@ test("ProcessRunner may opt into its own timeout policy", async () => {
   const handle = runner.prepare({
     ...requestBase,
     turn: goalTurn,
-    context: {},
+    context: {
+      text: "",
+      sourceSeqs: [],
+      activeGoal: null,
+      capabilities: [],
+      systemPrompt: "",
+    },
     now: () => new Date().toISOString(),
     emit: () => undefined,
   });
@@ -363,7 +405,13 @@ test("ProcessRunner forwards steering messages over the live worker protocol", a
     ...requestBase,
     execution: { ...execution, triggerKind: "user_message", goalId: null, goalRevision: null },
     turn: { trigger: { kind: "user_message" }, activeGoal: goal, goalCommitment: null },
-    context: {},
+    context: {
+      text: "",
+      sourceSeqs: [],
+      activeGoal: null,
+      capabilities: [],
+      systemPrompt: "",
+    },
     now: () => new Date().toISOString(),
     emit: () => undefined,
     emitLive: (event) => {
@@ -387,7 +435,13 @@ test("ProcessRunner rejects steering that the worker no longer accepts", async (
     ...requestBase,
     execution: { ...execution, triggerKind: "user_message", goalId: null, goalRevision: null },
     turn: { trigger: { kind: "user_message" }, activeGoal: goal, goalCommitment: null },
-    context: {},
+    context: {
+      text: "",
+      sourceSeqs: [],
+      activeGoal: null,
+      capabilities: [],
+      systemPrompt: "",
+    },
     now: () => new Date().toISOString(),
     emit: () => undefined,
   });
@@ -408,7 +462,13 @@ test("ProcessRunner bounds steering acknowledgement waits", async () => {
     ...requestBase,
     execution: { ...execution, triggerKind: "user_message", goalId: null, goalRevision: null },
     turn: { trigger: { kind: "user_message" }, activeGoal: goal, goalCommitment: null },
-    context: {},
+    context: {
+      text: "",
+      sourceSeqs: [],
+      activeGoal: null,
+      capabilities: [],
+      systemPrompt: "",
+    },
     now: () => new Date().toISOString(),
     emit: () => undefined,
   });
@@ -426,7 +486,13 @@ test("ProcessRunner kills an oversized protocol line", async () => {
   const handle = runner.prepare({
     ...requestBase,
     turn: { trigger: { kind: "user_message" }, activeGoal: goal, goalCommitment: null },
-    context: {},
+    context: {
+      text: "",
+      sourceSeqs: [],
+      activeGoal: null,
+      capabilities: [],
+      systemPrompt: "",
+    },
     now: () => execution.startedAt,
     emit: () => undefined,
   });
@@ -448,7 +514,13 @@ test("the Pi worker rejects a legacy Goal request without live Handoff validatio
   });
   const legacy = {
     ...requestBase,
-    context: {},
+    context: {
+      text: "",
+      sourceSeqs: [],
+      activeGoal: null,
+      capabilities: [],
+      systemPrompt: "",
+    },
     now: () => "2026-08-18T00:00:00.000Z",
     emit: () => undefined,
   } as unknown as RunRequest;
@@ -470,7 +542,13 @@ test("fatal Handoff validation blocks later local tools in the same batch", asyn
   const handle = runner.prepare({
     ...requestBase,
     turn: goalTurn,
-    context: {},
+    context: {
+      text: "",
+      sourceSeqs: [],
+      activeGoal: null,
+      capabilities: [],
+      systemPrompt: "",
+    },
     now: () => execution.startedAt,
     emit: (event) => events.push(event),
     rpc: async (method) =>
@@ -508,7 +586,13 @@ test("the Pi worker preserves provider error messages from empty assistant respo
     ...requestBase,
     execution: { ...execution, triggerKind: "user_message", goalId: null, goalRevision: null },
     turn: { trigger: { kind: "user_message" }, activeGoal: goal, goalCommitment: null },
-    context: {},
+    context: {
+      text: "",
+      sourceSeqs: [],
+      activeGoal: null,
+      capabilities: [],
+      systemPrompt: "",
+    },
     now: () => "2026-08-18T00:00:00.000Z",
     emit: () => undefined,
   });

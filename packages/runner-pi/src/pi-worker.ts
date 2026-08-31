@@ -52,12 +52,7 @@ export function compactMessages(messages: AgentMessage[], maxRecent = 8): AgentM
 export async function runPiWorker(): Promise<void> {
   await runProcessWorker(
     async (request, emit, rpc, controls, emitLive): Promise<RunnerCandidateResult> => {
-      const contextRecord =
-        typeof request.context === "object" &&
-        request.context !== null &&
-        !Array.isArray(request.context)
-          ? request.context
-          : {};
+      const contextRecord = request.context;
       const legacyRequest = request.turn === undefined;
       const binding = request.turn?.goalCommitment;
       const goalState: {
@@ -68,15 +63,11 @@ export async function runPiWorker(): Promise<void> {
         bound: legacyRequest || (binding !== null && binding !== undefined),
         ...(binding ? { binding } : {}),
       };
-      const profile =
-        contextRecord.runnerProfile &&
-        typeof contextRecord.runnerProfile === "object" &&
-        !Array.isArray(contextRecord.runnerProfile)
-          ? (contextRecord.runnerProfile as Record<string, unknown>)
-          : {};
       const runnerConfig =
-        profile.config && typeof profile.config === "object" && !Array.isArray(profile.config)
-          ? (profile.config as Record<string, unknown>)
+        contextRecord.runnerProfile &&
+        typeof contextRecord.runnerProfile.config === "object" &&
+        !Array.isArray(contextRecord.runnerProfile.config)
+          ? (contextRecord.runnerProfile.config as Record<string, unknown>)
           : {};
       const provider =
         typeof runnerConfig.provider === "string"
@@ -109,15 +100,8 @@ export async function runPiWorker(): Promise<void> {
             string,
             unknown
           >;
-          const current =
-            contextRecord.workRecord &&
-            typeof contextRecord.workRecord === "object" &&
-            !Array.isArray(contextRecord.workRecord)
-              ? (contextRecord.workRecord as Record<string, unknown>)
-              : {};
-          const evidence = Array.isArray(contextRecord.sourceSeqs)
-            ? contextRecord.sourceSeqs.filter((value): value is number => typeof value === "number")
-            : [];
+          const current = contextRecord.workRecord;
+          const evidence = contextRecord.sourceSeqs;
           const outcome = ["progress", "waiting", "blocked", "completion_proposed"].includes(
             String(handoff.outcome),
           )
@@ -140,7 +124,7 @@ export async function runPiWorker(): Promise<void> {
           );
           const recordResponse = fauxAssistantMessage(
             fauxToolCall("work_record_update", {
-              expectedRevision: Number(current.recordRevision ?? 0),
+              expectedRevision: Number(current?.recordRevision ?? 0),
               content: record,
               reason: "record faux Goal progress",
               evidence: evidence.length ? [Math.max(...evidence)] : [],
@@ -662,13 +646,17 @@ function createTools(
       (method === "goal.create" || method === "goal.work" || method === "goal.resume") &&
       result &&
       typeof result === "object" &&
-      !Array.isArray(result) &&
-      result.goalCommitment &&
-      typeof result.goalCommitment === "object" &&
-      !Array.isArray(result.goalCommitment)
+      !Array.isArray(result)
     ) {
-      const binding = result.goalCommitment as Record<string, JsonValue>;
-      if (typeof binding.goalId === "string" && typeof binding.goalRevision === "number") {
+      const record = result as Record<string, JsonValue>;
+      const binding = record.goalCommitment;
+      if (
+        binding &&
+        typeof binding === "object" &&
+        !Array.isArray(binding) &&
+        typeof binding.goalId === "string" &&
+        typeof binding.goalRevision === "number"
+      ) {
         goalState.bound = true;
         goalState.binding = { goalId: binding.goalId, goalRevision: binding.goalRevision };
       }
@@ -678,9 +666,9 @@ function createTools(
       result &&
       typeof result === "object" &&
       !Array.isArray(result) &&
-      typeof result.recordRevision === "number"
+      typeof (result as Record<string, JsonValue>).recordRevision === "number"
     )
-      goalState.recordRevision = result.recordRevision;
+      goalState.recordRevision = Number((result as Record<string, JsonValue>).recordRevision);
   });
   return [...createPiCodingTools(root), ...rpcTools, handoffTool];
 }
@@ -753,7 +741,7 @@ export function compactMessagesToTokenBudget(
 function createRpcTools(
   rpc: WorkerRpc,
   allowed?: ReadonlySet<AgentCapability>,
-  onResult?: (method: AgentCapability, result: JsonValue) => void,
+  onResult?: (method: AgentCapability, result: unknown) => void,
 ): AgentTool<any>[] {
   const tool = (
     name: string,
@@ -768,7 +756,10 @@ function createRpcTools(
     execute: async (_id, params) => {
       const result = await rpc(method, params as JsonValue);
       onResult?.(method, result);
-      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+        details: result as JsonValue,
+      };
     },
   });
   const definitions: Array<[AgentCapability, AgentTool<any>]> = [

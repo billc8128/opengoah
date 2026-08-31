@@ -424,6 +424,28 @@ export interface TurnContext {
   activeGoal: GoalSnapshot | null;
   goalCommitment: GoalCommitment | null;
 }
+
+/**
+ * The typed context payload every RunRequest carries: the Supervisor's rendered
+ * working set plus the identity material Runners need (capabilities, system
+ * prompt, optional Runner profile). Branch-dependent fields are optional;
+ * `role`/`goalCommitment`/`workRecord`/`sharedWorkRecords` are present on
+ * goal-context assembly while direct human Turns may omit them.
+ */
+export interface TurnContextPayload {
+  /** Composed short working set rendered as Markdown. */
+  text: string;
+  /** Ledger evidence sequences this context was composed from. */
+  sourceSeqs: number[];
+  activeGoal: GoalSnapshot | null;
+  capabilities: AgentCapability[];
+  systemPrompt: string;
+  role?: AgentRole;
+  goalCommitment?: GoalCommitment | null;
+  workRecord?: WorkRecordSnapshot | null;
+  sharedWorkRecords?: WorkRecordSnapshot[];
+  runnerProfile?: RunnerProfile;
+}
 /** Canonical user-visible assistant prose. Raw provider events remain unchanged. */
 export function normalizeAssistantText(text: string): string {
   return text.replace(/\r\n?/g, "\n").trim();
@@ -434,11 +456,12 @@ export interface RunRequest {
   sourceWake?: WakeSnapshot;
   sourceWakeTriggers?: WakeTriggerSnapshot[];
   turn: TurnContext;
-  context: JsonValue;
+  context: TurnContextPayload;
   now(): string;
   emit(event: RunnerTraceEvent): void;
   emitLive?(event: RunnerLiveEvent): void;
-  rpc?(method: RunnerRpcMethod, params: JsonValue): Promise<JsonValue>;
+  /** Resolves to an opaque JSON-serializable capability result. */
+  rpc?(method: RunnerRpcMethod, params: JsonValue): Promise<unknown>;
 }
 export type RunnerCandidateResult =
   | { outcome: "completed"; finalMessageId: string; handoff?: TurnOutput }

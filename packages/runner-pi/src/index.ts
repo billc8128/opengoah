@@ -210,7 +210,7 @@ type WorkerMessage =
   | { type: "result"; result: RunnerCandidateResult };
 type ParentMessage =
   | { type: "start"; request: WorkerRequest }
-  | { type: "rpc_response"; id: string; result?: JsonValue; error?: string }
+  | { type: "rpc_response"; id: string; result?: unknown; error?: string }
   | { type: "steer"; id: string; message: string };
 
 /** Real process boundary. The child stays idle until begin() sends its request. */
@@ -410,7 +410,8 @@ export class ProcessRunner implements Runner {
   }
 }
 
-export type WorkerRpc = (method: RunnerRpcMethod, params: JsonValue) => Promise<JsonValue>;
+/** Resolves to an opaque JSON-serializable capability result. */
+export type WorkerRpc = (method: RunnerRpcMethod, params: JsonValue) => Promise<unknown>;
 export interface WorkerControls {
   onSteer(listener: (message: string) => boolean): void;
 }
@@ -435,10 +436,7 @@ export async function runProcessWorker(run: WorkerRun): Promise<void> {
   if (first.done) throw new Error("runner parent closed before start");
   const start = JSON.parse(first.value) as ParentMessage;
   if (start.type !== "start") throw new Error("first runner message must be start");
-  const pending = new Map<
-    string,
-    { resolve(value: JsonValue): void; reject(error: Error): void }
-  >();
+  const pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
   const queuedSteering: Array<{ id: string; message: string }> = [];
   let steerListener: ((message: string) => boolean) | undefined;
   const deliverSteer = (id: string, message: string): void => {

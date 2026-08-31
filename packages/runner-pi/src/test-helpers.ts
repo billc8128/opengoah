@@ -32,7 +32,13 @@ export function wakeContext(): RunRequest {
       runnerPid: null,
     },
     turn: { trigger: { kind: "wake", reasons: ["test"] }, activeGoal: null, goalCommitment: null },
-    context: {},
+    context: {
+      text: "",
+      sourceSeqs: [],
+      activeGoal: null,
+      capabilities: [],
+      systemPrompt: "",
+    },
     now: () => new Date().toISOString(),
     emit: () => undefined,
   };

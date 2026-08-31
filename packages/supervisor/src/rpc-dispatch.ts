@@ -80,7 +80,7 @@ export async function dispatchAgentRpc(
   method: RunnerRpcMethod,
   params: JsonValue,
   sourceWakeId?: string,
-): Promise<JsonValue> {
+): Promise<unknown> {
   const handoffAttemptId =
     method === "goal.handoff.validate" ? deps.handoff.beginAttempt(turnId) : null;
   const execution = deps.ledger.turn(turnId);
@@ -132,7 +132,7 @@ export async function dispatchAgentRpc(
       execution,
       context,
       input,
-    ) as unknown as JsonValue;
+    );
   }
   const profile = deps.profiles.get(agent) ?? { agent, role: "child" as const };
   const allowed = new Set(profile.capabilities ?? defaultCapabilities(profile.role));
@@ -152,11 +152,11 @@ export async function dispatchAgentRpc(
     return deps.ledger.searchEvents(
       requireString("ledger.search", input, "query"),
       optionalNumber("ledger.search", input, "limit", 20),
-    ) as unknown as JsonValue;
-  if (method === "team.list") return deps.teamList() as unknown as JsonValue;
+    );
+  if (method === "team.list") return deps.teamList();
   if (method === "goal.get") {
     const visibleId = context.goalCommitment?.goalId ?? context.activeGoal?.id;
-    return (visibleId ? deps.ledger.goal(visibleId) : null) as unknown as JsonValue;
+    return visibleId ? deps.ledger.goal(visibleId) : null;
   }
   if (method === "goal.create") {
     if (context.trigger.kind !== "user_message" || context.goalCommitment || agent !== "ceo")
@@ -169,7 +169,7 @@ export async function dispatchAgentRpc(
     context.activeGoal = goal;
     context.goalCommitment = { goalId: goal.id, goalRevision: goal.revision };
     deps.ledger.commitTurnToGoal(turnId, context.goalCommitment, "supervisor");
-    return { goal, goalCommitment: context.goalCommitment } as unknown as JsonValue;
+    return { goal, goalCommitment: context.goalCommitment };
   }
   if (method === "goal.work") {
     if (context.trigger.kind !== "user_message" || context.goalCommitment)
@@ -180,23 +180,23 @@ export async function dispatchAgentRpc(
     context.activeGoal = goal;
     context.goalCommitment = { goalId: goal.id, goalRevision: goal.revision };
     deps.ledger.commitTurnToGoal(turnId, context.goalCommitment, "supervisor");
-    return { goal, goalCommitment: context.goalCommitment } as unknown as JsonValue;
+    return { goal, goalCommitment: context.goalCommitment };
   }
-  if (method === "work_record.list") return deps.ledger.workRecords() as unknown as JsonValue;
+  if (method === "work_record.list") return deps.ledger.workRecords();
   if (method === "work_record.read")
     return deps.ledger.workRecord(
       optionalString("work_record.read", input, "goalId") ??
         context.goalCommitment?.goalId ??
         context.activeGoal?.id ??
         "",
-    ) as unknown as JsonValue;
+    );
   if (method === "work_record.history")
     return deps.ledger.workRecordHistory(
       optionalString("work_record.history", input, "goalId") ??
         context.goalCommitment?.goalId ??
         context.activeGoal?.id ??
         "",
-    ) as unknown as JsonValue;
+    );
   if (method === "work_record.diff")
     return deps.ledger.workRecordDiff(
       optionalString("work_record.diff", input, "goalId") ??
@@ -205,12 +205,12 @@ export async function dispatchAgentRpc(
         "",
       requireNumber("work_record.diff", input, "fromRevision"),
       requireNumber("work_record.diff", input, "toRevision"),
-    ) as unknown as JsonValue;
+    );
   if (method === "work_record.search")
     return deps.ledger.searchWorkRecords(
       requireString("work_record.search", input, "query"),
       optionalNumber("work_record.search", input, "limit", 20),
-    ) as unknown as JsonValue;
+    );
   if (method === "work_record.update") {
     const binding = context.goalCommitment!;
     return deps.ledger.updateWorkRecord(
@@ -225,7 +225,7 @@ export async function dispatchAgentRpc(
         ...(sourceWakeId ? { sourceWakeId } : {}),
       },
       agent,
-    ) as unknown as JsonValue;
+    );
   }
   if (method === "goal.delegate") {
     const binding = context.goalCommitment!;
@@ -237,33 +237,33 @@ export async function dispatchAgentRpc(
         parentGoalId: binding.goalId,
         expectedParentRevision: requireNumber("goal.delegate", input, "expectedParentRevision"),
         childGoal: asChildGoal("goal.delegate", input.childGoal),
-        brief: (input.brief ?? null) as JsonValue,
+        brief: input.brief ?? null,
         reason: requireString("goal.delegate", input, "reason", { allowEmpty: true }),
         evidence: numberArray(input.evidence),
         sourceTurnId: turnId,
       },
       agent,
       sourceWakeId,
-    ) as unknown as JsonValue;
+    );
   }
   if (method === "goal.reassign") {
     const goal = deps.goal(requireString("goal.reassign", input, "goalId"));
     if (goal.parentId !== context.goalCommitment!.goalId)
       throw new Error("reassignment target must be a child of the Goal committed to this Turn");
-    return (await deps.reassignGoal(
+    return await deps.reassignGoal(
       {
         id: requireString("goal.reassign", input, "id"),
         goalId: goal.id,
         expectedGoalRevision: requireNumber("goal.reassign", input, "expectedGoalRevision"),
         newOwner: requireString("goal.reassign", input, "newOwner"),
-        brief: (input.brief ?? null) as JsonValue,
+        brief: input.brief ?? null,
         reason: requireString("goal.reassign", input, "reason", { allowEmpty: true }),
         evidence: numberArray(input.evidence),
         sourceTurnId: turnId,
       },
       agent,
       sourceWakeId,
-    )) as unknown as JsonValue;
+    );
   }
   if (method === "goal.revise")
     return deps.reviseChildGoal(
@@ -276,7 +276,7 @@ export async function dispatchAgentRpc(
       numberArray(input.evidence),
       sourceWakeId,
       turnId,
-    ) as unknown as JsonValue;
+    );
   if (method === "goal.pause" || method === "goal.resume") {
     const goal = deps.goal(requireString(method, input, "goalId"));
     const directRoot =
@@ -294,9 +294,9 @@ export async function dispatchAgentRpc(
       context.activeGoal = next;
       context.goalCommitment = { goalId: next.id, goalRevision: next.revision };
       deps.ledger.commitTurnToGoal(turnId, context.goalCommitment, "supervisor");
-      return { goal: next, goalCommitment: context.goalCommitment } as unknown as JsonValue;
+      return { goal: next, goalCommitment: context.goalCommitment };
     }
-    return next as unknown as JsonValue;
+    return next;
   }
   if (method === "goal.complete") {
     const goal = deps.goal(requireString("goal.complete", input, "goalId"));
@@ -314,7 +314,7 @@ export async function dispatchAgentRpc(
       },
       directRoot ? "human" : agent,
       sourceWakeId,
-    ) as unknown as JsonValue;
+    );
   }
   if (method === "mail.send") {
     const to = requireString("mail.send", input, "to");
@@ -333,20 +333,22 @@ export async function dispatchAgentRpc(
       from: agent,
       level: input.level,
       ...goalRoute(goalId),
-      body: (input.body ?? null) as JsonValue,
+      body: input.body ?? null,
       readAt: null,
     };
     deps.ledger.putMail(mail, agent, sourceWakeId);
-    return mail as unknown as JsonValue;
+    return mail;
   }
   if (method === "schedule.set")
-    return (deps.planWake(
-      agent,
-      requireString("schedule.set", input, "at"),
-      requireString("schedule.set", input, "reason", { allowEmpty: true }),
-      agent,
-      context.goalCommitment ?? undefined,
-    ) ?? { scheduled: true }) as unknown as JsonValue;
+    return (
+      deps.planWake(
+        agent,
+        requireString("schedule.set", input, "at"),
+        requireString("schedule.set", input, "reason", { allowEmpty: true }),
+        agent,
+        context.goalCommitment ?? undefined,
+      ) ?? { scheduled: true }
+    );
   if (method === "goal.put") {
     const candidate = input.goal;
     if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate))
@@ -379,7 +381,7 @@ export async function dispatchAgentRpc(
       sourceTurnId: turnId,
       ...(sourceWakeId ? { sourceWakeId } : {}),
     });
-    return input.goal as JsonValue;
+    return input.goal;
   }
   if (method === "memory.append") {
     const note = optionalString("memory.append", input, "note")?.trim() ?? "";
@@ -391,7 +393,7 @@ export async function dispatchAgentRpc(
       type: "memory.appended",
       data: { note, turnId },
     });
-    return { seq: event.seq } as unknown as JsonValue;
+    return { seq: event.seq };
   }
   throw new Error(`unsupported Agent capability: ${method}`);
 }

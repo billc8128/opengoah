@@ -28,6 +28,7 @@ import {
   type RunnerCandidateResult,
   type RunnerHandle,
   type TurnItemSnapshot,
+  type TurnContextPayload,
   type TurnSnapshot,
   type WakeSnapshot,
 } from "goah-ledger-contract";
@@ -2790,7 +2791,13 @@ test("recovery kills the recorded runner before another wake can use its local r
     agent: "quality",
     execution,
     turn: { trigger: { kind: "wake", reasons: ["test"] }, activeGoal: null, goalCommitment: null },
-    context: {},
+    context: {
+      text: "",
+      sourceSeqs: [],
+      activeGoal: null,
+      capabilities: [],
+      systemPrompt: "",
+    },
     now: () => clock.now().toISOString(),
     emit: () => undefined,
   });
@@ -3077,7 +3084,7 @@ test("verification routes a custom-named Specialist from the Thread role, not th
 test("Verification Mail reaches the next Human Turn and is acknowledged on success", async () => {
   const clock = new SimulatedClock();
   const ledger = createMemoryLedger({ clock });
-  const contexts: JsonValue[] = [];
+  const contexts: TurnContextPayload[] = [];
   const runner: Runner = {
     isolation: "process",
     prepare: (request) => {
@@ -3124,7 +3131,7 @@ test("Verification Mail reaches the next Human Turn and is acknowledged on succe
 test("CEO context delivers Verification Mail in bounded FIFO batches", async () => {
   const clock = new SimulatedClock();
   const ledger = createMemoryLedger({ clock });
-  let context: JsonValue = null;
+  let context: TurnContextPayload | null = null;
   const runner: Runner = {
     isolation: "process",
     prepare: (request) => {
@@ -4308,7 +4315,7 @@ test("inactive reassignment stays dormant until resume creates the new owner's G
     type: "observed",
     data: {},
   });
-  const contexts: JsonValue[] = [];
+  const contexts: TurnContextPayload[] = [];
   const bindings: unknown[] = [];
   const runner: Runner = {
     isolation: "process",

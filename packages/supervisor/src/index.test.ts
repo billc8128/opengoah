@@ -60,7 +60,14 @@ test("RunnerRouter selects by opaque Runner Profile without knowing provider or 
       runnerPid: null,
     },
     turn: { trigger: { kind: "wake", reasons: ["test"] }, activeGoal: null, goalCommitment: null },
-    context: { runnerProfile: { id: "worker", runner: "anything", config: { opaque: true } } },
+    context: {
+      text: "",
+      sourceSeqs: [],
+      activeGoal: null,
+      capabilities: [],
+      systemPrompt: "",
+      runnerProfile: { id: "worker", runner: "anything", config: { opaque: true } },
+    },
     now: () => "",
     emit: () => undefined,
   } satisfies RunRequest;

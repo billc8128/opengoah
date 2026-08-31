@@ -29,6 +29,7 @@ import {
   type ScheduleSnapshot,
   type TeamMemberView,
   type TurnContext,
+  type TurnContextPayload,
   type TurnSnapshot,
   type TurnItemSnapshot,
   type TurnLiveSnapshot,
@@ -72,17 +73,7 @@ export class RunnerRouter implements Runner {
     readonly fallback = "default",
   ) {}
   prepare(request: Parameters<Runner["prepare"]>[0]): RunnerHandle {
-    const context =
-      request.context && typeof request.context === "object" && !Array.isArray(request.context)
-        ? (request.context as Record<string, unknown>)
-        : {};
-    const profile =
-      context.runnerProfile &&
-      typeof context.runnerProfile === "object" &&
-      !Array.isArray(context.runnerProfile)
-        ? (context.runnerProfile as Record<string, unknown>)
-        : {};
-    const id = typeof profile.id === "string" ? profile.id : this.fallback;
+    const id = request.context.runnerProfile?.id ?? this.fallback;
     const runner = this.runners.get(id);
     if (!runner) throw new Error(`runner profile is not configured: ${id}`);
     const handle = runner.prepare(request);
@@ -539,7 +530,7 @@ export class Supervisor {
     initial: TurnSnapshot,
     agent: string,
     turnContext: TurnContext,
-    contextFactory: () => JsonValue,
+    contextFactory: () => TurnContextPayload,
     sourceWake: WakeSnapshot | null = null,
     deliveredMailIds: string[] = [],
     recordRevisionAtStart = -1,
@@ -702,7 +693,7 @@ export class Supervisor {
     initial: TurnSnapshot,
     agent: string,
     turnContext: TurnContext,
-    contextFactory: () => JsonValue,
+    contextFactory: () => TurnContextPayload,
     sourceWake: WakeSnapshot | null = null,
     deliveredMailIds: string[] = [],
     recordRevisionAtStart = -1,

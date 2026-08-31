@@ -6,6 +6,7 @@ import type {
   HandoffValidationResult,
   JsonValue,
   RunnerCandidateResult,
+  TurnContextPayload,
   TurnOutput,
 } from "goah-ledger-contract";
 
@@ -61,9 +62,9 @@ await runProcessWorker(async (request, emit, rpc): Promise<RunnerCandidateResult
     for (const trace of step.trace ?? []) emit(trace);
     if (step.rpc) {
       const result = await rpc(step.rpc.method, resolveParams(step.rpc.params, request.context));
-      emit({ type: "runner.rpc.result", data: result });
+      emit({ type: "runner.rpc.result", data: result as JsonValue });
       if (step.rpc.method === "goal.create" || step.rpc.method === "goal.work")
-        goalCommitment = commitmentFrom(result) ?? goalCommitment;
+        goalCommitment = commitmentFrom(result as JsonValue) ?? goalCommitment;
       if (step.rpc.method === "work_record.update") recordUpdated = true;
     }
     if (step.crash) throw new Error(step.crash);
@@ -149,7 +150,7 @@ await runProcessWorker(async (request, emit, rpc): Promise<RunnerCandidateResult
   return { outcome: "abnormal", reason: "faux worker stopped without handoff" };
 });
 
-function resolveParams(value: JsonValue, context: JsonValue): JsonValue {
+function resolveParams(value: JsonValue, context: TurnContextPayload): JsonValue {
   const latest = Math.max(0, ...sourceSeqs(context));
   const visit = (item: JsonValue): JsonValue => {
     if (item === "$LATEST_SOURCE_SEQ") return latest;
@@ -167,31 +168,16 @@ function resolveParams(value: JsonValue, context: JsonValue): JsonValue {
   return visit(value);
 }
 
-function sourceSeqs(context: JsonValue): number[] {
-  return context &&
-    typeof context === "object" &&
-    !Array.isArray(context) &&
-    Array.isArray(context.sourceSeqs)
-    ? context.sourceSeqs.filter((item): item is number => typeof item === "number")
-    : [];
+function sourceSeqs(context: TurnContextPayload): number[] {
+  return context.sourceSeqs;
 }
-function sharedWorkRecords(context: JsonValue): Array<{ goalId: string; lastEventSeq: number }> {
-  if (
-    !context ||
-    typeof context !== "object" ||
-    Array.isArray(context) ||
-    !Array.isArray(context.sharedWorkRecords)
-  )
-    return [];
-  return context.sharedWorkRecords.flatMap((value) =>
-    value &&
-    typeof value === "object" &&
-    !Array.isArray(value) &&
-    typeof value.goalId === "string" &&
-    typeof value.lastEventSeq === "number"
-      ? [{ goalId: value.goalId, lastEventSeq: value.lastEventSeq }]
-      : [],
-  );
+function sharedWorkRecords(
+  context: TurnContextPayload,
+): Array<{ goalId: string; lastEventSeq: number }> {
+  return (context.sharedWorkRecords ?? []).map((record) => ({
+    goalId: record.goalId,
+    lastEventSeq: record.lastEventSeq,
+  }));
 }
 function commitmentFrom(value: JsonValue): { goalId: string; goalRevision: number } | undefined {
   if (
