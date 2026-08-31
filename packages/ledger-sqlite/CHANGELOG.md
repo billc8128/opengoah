@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Schema v29 renames Mail `level` to Agent-selected `priority` and constrains it to `low|normal|high`; earlier development schemas are intentionally recreated.
 - Schema v28 adopts Transcript v2 request components and requires a current owner-written Work Record plus matching evidence before Child Goal completion.
 - Schema v28 removes Human mailbox routes and constrains Mail to Agent-only Goal, CEO-inbox, and Specialist-inbox delivery.
 - Schema v27 atomically admits Human Turn replacement, retains terminal Runner cleanup ownership until explicit release, persists canonical Thread role, reserves the unique CEO identity, and keeps Human input free of Wake representation.

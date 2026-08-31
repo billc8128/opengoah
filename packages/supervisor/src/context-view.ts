@@ -128,7 +128,7 @@ export function composeActiveContext(input: ActiveContextInput): ActiveContextVi
       "Incoming",
       input.mail.map(
         (mail) =>
-          `- [${mail.level}] ${mail.id} from ${mail.from}${mail.goalId ? ` for Goal ${mail.goalId}` : ""}: ${render(mail.body, 2_000)}`,
+          `- [${mail.priority}] ${mail.id} from ${mail.from}${mail.goalId ? ` for Goal ${mail.goalId}` : ""}: ${render(mail.body, 2_000)}`,
       ),
     ],
     [

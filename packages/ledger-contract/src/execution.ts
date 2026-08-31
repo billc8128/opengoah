@@ -179,12 +179,12 @@ export interface WakeTriggerSnapshot {
   addedAt: string;
   resolvedAt: string | null;
 }
-export type MailLevel = "fyi" | "decision" | "emergency";
+export type MailPriority = "low" | "normal" | "high";
 export type MailSnapshot = MailRoute & {
   id: string;
   to: string;
   from: string;
-  level: MailLevel;
+  priority: MailPriority;
   body: JsonValue;
   readAt: string | null;
 };

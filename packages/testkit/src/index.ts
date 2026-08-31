@@ -273,7 +273,7 @@ export function assertLedgerConformance(create: LedgerConformanceFactory): void 
       id: "conformance:mail",
       to: "ceo",
       from: "verifier",
-      level: "fyi",
+      priority: "low",
       ...ceoInboxRoute(),
       body: { type: "conformance" },
       readAt: null,

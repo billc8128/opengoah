@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Mail tools expose optional `high|normal|low` delivery priority instead of semantic message levels, and the Verifier worker selects priority in its structured report.
 - Registers Pi's static OAuth flow loaders so standalone Goah bundles include subscription login and token refresh modules.
 - Emits content-addressed Transcript v2 request components and references them from each prepared provider request.
 - Removed `request_human`; CEO writes questions directly in its Assistant Message and `mail.send` remains Agent-only.

@@ -6,6 +6,7 @@ import {
   type EventRecord,
   type JsonValue,
   type Ledger,
+  type MailPriority,
   type MailSnapshot,
 } from "goah-ledger-contract";
 import { spawn } from "node:child_process";
@@ -20,6 +21,7 @@ export interface VerificationFinding {
 
 export interface VerificationResult {
   findings: VerificationFinding[];
+  priority: MailPriority;
   tokensUsed: number;
 }
 export interface VerifierModel {
@@ -124,7 +126,6 @@ export class VerificationPlane {
     this.#validate(result);
     const thread = this.ledger.thread(turn.threadId);
     if (!thread) throw new Error("verified Turn has no Thread");
-    const level = result.findings.length ? ("decision" as const) : ("fyi" as const);
     const body = {
       type: "verification_result",
       turnId,
@@ -152,7 +153,7 @@ export class VerificationPlane {
       id: this.#mailId("verification", turnId, thread.agent, result),
       to: thread.agent,
       from: "verifier",
-      level,
+      priority: result.priority,
       ...route,
       body,
       readAt: null,
@@ -172,7 +173,7 @@ export class VerificationPlane {
         id: this.#mailId("audit", String(sinceSeq), "ceo", result),
         to: "ceo",
         from: "audit",
-        level: result.findings.length ? "decision" : "fyi",
+        priority: result.priority,
         ...ceoInboxRoute(),
         body: {
           type: "audit_result",
@@ -188,6 +189,8 @@ export class VerificationPlane {
   }
 
   #validate(result: VerificationResult): void {
+    if (result.priority !== "low" && result.priority !== "normal" && result.priority !== "high")
+      throw new Error("verification priority is invalid");
     for (const finding of result.findings)
       if (
         !finding.id.trim() ||

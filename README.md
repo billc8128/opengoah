@@ -203,7 +203,7 @@ Not guaranteed, by design honesty:
 
 | Milestone | Scope |
 |---|---|
-| v2 ledger kernel | ✅ stream-aware event schema, typed replay reducers, private projection metadata, required/ignorable events, SQLite schema v28, transaction fault injection |
+| v2 ledger kernel | ✅ stream-aware event schema, typed replay reducers, private projection metadata, required/ignorable events, SQLite schema v29, transaction fault injection |
 | resumable Thread + Turn transcript | ✅ durable Thread/Turn/Item projections, normalized Pi messages/tools/requests, compaction facts, replay and interrupted-tool repair |
 | Active Context | ✅ deterministic Markdown composition with evidence source sequences |
 | execution modules | ✅ Goal/Wake/Schedule/Mailbox/Handoff contracts are layered above the generic kernel; Schedule has a closed lifecycle and Action is deliberately deferred |

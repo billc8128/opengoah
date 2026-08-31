@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Replaces Mail content levels with optional Agent-selected `high|normal|low` delivery priority, defaulting to `normal`.
 - Restores a compact full-width background band for Human messages so prompts remain visually distinct from Goah replies without adding vertical padding.
 
 ## 0.13.8

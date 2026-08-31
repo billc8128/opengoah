@@ -11,6 +11,7 @@ import {
 import { createPiModel, resolvedApiKey } from "./model-provider.js";
 interface VerificationResult {
   findings: Array<{ id: string; body: unknown; evidence: number[]; riskWeight: number }>;
+  priority: "low" | "normal" | "high";
   tokensUsed: number;
 }
 
@@ -32,8 +33,10 @@ export async function runVerificationWorker(): Promise<void> {
     if (provider === "faux") {
       const faux = configured.faux!;
       const findings = JSON.parse(process.env.GOAH_VERIFIER_FAUX_FINDINGS ?? "[]");
+      const priority =
+        process.env.GOAH_VERIFIER_FAUX_PRIORITY ?? (findings.length ? "normal" : "low");
       faux.setResponses([
-        fauxAssistantMessage(fauxToolCall("report_findings", { findings }), {
+        fauxAssistantMessage(fauxToolCall("report_findings", { findings, priority }), {
           stopReason: "toolUse",
         }),
       ]);
@@ -46,6 +49,7 @@ export async function runVerificationWorker(): Promise<void> {
       label: "Report findings",
       description: "Return evidence-backed verification findings.",
       parameters: Type.Object({
+        priority: Type.Union([Type.Literal("low"), Type.Literal("normal"), Type.Literal("high")]),
         findings: Type.Array(
           Type.Object({
             id: Type.String(),
@@ -56,8 +60,11 @@ export async function runVerificationWorker(): Promise<void> {
         ),
       }),
       execute: async (_id, params) => {
-        const input = params as { findings: VerificationResult["findings"] };
-        result = { findings: input.findings, tokensUsed };
+        const input = params as {
+          findings: VerificationResult["findings"];
+          priority: VerificationResult["priority"];
+        };
+        result = { findings: input.findings, priority: input.priority, tokensUsed };
         return {
           content: [{ type: "text", text: "findings recorded" }],
           details: result,
@@ -71,7 +78,7 @@ export async function runVerificationWorker(): Promise<void> {
         : "Verify the handoff against trace facts. Never trust self-report without support.";
     const agent = new Agent({
       initialState: {
-        systemPrompt: `${systemPrompt} You must call report_findings exactly once.`,
+        systemPrompt: `${systemPrompt} You must call report_findings exactly once. Choose high priority only for urgent/time-sensitive risk, normal for actionable findings, and low when no prompt action is needed.`,
         model,
         tools: [tool],
       },

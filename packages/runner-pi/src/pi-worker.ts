@@ -785,16 +785,14 @@ function createRpcTools(
       "mail.send",
       tool(
         "send_mail",
-        "Send durable Mail to another Agent that owns the routed Goal. Human communication belongs in the readable Assistant Message.",
+        "Send durable Mail to another Agent that owns the routed Goal. Choose high only for urgent/time-sensitive delivery, omit priority for normal actionable work, and use low for background/FYI information. Human communication belongs in the readable Assistant Message.",
         "mail.send",
         Type.Object({
           to: Type.String(),
           goalId: Type.String(),
-          level: Type.Union([
-            Type.Literal("fyi"),
-            Type.Literal("decision"),
-            Type.Literal("emergency"),
-          ]),
+          priority: Type.Optional(
+            Type.Union([Type.Literal("low"), Type.Literal("normal"), Type.Literal("high")]),
+          ),
           body: Type.Any(),
         }),
       ),

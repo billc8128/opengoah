@@ -63,7 +63,7 @@ type ProjectionName =
   | "mailbox"
   | "work_records";
 
-export const SQLITE_SCHEMA_VERSION = 28;
+export const SQLITE_SCHEMA_VERSION = 29;
 
 const createThreads = `CREATE TABLE IF NOT EXISTS threads (
   id TEXT PRIMARY KEY,
@@ -251,7 +251,7 @@ CREATE TABLE IF NOT EXISTS mailbox (
   to_agent TEXT NOT NULL,
   from_agent TEXT NOT NULL,
   specialist_role TEXT CHECK(specialist_role IS NULL OR specialist_role IN ('verifier','audit')),
-  level TEXT NOT NULL CHECK(level IN ('fyi','decision','emergency')),
+  priority TEXT NOT NULL CHECK(priority IN ('low','normal','high')),
   goal_id TEXT REFERENCES goals(id),
   body TEXT NOT NULL CHECK(json_valid(body)),
   read_at TEXT,
@@ -711,8 +711,7 @@ export class SqliteLedger implements Ledger {
     }
     if (!request.id.trim() || !request.reason.trim())
       throw new Error("delegation id and reason are required");
-    if (request.childGoal.owner === actor)
-      throw new Error("delegate to a distinct worker agent");
+    if (request.childGoal.owner === actor) throw new Error("delegate to a distinct worker agent");
     if (
       !request.childGoal.id.trim() ||
       !request.childGoal.objective.trim() ||
@@ -742,7 +741,7 @@ export class SqliteLedger implements Ledger {
         id: `delegation-mail:${request.id}`,
         to: goal.owner,
         from: actor,
-        level: "decision",
+        priority: "normal",
         ...goalRoute(goal.id),
         body: {
           type: "delegation",
@@ -844,7 +843,7 @@ export class SqliteLedger implements Ledger {
           id: `reassignment-new-mail:${request.id}`,
           to: goal.owner,
           from: actor,
-          level: "decision",
+          priority: "normal",
           ...goalRoute(goal.id),
           body: {
             type: "reassignment",
@@ -1305,7 +1304,7 @@ export class SqliteLedger implements Ledger {
         current.to !== mail.to ||
         current.from !== mail.from ||
         current.specialistRole !== mail.specialistRole ||
-        current.level !== mail.level ||
+        current.priority !== mail.priority ||
         current.goalId !== mail.goalId ||
         !isDeepStrictEqual(current.body, mail.body)
       )
@@ -1584,7 +1583,7 @@ export class SqliteLedger implements Ledger {
     return (
       this.db
         .prepare(
-          "SELECT * FROM mailbox WHERE read_at IS NULL AND level IN ('decision','emergency') ORDER BY rowid",
+          "SELECT * FROM mailbox WHERE read_at IS NULL AND priority IN ('normal','high') ORDER BY rowid",
         )
         .all() as Row[]
     ).map(mapMail);
@@ -2272,6 +2271,8 @@ export class SqliteLedger implements Ledger {
   #assertMailRequest(mail: MailSnapshot, actor: string): void {
     if (!mail.id.trim() || !mail.to.trim() || !mail.from.trim())
       throw new Error("mail id, sender, and recipient are required");
+    if (mail.priority !== "low" && mail.priority !== "normal" && mail.priority !== "high")
+      throw new Error("mail priority is invalid");
     if (mail.from !== actor && actor !== "supervisor")
       throw new Error("mail sender does not match actor");
     if (mail.readAt !== null) throw new Error("new mail must be unread");
@@ -3083,7 +3084,7 @@ export class SqliteLedger implements Ledger {
       const v = raw as MailSnapshot;
       this.db
         .prepare(
-          `INSERT INTO mailbox VALUES (?,?,?,?,?,?,?,json(?),?) ON CONFLICT(id) DO UPDATE SET route_kind=excluded.route_kind,to_agent=excluded.to_agent,from_agent=excluded.from_agent,specialist_role=excluded.specialist_role,level=excluded.level,goal_id=excluded.goal_id,body=excluded.body,read_at=excluded.read_at`,
+          `INSERT INTO mailbox VALUES (?,?,?,?,?,?,?,json(?),?) ON CONFLICT(id) DO UPDATE SET route_kind=excluded.route_kind,to_agent=excluded.to_agent,from_agent=excluded.from_agent,specialist_role=excluded.specialist_role,priority=excluded.priority,goal_id=excluded.goal_id,body=excluded.body,read_at=excluded.read_at`,
         )
         .run(
           v.id,
@@ -3091,7 +3092,7 @@ export class SqliteLedger implements Ledger {
           v.to,
           v.from,
           v.specialistRole,
-          v.level,
+          v.priority,
           v.goalId,
           JSON.stringify(v.body),
           v.readAt,
@@ -3328,7 +3329,7 @@ function mapMail(r: Row): MailSnapshot {
     to: String(r.to_agent),
     from: String(r.from_agent),
     specialistRole: r.specialist_role === null ? null : String(r.specialist_role),
-    level: String(r.level),
+    priority: String(r.priority),
     goalId: r.goal_id === null ? null : String(r.goal_id),
     body: JSON.parse(String(r.body)),
     readAt: r.read_at === null ? null : String(r.read_at),

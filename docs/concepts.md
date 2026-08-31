@@ -39,7 +39,7 @@ A successful committed Turn may schedule the next observation, producing another
 - **Schedule** — the durable record of requested future Goal motion (`pending → consumed | cancelled | superseded`); a due Schedule atomically creates exactly one Wake.
 - **Work Record** — one versioned semantic document per Goal in the event-sourced filesystem; every committed Turn must update it under the current Goal revision.
 - **Handoff** — the declarative terminal control result of a committed Turn, carrying outcome plus evidence that points at a Work Record revision instead of duplicating prose.
-- **Mail** — the bounded, acknowledged Agent-only asynchronous delivery path (Goal, CEO-inbox, or Specialist-inbox routes) for Agent-to-Agent communication and verification/audit findings; Human conversation uses canonical Thread Messages and never Mail or Wake.
+- **Mail** — the bounded, acknowledged Agent-only asynchronous delivery path (Goal, CEO-inbox, or Specialist-inbox routes) for Agent-to-Agent communication and verification/audit findings; its sending Agent selects `high|normal|low` delivery priority and Supervisor applies that mechanically. Human conversation uses canonical Thread Messages and never Mail or Wake.
 - **CEO / Child / Verifier / Audit** — the canonical Thread roles: CEO is the only user-facing Agent and owns Root Goals only; each Child Agent owns a Child Goal and executes it; Verifier and Audit are Wake-triggered specialist Threads that check transcripts and deliver findings by Mail.
 
 Deeper detail: [`docs/architecture.md`](./architecture.md), decisions in [`docs/adr/`](./adr/), and the Goal operating model in [`docs/proposals/goal-bound-agent-operating-model.md`](./proposals/goal-bound-agent-operating-model.md).

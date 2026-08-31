@@ -207,7 +207,7 @@ test("vertical slice commits handoff while the runner owns local files", async (
       id: "mail-1",
       to: "worker",
       from: "ceo",
-      level: "decision",
+      priority: "normal",
       ...goalRoute("root"),
       body: {},
       readAt: null,
@@ -897,8 +897,18 @@ test("typed RPC parameter errors reject missing and mistyped capability params",
     /invalid parameter expectedRevision for work_record\.update/,
   );
   await assert.rejects(
-    () => rpc()("mail.send", { to: "worker", goalId: "child", level: "urgent", body: null }),
-    /invalid parameter level for mail\.send/,
+    () => rpc()("mail.send", { to: "worker", goalId: "child", priority: "urgent", body: null }),
+    /invalid parameter priority for mail\.send/,
+  );
+  assert.equal(
+    (
+      (await rpc()("mail.send", {
+        to: "worker",
+        goalId: "child",
+        body: { message: "default priority" },
+      })) as { priority?: unknown }
+    ).priority,
+    "normal",
   );
   await assert.rejects(
     () =>
@@ -2418,7 +2428,7 @@ test("automatic Goal rounds advance from the Work Record timeline", async () => 
   ledger.close();
 });
 
-test("crashed wake keeps emergency mail and local partial work for recovery", async () => {
+test("crashed wake keeps high-priority Mail and local partial work for recovery", async () => {
   const repo = repository();
   const clock = new SimulatedClock();
   const ledger = createMemoryLedger({ clock });
@@ -2436,7 +2446,7 @@ test("crashed wake keeps emergency mail and local partial work for recovery", as
       id: "urgent",
       to: "worker",
       from: "ceo",
-      level: "emergency",
+      priority: "high",
       ...goalRoute("root"),
       body: { alert: true },
       readAt: null,
@@ -2657,7 +2667,7 @@ test("Mail redelivery advances past coalesced terminal trigger aliases", async (
       id: "decision",
       to: "ceo",
       from: "verifier",
-      level: "decision",
+      priority: "normal",
       ...goalRoute("root"),
       body: {},
       readAt: null,
@@ -2729,7 +2739,7 @@ test("a queued Mail Wake adopts the latest Goal revision at admission", async ()
       id: "decision",
       to: "worker",
       from: "ceo",
-      level: "decision",
+      priority: "normal",
       ...goalRoute("child"),
       body: {},
       readAt: null,
@@ -2879,7 +2889,7 @@ test("schedule and mail triggers are durable and coalesced", async () => {
       id: "decision",
       to: "worker",
       from: "ceo",
-      level: "decision",
+      priority: "normal",
       ...goalRoute("root"),
       body: {},
       readAt: null,
@@ -2965,17 +2975,19 @@ test("verification plane records findings and reports calibrated quality", async
             riskWeight: 2,
           },
         ],
+        priority: "high",
         tokensUsed: 10,
       };
     },
     blindAudit: async (facts) => {
       blindPayload = JSON.stringify(facts);
-      return { findings: [], tokensUsed: 5 };
+      return { findings: [], priority: "low", tokensUsed: 5 };
     },
   };
   const plane = new VerificationPlane(ledger, supervisor, model);
   await plane.verifyTurn("w");
   assert.equal(verifiedTurn, "w");
+  assert.equal(ledger.unreadMail("worker")[0]?.priority, "high");
   assert.deepEqual(
     ledger
       .mailbox()
@@ -3020,8 +3032,8 @@ test("verification refuses missing and in-progress Turns", async () => {
   const ledger = createMemoryLedger({ clock });
   const supervisor = new Supervisor(ledger, fauxRunner([]), clock);
   const model: VerifierModel = {
-    verifyTurn: async () => ({ findings: [], tokensUsed: 0 }),
-    blindAudit: async () => ({ findings: [], tokensUsed: 0 }),
+    verifyTurn: async () => ({ findings: [], priority: "low", tokensUsed: 0 }),
+    blindAudit: async () => ({ findings: [], priority: "low", tokensUsed: 0 }),
   };
   const plane = new VerificationPlane(ledger, supervisor, model);
   await assert.rejects(() => plane.verifyTurn("missing"), /Turn not found/);
@@ -3047,9 +3059,10 @@ test("verification validates the complete result before committing it", async ()
         { id: "valid", body: {}, evidence: [evidence.seq], riskWeight: 1 },
         { id: "invalid", body: {}, evidence: [999999], riskWeight: 1 },
       ],
+      priority: "normal",
       tokensUsed: 0,
     }),
-    blindAudit: async () => ({ findings: [], tokensUsed: 0 }),
+    blindAudit: async () => ({ findings: [], priority: "low", tokensUsed: 0 }),
   };
   await assert.rejects(
     () => new VerificationPlane(ledger, supervisor, model).verifyTurn(turn.id),
@@ -3058,6 +3071,14 @@ test("verification validates the complete result before committing it", async ()
   assert.equal(
     ledger.mailbox().some((mail) => mail.from === "verifier"),
     false,
+  );
+  const invalidPriority: VerifierModel = {
+    verifyTurn: async () => ({ findings: [], priority: "urgent" as "low", tokensUsed: 0 }),
+    blindAudit: async () => ({ findings: [], priority: "low", tokensUsed: 0 }),
+  };
+  await assert.rejects(
+    () => new VerificationPlane(ledger, supervisor, invalidPriority).verifyTurn(turn.id),
+    /priority is invalid/,
   );
   ledger.close();
 });
@@ -3071,8 +3092,8 @@ test("verification routes a custom-named Specialist from the Thread role, not th
   const turn = testTurn(ledger, "quality", "quality-turn", { role: "verifier" });
   completeStoredTurn(ledger, turn.id, clock.now().toISOString(), "quality");
   const model: VerifierModel = {
-    verifyTurn: async () => ({ findings: [], tokensUsed: 1 }),
-    blindAudit: async () => ({ findings: [], tokensUsed: 0 }),
+    verifyTurn: async () => ({ findings: [], priority: "low", tokensUsed: 1 }),
+    blindAudit: async () => ({ findings: [], priority: "low", tokensUsed: 0 }),
   };
   await new VerificationPlane(ledger, supervisor, model).verifyTurn(turn.id);
   const mail = ledger.unreadMail("quality")[0]!;
@@ -3106,9 +3127,10 @@ test("Verification Mail reaches the next Human Turn and is acknowledged on succe
   const model: VerifierModel = {
     verifyTurn: async () => ({
       findings: [{ id: "f", body: { issue: "must surface" }, evidence: [evidence], riskWeight: 1 }],
+      priority: "normal",
       tokensUsed: 1,
     }),
-    blindAudit: async () => ({ findings: [], tokensUsed: 0 }),
+    blindAudit: async () => ({ findings: [], priority: "low", tokensUsed: 0 }),
   };
   await new VerificationPlane(ledger, supervisor, model).verifyTurn(first.turnId);
   const mail = ledger.unreadMail("ceo")[0]!;
@@ -3128,7 +3150,7 @@ test("Verification Mail reaches the next Human Turn and is acknowledged on succe
   ledger.close();
 });
 
-test("CEO context delivers Verification Mail in bounded FIFO batches", async () => {
+test("CEO context preserves arrival order within one bounded Mail priority", async () => {
   const clock = new SimulatedClock();
   const ledger = createMemoryLedger({ clock });
   let context: TurnContextPayload | null = null;
@@ -3152,7 +3174,7 @@ test("CEO context delivers Verification Mail in bounded FIFO batches", async () 
         id: `m${index}`,
         to: "ceo",
         from: "verifier",
-        level: "fyi",
+        priority: "low",
         ...ceoInboxRoute(),
         body: { message: `mail-${index}` },
         readAt: null,
@@ -3176,7 +3198,7 @@ test("CEO inbox Mail does not create an automatic CEO Wake", async () => {
       id: "verification-mail",
       to: "ceo",
       from: "verifier",
-      level: "decision",
+      priority: "normal",
       ...ceoInboxRoute(),
       body: {},
       readAt: null,
@@ -3657,7 +3679,7 @@ test("bidirectional runner RPC applies child capabilities and rejects parent-onl
     {
       rpc: {
         method: "mail.send",
-        params: { to: "ceo", goalId: "parent", level: "fyi", body: { message: "working" } },
+        params: { to: "ceo", goalId: "parent", priority: "low", body: { message: "working" } },
       },
     },
     {
@@ -3954,7 +3976,7 @@ test("Agent Mail cannot masquerade as a CEO or specialist inbox route", () => {
           id: "to-child",
           to: "worker",
           from: "ceo",
-          level: "decision",
+          priority: "normal",
           ...ceoInboxRoute(),
           body: {},
           readAt: null,
@@ -3970,7 +3992,7 @@ test("Agent Mail cannot masquerade as a CEO or specialist inbox route", () => {
           id: "to-ceo",
           to: "ceo",
           from: "worker",
-          level: "decision",
+          priority: "normal",
           ...ceoInboxRoute(),
           body: {},
           readAt: null,
@@ -4040,7 +4062,7 @@ test("Specialist inbox Mail opens only the matching Specialist Turn", async () =
       id: "verify-mail",
       to: "verifier",
       from: "supervisor",
-      level: "decision",
+      priority: "normal",
       ...specialistInboxRoute("verifier"),
       body: { request: "inspect" },
       readAt: null,
@@ -4129,7 +4151,7 @@ test("Child mail.send cannot address Human", async () => {
     {
       rpc: {
         method: "mail.send",
-        params: { to: "human", goalId: "root", level: "decision", body: { message: "bypass" } },
+        params: { to: "human", goalId: "root", priority: "normal", body: { message: "bypass" } },
       },
     },
     {
@@ -4160,7 +4182,7 @@ test("mail.send rejects an unknown Agent recipient before writing Mail", async (
     {
       rpc: {
         method: "mail.send",
-        params: { to: "wroker", level: "decision", body: { message: "typo" } },
+        params: { to: "wroker", priority: "normal", body: { message: "typo" } },
       },
     },
     {
@@ -4188,7 +4210,7 @@ test("mail.send requires an explicit recipient Goal route", async () => {
     {
       rpc: {
         method: "mail.send",
-        params: { to: "ceo", level: "decision", body: { message: "missing route" } },
+        params: { to: "ceo", priority: "normal", body: { message: "missing route" } },
       },
     },
     {
@@ -4247,7 +4269,7 @@ test("a Goal Turn receives only Mail routed to that Goal", async () => {
       id: "mail-a",
       to: "worker",
       from: "ceo",
-      level: "decision",
+      priority: "normal",
       ...goalRoute("a"),
       body: { secret: "only-a" },
       readAt: null,
@@ -4430,7 +4452,7 @@ test("Mail and Schedule effects occur only when the Agent requests them explicit
           params: {
             to: "ceo",
             goalId: "parent",
-            level: "decision",
+            priority: "normal",
             body: { type: "explicit_notice" },
           },
         },
@@ -4561,7 +4583,7 @@ test("one root goal forms a two-agent organization and returns completion contro
           params: {
             to: "ceo",
             goalId: "company",
-            level: "decision",
+            priority: "normal",
             body: { type: "completion_proposal", childGoalId: "market" },
           },
         },
@@ -4580,7 +4602,7 @@ test("one root goal forms a two-agent organization and returns completion contro
           params: {
             to: "ceo",
             goalId: "company",
-            level: "decision",
+            priority: "normal",
             body: { type: "completion_proposal", childGoalId: "operations" },
           },
         },
@@ -4688,6 +4710,7 @@ test("process verifier model runs on official Pi core and records findings", asy
       GOAH_VERIFIER_FAUX_FINDINGS: JSON.stringify([
         { id: "verify-finding", body: { issue: "found" }, evidence: [evidence.seq], riskWeight: 3 },
       ]),
+      GOAH_VERIFIER_FAUX_PRIORITY: "high",
     },
   });
   await new VerificationPlane(ledger, supervisor, model).verifyTurn("verify-wake");
@@ -4695,6 +4718,7 @@ test("process verifier model runs on official Pi core and records findings", asy
     ledger.mailbox().some((mail) => mail.from === "verifier" && mail.to === "worker"),
     true,
   );
+  assert.equal(ledger.unreadMail("worker")[0]?.priority, "high");
   ledger.close();
 });
 
@@ -4915,7 +4939,7 @@ test("turn admission stays bounded on a large ledger", async () => {
             id: `mail:ceo-goal:${i}`,
             to: "ceo",
             from: "worker-0",
-            level: "fyi",
+            priority: "low",
             ...goalRoute("root-batch"),
             body: { n: i },
             readAt: null,
@@ -4925,7 +4949,7 @@ test("turn admission stays bounded on a large ledger", async () => {
               id: `mail:ceo:${i}`,
               to: "ceo",
               from: "verifier",
-              level: "fyi",
+              priority: "low",
               ...ceoInboxRoute(),
               body: { n: i },
               readAt: null,
@@ -4934,7 +4958,7 @@ test("turn admission stays bounded on a large ledger", async () => {
               id: `mail:w:${i}`,
               to: `worker-${i % 5}`,
               from: "ceo",
-              level: "fyi",
+              priority: "low",
               ...goalRoute(`child-${i % 50}`),
               body: { n: i },
               readAt: null,
@@ -5090,7 +5114,7 @@ test("stuck execution waits time out with a diagnostic event and keep admitting"
   ledger.close();
 });
 
-test("emergency Mail survives a bounded context budget that fyis would fill", async () => {
+test("high-priority Mail survives a bounded context budget that low-priority Mail would fill", async () => {
   const clock = new SimulatedClock();
   const ledger = createMemoryLedger({ clock });
   const pending = Promise.withResolvers<never>();
@@ -5110,17 +5134,17 @@ test("emergency Mail survives a bounded context budget that fyis would fill", as
     },
     terminateProcess: async () => undefined,
   };
-  // A budget that fits roughly two mails: fyi bodies are large, the emergency
-  // body is small, and the emergency arrives last in delivery order.
+  // A budget that fits roughly two mails: low-priority bodies are large, the
+  // high-priority body is small, and it arrives last in delivery order.
   const supervisor = new Supervisor(ledger, runner, clock, { memoryTailChars: 600 });
   const body = "x".repeat(150);
   for (let i = 0; i < 6; i++) {
     ledger.putMail(
       {
-        id: `mail:fyi:${i}`,
+        id: `mail:low:${i}`,
         to: "ceo",
         from: "verifier",
-        level: "fyi",
+        priority: "low",
         ...ceoInboxRoute(),
         body: { note: body },
         readAt: null,
@@ -5130,10 +5154,10 @@ test("emergency Mail survives a bounded context budget that fyis would fill", as
   }
   ledger.putMail(
     {
-      id: "mail:emergency",
+      id: "mail:high",
       to: "ceo",
       from: "verifier",
-      level: "emergency",
+      priority: "high",
       ...ceoInboxRoute(),
       body: { note: "drop everything" },
       readAt: null,
@@ -5142,15 +5166,15 @@ test("emergency Mail survives a bounded context budget that fyis would fill", as
   );
   const accepted = await supervisor.startHumanTurn("status");
   const incoming = request!.context.text;
-  assert.match(incoming, /\[emergency\] mail:emergency from verifier/);
-  const delivered = [...incoming.matchAll(/- \[(fyi|decision|emergency)\] (mail:[\w:-]+)/g)].map(
+  assert.match(incoming, /\[high\] mail:high from verifier/);
+  const delivered = [...incoming.matchAll(/- \[(low|normal|high)\] (mail:[\w:-]+)/g)].map(
     (match) => match[2],
   );
-  assert.equal(delivered[0], "mail:emergency");
+  assert.equal(delivered[0], "mail:high");
   assert.ok(delivered.length >= 2 && delivered.length <= 3, `unexpected budget use: ${delivered}`);
   assert.ok(
-    delivered.slice(1).every((id) => id?.startsWith("mail:fyi:")),
-    "only fyi may follow the emergency inside the budget",
+    delivered.slice(1).every((id) => id?.startsWith("mail:low:")),
+    "only low-priority Mail may follow the high-priority Mail inside the budget",
   );
   await supervisor.interruptTurn(accepted.turnId);
   ledger.close();

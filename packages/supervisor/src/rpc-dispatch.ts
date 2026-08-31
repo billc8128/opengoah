@@ -325,13 +325,14 @@ export async function dispatchAgentRpc(
     const goal = deps.goal(goalId);
     if (!deps.validGoalOwner(to, goal))
       throw new Error("Agent Mail Goal route does not match the recipient role and ownership");
-    if (input.level !== "fyi" && input.level !== "decision" && input.level !== "emergency")
-      throw new Error(`invalid parameter level for mail.send`);
+    const priority = input.priority ?? "normal";
+    if (priority !== "low" && priority !== "normal" && priority !== "high")
+      throw new Error(`invalid parameter priority for mail.send`);
     const mail: MailSnapshot = {
       id: randomUUID(),
       to,
       from: agent,
-      level: input.level,
+      priority,
       ...goalRoute(goalId),
       body: input.body ?? null,
       readAt: null,

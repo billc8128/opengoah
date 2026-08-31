@@ -394,7 +394,7 @@ One transaction commits:
 1. `delegation.created`;
 2. Child Goal revision zero;
 3. Child Work Record revision zero;
-4. decision Mail to the Child owner;
+4. normal-priority delegation Mail to the Child owner;
 5. initial queued Wake.
 
 Failure rolls back every effect. Reusing the delegation id with a different payload fails. Reusing the same id and payload returns the committed result.
@@ -745,7 +745,7 @@ Hide by default:
 
 ## 18. Migration
 
-This development release has no external users, so schema v28 does not migrate earlier development schemas. Development workspaces are recreated. Thread persists canonical Agent role, including the unique `ceo` identity; Turn persists `user_message|wake` trigger plus optional Goal commitment and temporary terminal Runner cleanup ownership; Transcript v2 content-addresses exact request components; Wake and Schedule retain only Goal or Specialist automatic targets. Mail is Agent-only and uses discriminated Goal, CEO-inbox, or Specialist-inbox routes. Human replacement is one Ledger transaction, Turn admission freezes the current active Goal revision, and automatic Turns can start only from a claimed Wake.
+This development release has no external users, so schema v29 does not migrate earlier development schemas. Development workspaces are recreated. Thread persists canonical Agent role, including the unique `ceo` identity; Turn persists `user_message|wake` trigger plus optional Goal commitment and temporary terminal Runner cleanup ownership; Transcript v2 content-addresses exact request components; Wake and Schedule retain only Goal or Specialist automatic targets. Mail is Agent-only, uses discriminated Goal, CEO-inbox, or Specialist-inbox routes, and carries Agent-selected delivery priority. Human replacement is one Ledger transaction, Turn admission freezes the current active Goal revision, and automatic Turns can start only from a claimed Wake.
 
 ## 19. Implementation sequence
 

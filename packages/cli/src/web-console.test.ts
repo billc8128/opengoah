@@ -20,7 +20,7 @@ test("local Console serves assets, redacted snapshots, and CEO control through S
       id: "secret-mail",
       to: "ceo",
       from: "verifier",
-      level: "decision",
+      priority: "normal",
       ...ceoInboxRoute(),
       body: { apiKey: "sk-do-not-expose-123456789" },
       readAt: null,

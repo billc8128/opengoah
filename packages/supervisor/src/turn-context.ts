@@ -230,7 +230,7 @@ export function humanContext(
     );
   const sourceSeqs = [...turnSourceSeqs, ...mailSourceSeqs(deps.ledger, mail)];
   const incoming = mail.map(
-    (item) => `- [${item.level}] ${item.id} from ${item.from}: ${boundedJson(item.body)}`,
+    (item) => `- [${item.priority}] ${item.id} from ${item.from}: ${boundedJson(item.body)}`,
   );
   const activeGoal = deps.currentRoot();
   const context: TurnContext = {
@@ -303,13 +303,13 @@ export function contextMail(
       : role === "ceo"
         ? mail.routeKind === "ceo_inbox"
         : mail.routeKind === "specialist_inbox" && mail.specialistRole === role;
-  // Delivery order within one level is preserved, but higher levels are
-  // considered first so bounded budgets never evict emergency Mail with fyi.
+  // Delivery order within one priority is preserved. The sending Agent owns
+  // the priority decision; Supervisor only applies it to the bounded queue.
   const candidates = deps.ledger.unreadMail(agent).filter(matches);
   const prioritized = [
-    ...candidates.filter((mail) => mail.level === "emergency"),
-    ...candidates.filter((mail) => mail.level === "decision"),
-    ...candidates.filter((mail) => mail.level === "fyi"),
+    ...candidates.filter((mail) => mail.priority === "high"),
+    ...candidates.filter((mail) => mail.priority === "normal"),
+    ...candidates.filter((mail) => mail.priority === "low"),
   ];
   for (const mail of prioritized) {
     const cost = Math.min(JSON.stringify(mail.body).length, 2_000) + 128;

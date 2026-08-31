@@ -44,6 +44,8 @@ Goal adds a distinct `verificationMethod` alongside `observationMethod`:
 
 Every Child Agent owns a Child Goal. There is no generic task-only Agent primitive. Atomic delegation commits Child Goal, observation method, verification method, initial Work Record, decision Mail, and initial Wake together. Child Agent proposes completion; CEO verifies and completes the Child Goal. Human retains Root completion authority.
 
+Implementation note (2026-08-31): schema v29 represents that delegation brief as normal-priority Mail. Priority is delivery metadata rather than a semantic message category.
+
 ### Handoff and memory
 
 Goal Handoff no longer duplicates observations, completed work, and next steps. It records only:

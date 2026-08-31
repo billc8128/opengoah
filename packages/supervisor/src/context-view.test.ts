@@ -138,7 +138,7 @@ test("verification Mail is delivered through the bounded Incoming section", () =
         id: "verification",
         to: "worker",
         from: "verifier",
-        level: "decision",
+        priority: "normal",
         ...goalRoute("goal"),
         body: { type: "verification_result", findings: [{ body: { issue: "unsupported claim" } }] },
         readAt: null,

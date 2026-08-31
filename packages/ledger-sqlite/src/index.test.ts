@@ -297,15 +297,15 @@ test("Goal completion requires non-empty evidence", () => {
   ledger.close();
 });
 
-test("pre-v28 development schemas are rejected explicitly", () => {
-  for (const version of [1, 6, 9, 10, 11, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]) {
+test("pre-v29 development schemas are rejected explicitly", () => {
+  for (const version of [1, 6, 9, 10, 11, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]) {
     const path = join(mkdtempSync(join(tmpdir(), `goah-retired-${version}-`)), "ledger.sqlite");
     const raw = new DatabaseSync(path);
     raw.exec(`PRAGMA user_version=${version}`);
     raw.close();
     assert.throws(
       () => new SqliteLedger(path, { clock: new FixedClock() }),
-      /predates runtime schema 28/,
+      /predates runtime schema 29/,
     );
   }
 });
@@ -729,7 +729,7 @@ test("schema has events plus the active projections and replay reproduces all of
       id: "m1",
       to: "agent-1",
       from: "verifier",
-      level: "decision",
+      priority: "normal",
       ...specialistInboxRoute("verifier"),
       body: {},
       readAt: null,
@@ -1185,7 +1185,7 @@ test("mail is acknowledged only by an atomic successful handoff", () => {
       id: "m",
       to: "agent-1",
       from: "human",
-      level: "emergency",
+      priority: "high",
       ...goalRoute(turn.goalId!),
       body: {},
       readAt: null,
@@ -1197,7 +1197,7 @@ test("mail is acknowledged only by an atomic successful handoff", () => {
       id: "later",
       to: "agent-1",
       from: "human",
-      level: "decision",
+      priority: "normal",
       ...goalRoute(turn.goalId!),
       body: {},
       readAt: null,
@@ -1218,19 +1218,50 @@ test("mail is acknowledged only by an atomic successful handoff", () => {
   ledger.close();
 });
 
+test("only high- and normal-priority Mail trigger automatic motion", () => {
+  const ledger = new SqliteLedger(":memory:", { clock: new FixedClock() });
+  const turn = goalTurn(ledger, "agent-1", "turn-priority");
+  for (const priority of ["low", "high", "normal"] as const)
+    ledger.putMail(
+      {
+        id: priority,
+        to: "agent-1",
+        from: "human",
+        priority,
+        ...goalRoute(turn.goalId!),
+        body: {},
+        readAt: null,
+      },
+      "human",
+    );
+  assert.deepEqual(
+    ledger.triggeringMail().map((mail) => mail.id),
+    ["high", "normal"],
+  );
+  ledger.close();
+});
+
 test("Mail identity is immutable and batch conflicts commit nothing", () => {
   const ledger = new SqliteLedger(":memory:", { clock: new FixedClock() });
   const original = {
     id: "m",
     to: "a",
     from: "verifier",
-    level: "decision" as const,
+    priority: "normal" as const,
     ...specialistInboxRoute("verifier"),
     body: { value: 1 },
     readAt: null,
   };
   const first = ledger.putMail(original, "verifier");
   assert.equal(ledger.putMail(original, "verifier").seq, first.seq);
+  assert.throws(
+    () =>
+      ledger.putMail(
+        { ...original, id: "invalid-priority", priority: "urgent" as "normal" },
+        "verifier",
+      ),
+    /mail priority is invalid/,
+  );
   assert.throws(() => ledger.putMail({ ...original, to: "b" }, "verifier"), /different content/);
   assert.throws(
     () =>
@@ -1240,7 +1271,7 @@ test("Mail identity is immutable and batch conflicts commit nothing", () => {
             id: "new",
             to: "a",
             from: "verifier",
-            level: "fyi",
+            priority: "low",
             ...specialistInboxRoute("verifier"),
             body: {},
             readAt: null,
@@ -1277,7 +1308,7 @@ test("Mail Goal routing is typed, immutable, and owned by the recipient", () => 
     id: "routed",
     to: "a",
     from: "sender",
-    level: "decision" as const,
+    priority: "normal" as const,
     ...goalRoute("g"),
     body: { goalId: "business-data" },
     readAt: null,
@@ -1408,7 +1439,7 @@ test("reading Mail preserves a coalesced Schedule trigger on the same Wake", () 
       id: "m",
       to: "ceo",
       from: "verifier",
-      level: "decision",
+      priority: "normal",
       ...goalRoute("g"),
       body: {},
       readAt: null,
@@ -1457,7 +1488,7 @@ test("handoff event and mail acknowledgement roll back together", () => {
       id: "m",
       to: "agent-1",
       from: "human",
-      level: "emergency",
+      priority: "high",
       ...goalRoute(turn.goalId!),
       body: {},
       readAt: null,
@@ -2347,7 +2378,7 @@ test("completion decision and Goal projection roll back together", () => {
   ledger.close();
 });
 
-test("delegation atomically commits its fact, child goal, decision mail, and wake", () => {
+test("delegation atomically commits its fact, child goal, normal-priority Mail, and wake", () => {
   for (const failAt of [1, 2, 3, 4, 5]) {
     let armed = false;
     let calls = 0;
@@ -2447,7 +2478,7 @@ test("delegation atomically commits its fact, child goal, decision mail, and wak
   assert.equal(result.goal.parentId, "root");
   assert.equal(result.goal.verificationMethod, request.childGoal.verificationMethod);
   assert.equal(ledger.workRecord(result.goal.id)?.recordRevision, 0);
-  assert.equal(result.mail.level, "decision");
+  assert.equal(result.mail.priority, "normal");
   assert.equal(result.wake.status, "queued");
   assert.equal(ledger.events().filter((item) => item.type === "delegation.created").length, 1);
   const delegatedChange = ledger

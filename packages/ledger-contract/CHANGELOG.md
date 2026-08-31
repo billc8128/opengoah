@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Replaced semantic `fyi|decision|emergency` Mail levels with mechanical `low|normal|high` delivery priority selected by the sending Agent.
 - Transcript v2 replaces repeated full request payloads with SHA-256-addressed prompt/context/message/toolset components and ordered `request.prepared` references.
 - Removed `human.request` and Human Mail routes; Agent Mail now uses only Goal, CEO-inbox, and Specialist-inbox routes.
 - Added the ephemeral `RunnerLiveEvent` / `TurnLiveSnapshot` contract so provider deltas never become durable Transcript facts.
