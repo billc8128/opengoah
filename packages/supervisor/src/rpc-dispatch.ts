@@ -150,8 +150,8 @@ export async function dispatchAgentRpc(
   });
   if (method === "ledger.search")
     return deps.ledger.searchEvents(
-      String(input.query),
-      Number(input.limit ?? 20),
+      requireString("ledger.search", input, "query"),
+      optionalNumber("ledger.search", input, "limit", 20),
     ) as unknown as JsonValue;
   if (method === "team.list") return deps.teamList() as unknown as JsonValue;
   if (method === "goal.get") {
@@ -162,7 +162,7 @@ export async function dispatchAgentRpc(
     if (context.trigger.kind !== "user_message" || context.goalCommitment || agent !== "ceo")
       throw new Error("Root Goal creation requires an uncommitted direct CEO Turn");
     const goal = deps.createRootGoal(
-      String(input.objective),
+      requireString("goal.create", input, "objective"),
       typeof input.id === "string" ? input.id : undefined,
       turnId,
     );
@@ -174,7 +174,7 @@ export async function dispatchAgentRpc(
   if (method === "goal.work") {
     if (context.trigger.kind !== "user_message" || context.goalCommitment)
       throw new Error("work_on_goal requires an uncommitted direct CEO Turn");
-    const goal = deps.goal(String(input.goalId));
+    const goal = deps.goal(requireString("goal.work", input, "goalId"));
     if (goal.phase !== "active" || !deps.validGoalOwner(agent, goal))
       throw new Error("work_on_goal requires the active owned Root Goal");
     context.activeGoal = goal;
@@ -185,22 +185,31 @@ export async function dispatchAgentRpc(
   if (method === "work_record.list") return deps.ledger.workRecords() as unknown as JsonValue;
   if (method === "work_record.read")
     return deps.ledger.workRecord(
-      String(input.goalId ?? context.goalCommitment?.goalId ?? context.activeGoal?.id ?? ""),
+      optionalString("work_record.read", input, "goalId") ??
+        context.goalCommitment?.goalId ??
+        context.activeGoal?.id ??
+        "",
     ) as unknown as JsonValue;
   if (method === "work_record.history")
     return deps.ledger.workRecordHistory(
-      String(input.goalId ?? context.goalCommitment?.goalId ?? context.activeGoal?.id ?? ""),
+      optionalString("work_record.history", input, "goalId") ??
+        context.goalCommitment?.goalId ??
+        context.activeGoal?.id ??
+        "",
     ) as unknown as JsonValue;
   if (method === "work_record.diff")
     return deps.ledger.workRecordDiff(
-      String(input.goalId ?? context.goalCommitment?.goalId ?? context.activeGoal?.id ?? ""),
-      Number(input.fromRevision),
-      Number(input.toRevision),
+      optionalString("work_record.diff", input, "goalId") ??
+        context.goalCommitment?.goalId ??
+        context.activeGoal?.id ??
+        "",
+      requireNumber("work_record.diff", input, "fromRevision"),
+      requireNumber("work_record.diff", input, "toRevision"),
     ) as unknown as JsonValue;
   if (method === "work_record.search")
     return deps.ledger.searchWorkRecords(
-      String(input.query),
-      Number(input.limit ?? 20),
+      requireString("work_record.search", input, "query"),
+      optionalNumber("work_record.search", input, "limit", 20),
     ) as unknown as JsonValue;
   if (method === "work_record.update") {
     const binding = context.goalCommitment!;
@@ -208,9 +217,9 @@ export async function dispatchAgentRpc(
       {
         goalId: binding.goalId,
         goalRevision: binding.goalRevision,
-        expectedRevision: Number(input.expectedRevision),
-        content: String(input.content),
-        reason: String(input.reason),
+        expectedRevision: requireNumber("work_record.update", input, "expectedRevision"),
+        content: requireString("work_record.update", input, "content", { allowEmpty: true }),
+        reason: requireString("work_record.update", input, "reason", { allowEmpty: true }),
         evidence: numberArray(input.evidence),
         turnId,
         ...(sourceWakeId ? { sourceWakeId } : {}),
@@ -220,16 +229,16 @@ export async function dispatchAgentRpc(
   }
   if (method === "goal.delegate") {
     const binding = context.goalCommitment!;
-    if (String(input.parentGoalId) !== binding.goalId)
+    if (requireString("goal.delegate", input, "parentGoalId") !== binding.goalId)
       throw new Error("delegation parent must be the Goal committed to this Turn");
     return deps.delegate(
       {
-        id: String(input.id),
+        id: requireString("goal.delegate", input, "id"),
         parentGoalId: binding.goalId,
-        expectedParentRevision: Number(input.expectedParentRevision),
-        childGoal: asChildGoal(input.childGoal),
+        expectedParentRevision: requireNumber("goal.delegate", input, "expectedParentRevision"),
+        childGoal: asChildGoal("goal.delegate", input.childGoal),
         brief: (input.brief ?? null) as JsonValue,
-        reason: String(input.reason),
+        reason: requireString("goal.delegate", input, "reason", { allowEmpty: true }),
         evidence: numberArray(input.evidence),
         sourceTurnId: turnId,
       },
@@ -238,17 +247,17 @@ export async function dispatchAgentRpc(
     ) as unknown as JsonValue;
   }
   if (method === "goal.reassign") {
-    const goal = deps.goal(String(input.goalId));
+    const goal = deps.goal(requireString("goal.reassign", input, "goalId"));
     if (goal.parentId !== context.goalCommitment!.goalId)
       throw new Error("reassignment target must be a child of the Goal committed to this Turn");
     return (await deps.reassignGoal(
       {
-        id: String(input.id),
+        id: requireString("goal.reassign", input, "id"),
         goalId: goal.id,
-        expectedGoalRevision: Number(input.expectedGoalRevision),
-        newOwner: String(input.newOwner),
+        expectedGoalRevision: requireNumber("goal.reassign", input, "expectedGoalRevision"),
+        newOwner: requireString("goal.reassign", input, "newOwner"),
         brief: (input.brief ?? null) as JsonValue,
-        reason: String(input.reason),
+        reason: requireString("goal.reassign", input, "reason", { allowEmpty: true }),
         evidence: numberArray(input.evidence),
         sourceTurnId: turnId,
       },
@@ -258,18 +267,18 @@ export async function dispatchAgentRpc(
   }
   if (method === "goal.revise")
     return deps.reviseChildGoal(
-      String(input.goalId),
-      String(input.objective),
-      String(input.observationMethod),
-      String(input.verificationMethod),
+      requireString("goal.revise", input, "goalId"),
+      requireString("goal.revise", input, "objective"),
+      requireString("goal.revise", input, "observationMethod"),
+      requireString("goal.revise", input, "verificationMethod"),
       agent,
-      String(input.reason),
+      requireString("goal.revise", input, "reason"),
       numberArray(input.evidence),
       sourceWakeId,
       turnId,
     ) as unknown as JsonValue;
   if (method === "goal.pause" || method === "goal.resume") {
-    const goal = deps.goal(String(input.goalId));
+    const goal = deps.goal(requireString(method, input, "goalId"));
     const directRoot =
       !context.goalCommitment && context.trigger.kind === "user_message" && goal.parentId === null;
     if (!context.goalCommitment && !directRoot)
@@ -290,7 +299,7 @@ export async function dispatchAgentRpc(
     return next as unknown as JsonValue;
   }
   if (method === "goal.complete") {
-    const goal = deps.goal(String(input.goalId));
+    const goal = deps.goal(requireString("goal.complete", input, "goalId"));
     const directRoot =
       !context.goalCommitment && context.trigger.kind === "user_message" && goal.parentId === null;
     if (!context.goalCommitment && !directRoot)
@@ -298,8 +307,8 @@ export async function dispatchAgentRpc(
     return deps.completeGoal(
       {
         goalId: goal.id,
-        revision: Number(input.revision),
-        reason: String(input.reason),
+        revision: requireNumber("goal.complete", input, "revision"),
+        reason: requireString("goal.complete", input, "reason", { allowEmpty: true }),
         evidence: numberArray(input.evidence),
         sourceTurnId: turnId,
       },
@@ -308,19 +317,21 @@ export async function dispatchAgentRpc(
     ) as unknown as JsonValue;
   }
   if (method === "mail.send") {
-    const to = String(input.to);
+    const to = requireString("mail.send", input, "to");
     if (!deps.knownAgent(to))
       throw new Error(`unknown Agent recipient: ${to}; Mail addresses Agents only`);
-    const goalId = String(input.goalId ?? "").trim();
+    const goalId = (optionalString("mail.send", input, "goalId") ?? "").trim();
     if (!goalId) throw new Error("Agent Mail requires a Goal route");
     const goal = deps.goal(goalId);
     if (!deps.validGoalOwner(to, goal))
       throw new Error("Agent Mail Goal route does not match the recipient role and ownership");
+    if (input.level !== "fyi" && input.level !== "decision" && input.level !== "emergency")
+      throw new Error(`invalid parameter level for mail.send`);
     const mail: MailSnapshot = {
       id: randomUUID(),
       to,
       from: agent,
-      level: String(input.level) as MailSnapshot["level"],
+      level: input.level,
       ...goalRoute(goalId),
       body: (input.body ?? null) as JsonValue,
       readAt: null,
@@ -331,13 +342,20 @@ export async function dispatchAgentRpc(
   if (method === "schedule.set")
     return (deps.planWake(
       agent,
-      String(input.at),
-      String(input.reason),
+      requireString("schedule.set", input, "at"),
+      requireString("schedule.set", input, "reason", { allowEmpty: true }),
       agent,
       context.goalCommitment ?? undefined,
     ) ?? { scheduled: true }) as unknown as JsonValue;
   if (method === "goal.put") {
-    const next = input.goal as unknown as GoalSnapshot;
+    const candidate = input.goal;
+    if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate))
+      throw new Error(`missing parameter goal for goal.put`);
+    if (typeof candidate.owner !== "string" || !candidate.owner.trim())
+      throw new Error(`invalid parameter goal.owner for goal.put`);
+    if (typeof candidate.id !== "string" || !candidate.id.trim())
+      throw new Error(`invalid parameter goal.id for goal.put`);
+    const next = candidate as unknown as GoalSnapshot;
     if (!deps.validGoalOwner(next.owner, next))
       throw new Error("Goal owner role does not match Root/Child position");
     const current = deps.ledger.goal(next.id);
@@ -356,7 +374,7 @@ export async function dispatchAgentRpc(
           : "revise";
     deps.ledger.putGoal(next, agent, sourceWakeId, {
       operation,
-      reason: String(input.reason ?? "Advanced Goal mutation"),
+      reason: optionalString("goal.put", input, "reason") ?? "Advanced Goal mutation",
       evidence: numberArray(input.evidence ?? []),
       sourceTurnId: turnId,
       ...(sourceWakeId ? { sourceWakeId } : {}),
@@ -364,7 +382,7 @@ export async function dispatchAgentRpc(
     return input.goal as JsonValue;
   }
   if (method === "memory.append") {
-    const note = String(input.note ?? "").trim();
+    const note = optionalString("memory.append", input, "note")?.trim() ?? "";
     if (!note) throw new Error("memory note cannot be empty");
     const event = deps.ledger.appendEvent({
       streamId: memoryStream(agent),
@@ -395,25 +413,83 @@ function asRecord(value: JsonValue): Record<string, JsonValue> {
   return value;
 }
 
+function requireString(
+  method: string,
+  input: Record<string, JsonValue>,
+  name: string,
+  options: { allowEmpty?: boolean } = {},
+): string {
+  const value = input[name];
+  if (value === undefined) throw new Error(`missing parameter ${name} for ${method}`);
+  if (typeof value !== "string") throw new Error(`invalid parameter ${name} for ${method}`);
+  if (!options.allowEmpty && !value.trim())
+    throw new Error(`invalid parameter ${name} for ${method}`);
+  return value;
+}
+
+function optionalString(
+  method: string,
+  input: Record<string, JsonValue>,
+  name: string,
+): string | undefined {
+  const value = input[name];
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") throw new Error(`invalid parameter ${name} for ${method}`);
+  return value;
+}
+
+function requireNumber(method: string, input: Record<string, JsonValue>, name: string): number {
+  const value = input[name];
+  if (value === undefined) throw new Error(`missing parameter ${name} for ${method}`);
+  if (typeof value !== "number" || !Number.isFinite(value))
+    throw new Error(`invalid parameter ${name} for ${method}`);
+  return value;
+}
+
+function optionalNumber(
+  method: string,
+  input: Record<string, JsonValue>,
+  name: string,
+  fallback: number,
+): number {
+  const value = input[name];
+  if (value === undefined) return fallback;
+  if (typeof value !== "number" || !Number.isFinite(value))
+    throw new Error(`invalid parameter ${name} for ${method}`);
+  return value;
+}
+
 function numberArray(value: JsonValue | undefined): number[] {
   if (!Array.isArray(value) || value.some((item) => typeof item !== "number"))
     throw new Error("RPC evidence must be a number array");
   return value as number[];
 }
 
-function asChildGoal(value: JsonValue | undefined): {
+function asChildGoal(
+  method: string,
+  value: JsonValue | undefined,
+): {
   id: string;
   objective: string;
   observationMethod: string;
   verificationMethod: string;
   owner: string;
 } {
-  const input = asRecord(value ?? null);
+  if (value === undefined || typeof value !== "object" || value === null || Array.isArray(value))
+    throw new Error(`missing parameter childGoal for ${method}`);
+  const input = asRecord(value);
+  const field = (name: string): string => {
+    const child = input[name];
+    if (child === undefined) throw new Error(`missing parameter childGoal.${name} for ${method}`);
+    if (typeof child !== "string" || !child.trim())
+      throw new Error(`invalid parameter childGoal.${name} for ${method}`);
+    return child;
+  };
   return {
-    id: String(input.id),
-    objective: String(input.objective),
-    observationMethod: String(input.observationMethod),
-    verificationMethod: String(input.verificationMethod),
-    owner: String(input.owner),
+    id: field("id"),
+    objective: field("objective"),
+    observationMethod: field("observationMethod"),
+    verificationMethod: field("verificationMethod"),
+    owner: field("owner"),
   };
 }

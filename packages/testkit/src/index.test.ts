@@ -843,6 +843,94 @@ test("a Human Goal revision fences the active stale Turn before more RPC", async
   ledger.close();
 });
 
+test("typed RPC parameter errors reject missing and mistyped capability params", async () => {
+  const clock = new SimulatedClock();
+  const ledger = createMemoryLedger({ clock });
+  const pending = Promise.withResolvers<never>();
+  let request: RunRequest | undefined;
+  const runner: Runner = {
+    isolation: "process",
+    prepare: (value) => {
+      request = value;
+      return {
+        pid: null,
+        begin: () => undefined,
+        result: pending.promise,
+        terminate: async () => {
+          pending.reject(new Error("typed-param test finished"));
+        },
+      };
+    },
+    terminateProcess: async () => undefined,
+  };
+  const supervisor = new Supervisor(ledger, runner, clock, {
+    turnRetryPolicy: { maxAttempts: 0, baseDelayMs: 1 },
+  });
+  const accepted = await supervisor.startHumanGoalTurn("typed parameter errors", "root-param");
+  supervisor.createGoal(
+    {
+      id: "child",
+      parentId: "root-param",
+      objective: "child",
+      observationMethod: "observe",
+      verificationMethod: "verify",
+      owner: "worker",
+      phase: "active",
+      revision: 0,
+    },
+    "ceo",
+  );
+  const rpc = () => request!.rpc!;
+  await assert.rejects(
+    () => rpc()("work_record.update", { content: "c", reason: "r", evidence: [] }),
+    /missing parameter expectedRevision for work_record\.update/,
+  );
+  await assert.rejects(
+    () =>
+      rpc()("work_record.update", {
+        expectedRevision: "1",
+        content: "c",
+        reason: "r",
+        evidence: [],
+      }),
+    /invalid parameter expectedRevision for work_record\.update/,
+  );
+  await assert.rejects(
+    () => rpc()("mail.send", { to: "worker", goalId: "child", level: "urgent", body: null }),
+    /invalid parameter level for mail\.send/,
+  );
+  await assert.rejects(
+    () =>
+      rpc()("goal.delegate", {
+        parentGoalId: "root-param",
+        id: "delegation",
+        expectedParentRevision: 0,
+        reason: "r",
+        evidence: [],
+      }),
+    /missing parameter childGoal for goal\.delegate/,
+  );
+  await assert.rejects(
+    () =>
+      rpc()("goal.revise", {
+        objective: "o",
+        observationMethod: "o",
+        verificationMethod: "v",
+        reason: "r",
+        evidence: [],
+      }),
+    /missing parameter goalId for goal\.revise/,
+  );
+  await assert.rejects(
+    () => rpc()("ledger.search", { query: 42 }),
+    /invalid parameter query for ledger\.search/,
+  );
+  const valid = (await rpc()("ledger.search", { query: "root" })) as unknown[];
+  assert.ok(Array.isArray(valid) && valid.length > 0);
+  await supervisor.interruptTurn(accepted.turnId);
+  ledger.close();
+});
+
 test("a rejected Goal revision has no execution side effects", async () => {
   const clock = new SimulatedClock();
   const ledger = createMemoryLedger({ clock });
