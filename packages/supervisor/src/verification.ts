@@ -188,12 +188,11 @@ export class VerificationPlane {
   }
 
   #validate(result: VerificationResult): void {
-    const evidence = new Set(this.ledger.events().map((event) => event.seq));
     for (const finding of result.findings)
       if (
         !finding.id.trim() ||
         finding.evidence.length === 0 ||
-        finding.evidence.some((seq) => !evidence.has(seq))
+        finding.evidence.some((seq) => !this.ledger.eventExists(seq))
       )
         throw new Error("verification finding requires an id and existing evidence");
   }

@@ -80,11 +80,10 @@ export interface RecoveryView {
 
 export function deriveRecoveryViews(ledger: Ledger): RecoveryView[] {
   const views: RecoveryView[] = [];
+  const schedules = ledger.schedulesByStatus("pending");
   const wakes = ledger.wakes();
-  const schedules = ledger.schedules();
   const triggers = wakes.flatMap((wake) => ledger.wakeTriggers(wake.id));
-  for (const turn of ledger.turns()) {
-    if (turn.status !== "failed") continue;
+  for (const turn of ledger.turnsByStatus("failed")) {
     const sourceWake = wakes.find((wake) => wake.turnId === turn.id);
     const thread = ledger.thread(turn.threadId);
     const goal = turn.goalId ? ledger.goal(turn.goalId) : null;

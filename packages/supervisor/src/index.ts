@@ -261,7 +261,7 @@ export class Supervisor {
    * resolution applies the new credentials to the next spawn.
    */
   swapRunner(runner: Runner, profiles?: RunnerProfile[]): void {
-    const active = this.ledger.turns().filter((turn) => turn.status === "in_progress");
+    const active = this.ledger.turnsByStatus("in_progress");
     if (active.length > 0) throw new Error("cannot swap runner while a Turn is in progress");
     this.#runner = runner;
     if (profiles) {
@@ -1226,8 +1226,7 @@ export class Supervisor {
     if (current.parentId === null) throw new Error("CEO cannot revise a root goal");
     if (!reason.trim()) throw new Error("goal revision reason is required");
     for (const seq of evidence)
-      if (!this.ledger.eventsSince(seq - 1).some((event) => event.seq === seq))
-        throw new Error(`evidence event does not exist: ${seq}`);
+      if (!this.ledger.eventExists(seq)) throw new Error(`evidence event does not exist: ${seq}`);
     this.ledger.appendEvent({
       streamId: wakeId ? wakeStream(wakeId) : goalStream(id),
       ts: this.#now(),
@@ -1356,7 +1355,7 @@ export class Supervisor {
   }
 
   async recover(): Promise<void> {
-    for (const wake of this.ledger.wakes().filter((candidate) => candidate.status === "claimed"))
+    for (const wake of this.ledger.wakesByStatus("claimed"))
       this.ledger.releaseWake(wake.id, this.#now());
     for (const turn of this.ledger
       .turns()
@@ -1647,7 +1646,7 @@ export class Supervisor {
     return (
       this.#profiles.has(agent) ||
       this.ledger.threads().some((thread) => thread.agent === agent) ||
-      this.ledger.goals().some((goal) => goal.owner === agent)
+      this.ledger.goalsForOwner(agent).length > 0
     );
   }
   #role(agent: string): AgentRole {
@@ -1749,16 +1748,15 @@ export async function runSupervisorDaemon(
 
 export function deriveTeam(ledger: Ledger, now = new Date().toISOString()): TeamMemberView[] {
   const goals = ledger.goals();
-  const wakes = ledger.wakes();
-  const schedules = ledger.schedules();
   const threads = ledger.threads();
-  const turns = ledger.turns();
-  const handoffs = ledger.eventsSince(0, ["handoff.recorded"]);
+  const turns = ledger.turnsByStatus("in_progress");
+  const schedules = ledger.schedulesByStatus("pending");
+  const handoffs = new Map(ledger.lastHandoffPerAgent().map((event) => [event.actor, event]));
   const owners = [...new Set(goals.map((goal) => goal.owner))].sort();
   return owners.map((agent) => {
     const owned = goals.filter((goal) => goal.owner === agent);
     const live = owned.filter((goal) => goal.phase !== "complete");
-    const agentWakes = wakes
+    const agentWakes = [...ledger.wakesByStatus("claimed"), ...ledger.wakesByStatus("queued")]
       .filter((wake) => wake.agent === agent)
       .sort((a, b) => b.enqueuedSeq - a.enqueuedSeq);
     const activeWake = agentWakes.find((wake) => {
@@ -1788,7 +1786,7 @@ export function deriveTeam(ledger: Ledger, now = new Date().toISOString()): Team
         })
         .map((schedule) => schedule.nextWakeAt)
         .sort()[0] ?? null;
-    const lastHandoff = [...handoffs].reverse().find((event) => event.actor === agent) ?? null;
+    const lastHandoff = handoffs.get(agent) ?? null;
     const value = lastHandoff?.data as { outcome?: unknown } | undefined;
     const lastOutcome =
       typeof value?.outcome === "string" ? (value.outcome as TeamMemberView["lastOutcome"]) : null;
@@ -1804,7 +1802,7 @@ export function deriveTeam(ledger: Ledger, now = new Date().toISOString()): Team
       motion,
       lastOutcome,
       lastHandoffSeq: lastHandoff?.seq ?? null,
-      lastWakeStatus: agentWakes[0]?.status ?? null,
+      lastWakeStatus: ledger.lastWakeForAgent(agent)?.status ?? null,
       nextWakeAt,
     };
   });
@@ -1815,7 +1813,7 @@ export function renderDashboard(ledger: Ledger): string {
     values
       .map((value) => `<tr><td><pre>${escapeHtml(JSON.stringify(value, null, 2))}</pre></td></tr>`)
       .join("");
-  return `<!doctype html><html><head><meta charset="utf-8"><title>goah status</title><style>body{font:14px ui-monospace;margin:32px;background:#101418;color:#dce3e4}section{margin:32px 0}pre{white-space:pre-wrap;border:1px solid #334;padding:12px}</style></head><body><h1>goah</h1><p>seq ${ledger.events().at(-1)?.seq ?? 0}</p><section><h2>Team</h2><table>${rows(deriveTeam(ledger))}</table></section><section><h2>Goals</h2><table>${rows(ledger.goals())}</table></section><section><h2>Wakes</h2><table>${rows(ledger.wakes())}</table></section><section><h2>Mailbox</h2><table>${rows(ledger.mailbox())}</table></section></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>goah status</title><style>body{font:14px ui-monospace;margin:32px;background:#101418;color:#dce3e4}section{margin:32px 0}pre{white-space:pre-wrap;border:1px solid #334;padding:12px}</style></head><body><h1>goah</h1><p>seq ${ledger.latestEvent()?.seq ?? 0}</p><section><h2>Team</h2><table>${rows(deriveTeam(ledger))}</table></section><section><h2>Goals</h2><table>${rows(ledger.goals())}</table></section><section><h2>Wakes</h2><table>${rows(ledger.wakes())}</table></section><section><h2>Mailbox</h2><table>${rows(ledger.mailbox())}</table></section></body></html>`;
 }
 
 function escapeHtml(value: string): string {

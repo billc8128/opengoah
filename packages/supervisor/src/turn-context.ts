@@ -129,15 +129,7 @@ export function loadContext(
         : deps.ledger.eventsForWake(recoveryId),
     ),
   );
-  const teamHandoffs =
-    role === "ceo"
-      ? [...deps.ledger.eventsSince(0, ["handoff.recorded"])]
-          .reverse()
-          .filter(
-            (event, index, all) =>
-              all.findIndex((candidate) => candidate.actor === event.actor) === index,
-          )
-      : [];
+  const teamHandoffs = role === "ceo" ? deps.ledger.lastHandoffPerAgent() : [];
   const workingMemory = selectWorkingMemory(
     deps.ledger.readStream(memoryStream(wake.agent)),
     deps.memoryTailChars,
@@ -227,9 +219,8 @@ export function humanContext(
   const profile = deps.profiles.get(agent) ?? { agent, role: "ceo" as const };
   const runnerProfile = deps.runnerProfiles.get(profile.runnerProfile ?? "default");
   const recent = deps.ledger
-    .turns(turn.threadId)
-    .filter((candidate) => candidate.id !== turn.id && candidate.status === "completed")
-    .slice(-8)
+    .recentTurns(turn.threadId, 8)
+    .filter((candidate) => candidate.id !== turn.id)
     .flatMap((candidate) =>
       deps.ledger
         .turnItems(candidate.id)
@@ -328,16 +319,5 @@ export function contextMail(
 }
 
 export function mailSourceSeqs(ledger: Ledger, mail: MailSnapshot[]): number[] {
-  const ids = new Set(mail.map((item) => item.id));
-  if (!ids.size) return [];
-  return ledger
-    .eventsSince(0, ["mail.put"])
-    .filter((event) => {
-      const data =
-        event.data && typeof event.data === "object" && !Array.isArray(event.data)
-          ? (event.data as { snapshot?: { id?: unknown } })
-          : {};
-      return typeof data.snapshot?.id === "string" && ids.has(data.snapshot.id);
-    })
-    .map((event) => event.seq);
+  return ledger.mailEventSeqs(mail.map((item) => item.id));
 }

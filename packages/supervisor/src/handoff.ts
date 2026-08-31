@@ -137,7 +137,7 @@ export class HandoffValidator {
       });
     const evidence = Array.isArray(request.handoff?.evidence) ? request.handoff.evidence : [];
     for (const seq of evidence)
-      if (!Number.isInteger(seq) || !ledger.eventsSince(seq - 1).some((event) => event.seq === seq))
+      if (!Number.isInteger(seq) || !ledger.eventExists(seq))
         issues.push({
           code: "evidence_not_found",
           message: `Evidence event ${String(seq)} does not exist in the Ledger.`,
