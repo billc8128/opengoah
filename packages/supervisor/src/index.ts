@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  controlStream,
   goalStream,
   goalAutomaticTarget,
   goalCommitment,
@@ -103,6 +104,8 @@ export interface SupervisorOptions {
   memoryTailChars?: number;
   retryPolicy?: { maxAttempts: number; baseDelayMs: number };
   turnRetryPolicy?: { maxAttempts: number; baseDelayMs: number };
+  /** Ceiling for internal waits on execution promises before a diagnostic event fires. */
+  waitTimeoutMs?: number;
   profiles?: AgentProfile[];
   runnerProfiles?: RunnerProfile[];
 }
@@ -115,9 +118,17 @@ interface LiveTurnState {
   thinkingActive: boolean;
 }
 
+/** Raised when an internal wait on an execution promise exceeds the configured ceiling. */
+class WaitTimeoutError extends Error {
+  constructor(target: string, waitMs: number) {
+    super(`supervisor wait on ${target} exceeded ${waitMs}ms`);
+  }
+}
+
 export class Supervisor {
   readonly #leaseMs: number;
   readonly #memoryTailChars: number;
+  readonly #waitTimeoutMs: number;
   #claimTail: Promise<void> = Promise.resolve();
   #humanTail: Promise<void> = Promise.resolve();
   readonly #retryPolicy: NonNullable<SupervisorOptions["retryPolicy"]>;
@@ -145,6 +156,7 @@ export class Supervisor {
   ) {
     this.#runner = runner;
     this.#leaseMs = options.leaseMs ?? 30_000;
+    this.#waitTimeoutMs = options.waitTimeoutMs ?? 300_000;
     this.#memoryTailChars = options.memoryTailChars ?? 12_000;
     this.#retryPolicy = options.retryPolicy ?? { maxAttempts: 0, baseDelayMs: 1_000 };
     this.#turnRetryPolicy = options.turnRetryPolicy ?? { maxAttempts: 3, baseDelayMs: 1_000 };
@@ -732,7 +744,16 @@ export class Supervisor {
         scheduleTurnRecovery(this.#recoveryDeps, null, [], turn.id, "ceo");
         return;
       }
-    } else await this.#awaitAgentExecution("ceo");
+    } else {
+      try {
+        await this.#awaitAgentExecution("ceo");
+      } catch (error) {
+        if (!(error instanceof WaitTimeoutError)) throw error;
+        this.#failTurn(turn.id, error.message);
+        scheduleTurnRecovery(this.#recoveryDeps, null, [], turn.id, "ceo");
+        return;
+      }
+    }
     for (const fence of this.ledger
       .turns(turn.threadId)
       .filter((candidate) => candidate.status !== "in_progress" && candidate.runnerPid !== null)) {
@@ -773,21 +794,71 @@ export class Supervisor {
       this.#handles.delete(turn.id);
     }
     if (!cleaned) return false;
-    await this.#executions.get(turn.id);
-    const stored = this.ledger.turn(turn.id);
-    if (stored && stored.status !== "in_progress" && stored.runnerPid !== null) {
-      try {
-        this.ledger.releaseTurnProcess(turn.id, "supervisor");
-      } catch (error) {
-        this.#recordCleanupFailure(turn.id, error);
-        return false;
+    try {
+      await this.#timedAwait(this.#executions.get(turn.id), `execution:${turn.id}`);
+    } catch (error) {
+      if (!(error instanceof WaitTimeoutError)) throw error;
+      return false;
+    }
+    try {
+      const stored = this.ledger.turn(turn.id);
+      if (stored && stored.status !== "in_progress" && stored.runnerPid !== null) {
+        try {
+          this.ledger.releaseTurnProcess(turn.id, "supervisor");
+        } catch (error) {
+          this.#recordCleanupFailure(turn.id, error);
+          return false;
+        }
       }
+    } catch {
+      // The ledger (for example a test workspace) closed while this
+      // fire-and-forget cleanup was waiting; completion cannot be confirmed.
+      return false;
     }
     return true;
   }
   async #awaitAgentExecution(agent: string): Promise<void> {
     const running = this.#agentExecutions.get(agent);
-    if (running) await running;
+    if (running) await this.#timedAwait(running, `agent-execution:${agent}`);
+  }
+
+  /**
+   * Await an internal execution promise with a ceiling. On timeout, record an
+   * ignorable supervisor.wait_timeout diagnostic event and throw; the original
+   * rejection propagates unchanged. The hand-written Human/claim mutex waits
+   * are bounded transitively: their critical sections only await through here.
+   */
+  async #timedAwait(promise: Promise<unknown> | undefined, target: string): Promise<void> {
+    if (!promise) return;
+    const waitMs = this.#waitTimeoutMs;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        promise,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new WaitTimeoutError(target, waitMs)), waitMs);
+          timer.unref();
+        }),
+      ]);
+    } catch (error) {
+      if (error instanceof WaitTimeoutError) {
+        try {
+          this.ledger.appendEvent({
+            streamId: controlStream("supervisor"),
+            ts: this.#now(),
+            actor: "supervisor",
+            type: "supervisor.wait_timeout",
+            data: { target, waitMs },
+            ignorable: true,
+          });
+        } catch {
+          // The diagnostic event is best-effort; the timeout still propagates.
+        }
+      }
+      throw error;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   #threadAgent(threadId: string): string {
@@ -1088,7 +1159,7 @@ export class Supervisor {
     return accepted;
   }
   async waitForTurn(turnId: string): Promise<void> {
-    await this.#executions.get(turnId);
+    await this.#timedAwait(this.#executions.get(turnId), `execution:${turnId}`);
   }
   delegate(request: DelegationRequest, actor = "ceo", wakeId?: string): DelegationResult {
     const candidate: GoalSnapshot = {

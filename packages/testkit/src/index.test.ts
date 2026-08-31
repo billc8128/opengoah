@@ -5036,3 +5036,56 @@ test("turn admission stays bounded on a large ledger", async () => {
   );
   ledger.close();
 });
+
+test("stuck execution waits time out with a diagnostic event and keep admitting", async () => {
+  const clock = new SimulatedClock();
+  const ledger = createMemoryLedger({ clock });
+  // A runner whose result never settles and whose terminate cannot unstick it.
+  const runner: Runner = {
+    isolation: "process",
+    prepare: () => ({
+      pid: null,
+      begin: () => undefined,
+      result: new Promise<never>(() => {}),
+      terminate: async () => {},
+    }),
+    terminateProcess: async () => {},
+  };
+  const supervisor = new Supervisor(ledger, runner, clock, {
+    waitTimeoutMs: 25,
+    retryPolicy: { maxAttempts: 0, baseDelayMs: 1 },
+    turnRetryPolicy: { maxAttempts: 0, baseDelayMs: 1 },
+  });
+  const first = await supervisor.startHumanTurn("first");
+  assert.equal(ledger.turn(first.turnId)?.status, "in_progress");
+
+  // Replacing the stuck Turn hits the bounded execution wait in cleanup:
+  // the replacement fails instead of hanging, and a diagnostic event is recorded.
+  const second = await supervisor.startHumanTurn("second");
+  assert.equal(ledger.turn(second.turnId)?.status, "failed");
+  const failure = ledger.turn(second.turnId)?.error as { message?: unknown } | null;
+  assert.match(String(failure?.message ?? ""), /previous Runner cleanup did not complete/);
+
+  // The next admission hits the bounded agent-lane wait and also fails closed.
+  const third = await supervisor.startHumanTurn("third");
+  assert.equal(ledger.turn(third.turnId)?.status, "failed");
+  const laneFailure = ledger.turn(third.turnId)?.error as { message?: unknown } | null;
+  assert.match(String(laneFailure?.message ?? ""), /agent-execution:ceo exceeded 25ms/);
+
+  const diagnostics = ledger
+    .readStream("control:supervisor")
+    .filter((event) => event.type === "supervisor.wait_timeout");
+  assert.ok(
+    diagnostics.length >= 2,
+    `expected at least two wait_timeout diagnostics, got ${diagnostics.length}`,
+  );
+  assert.deepEqual(
+    diagnostics.map((event) => event.data),
+    [
+      { target: `execution:${first.turnId}`, waitMs: 25 },
+      { target: "agent-execution:ceo", waitMs: 25 },
+    ],
+  );
+  assert.equal(ledger.turn(first.turnId)?.status, "interrupted");
+  ledger.close();
+});
