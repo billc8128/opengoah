@@ -29,10 +29,13 @@ import {
   type ReassignmentRequest,
   type ReassignmentResult,
   type ScheduleSnapshot,
+  type ScheduleStatus,
   type ThreadSnapshot,
   type TurnSnapshot,
   type TurnItemSnapshot,
+  type TurnStatus,
   type WakeSnapshot,
+  type WakeStatus,
   type WakeTriggerSnapshot,
   wakeStream,
   type WorkRecordSnapshot,
@@ -551,6 +554,22 @@ export class SqliteLedger implements Ledger {
         ? this.db.prepare("SELECT * FROM turns WHERE thread_id=? ORDER BY rowid").all(threadId)
         : (this.db.prepare("SELECT * FROM turns ORDER BY rowid").all() as Row[])
     ).map(mapTurn);
+  }
+  turnsByStatus(status: TurnStatus): TurnSnapshot[] {
+    return (
+      this.db.prepare("SELECT * FROM turns WHERE status=? ORDER BY rowid").all(status) as Row[]
+    ).map(mapTurn);
+  }
+  recentTurns(threadId: string, limit: number): TurnSnapshot[] {
+    return (
+      this.db
+        .prepare(
+          "SELECT * FROM turns WHERE thread_id=? AND status='completed' ORDER BY rowid DESC LIMIT ?",
+        )
+        .all(threadId, limit) as Row[]
+    )
+      .map(mapTurn)
+      .reverse();
   }
   turnItems(turnId: string): TurnItemSnapshot[] {
     return (
@@ -1455,6 +1474,32 @@ export class SqliteLedger implements Ledger {
       Row | undefined;
     return row ? mapEvent(row) : null;
   }
+  eventExists(seq: number): boolean {
+    return this.db.prepare("SELECT 1 FROM events WHERE seq=?").get(seq) !== undefined;
+  }
+  lastHandoffPerAgent(): EventRecord[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT e.* FROM events e
+           JOIN (SELECT actor, MAX(seq) AS seq FROM events WHERE type='handoff.recorded' GROUP BY actor) latest
+             ON e.seq = latest.seq
+           ORDER BY e.seq DESC`,
+        )
+        .all() as Row[]
+    ).map(mapEvent);
+  }
+  mailEventSeqs(mailIds: string[]): number[] {
+    if (!mailIds.length) return [];
+    const placeholders = mailIds.map(() => "?").join(",");
+    return (
+      this.db
+        .prepare(
+          `SELECT seq FROM events WHERE type='mail.put' AND json_extract(data,'$.snapshot.id') IN (${placeholders}) ORDER BY seq`,
+        )
+        .all(...mailIds) as { seq: number }[]
+    ).map((row) => Number(row.seq));
+  }
   eventsForWake(wakeId: string): EventRecord[] {
     return this.readStream(wakeStream(wakeId));
   }
@@ -1489,6 +1534,12 @@ export class SqliteLedger implements Ledger {
       .prepare(
         "SELECT * FROM wakes WHERE agent=? AND status='queued' ORDER BY enqueued_seq LIMIT 1",
       )
+      .get(agent) as Row | undefined;
+    return row ? mapWake(row) : null;
+  }
+  lastWakeForAgent(agent: string): WakeSnapshot | null {
+    const row = this.db
+      .prepare("SELECT * FROM wakes WHERE agent=? ORDER BY enqueued_seq DESC LIMIT 1")
       .get(agent) as Row | undefined;
     return row ? mapWake(row) : null;
   }
@@ -1567,10 +1618,22 @@ export class SqliteLedger implements Ledger {
   schedules(): ScheduleSnapshot[] {
     return (this.db.prepare("SELECT * FROM schedule ORDER BY id").all() as Row[]).map(mapSchedule);
   }
+  schedulesByStatus(status: ScheduleStatus): ScheduleSnapshot[] {
+    return (
+      this.db.prepare("SELECT * FROM schedule WHERE status=? ORDER BY id").all(status) as Row[]
+    ).map(mapSchedule);
+  }
   wakes(): WakeSnapshot[] {
     return (this.db.prepare("SELECT * FROM wakes ORDER BY enqueued_seq").all() as Row[]).map(
       mapWake,
     );
+  }
+  wakesByStatus(status: WakeStatus): WakeSnapshot[] {
+    return (
+      this.db
+        .prepare("SELECT * FROM wakes WHERE status=? ORDER BY enqueued_seq")
+        .all(status) as Row[]
+    ).map(mapWake);
   }
   mailbox(): MailSnapshot[] {
     return (this.db.prepare("SELECT * FROM mailbox ORDER BY rowid").all() as Row[]).map(mapMail);

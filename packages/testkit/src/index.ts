@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  ceoInboxRoute,
   specialistAutomaticTarget,
   type AgentHandoff,
   type Clock,
@@ -267,6 +268,89 @@ export function assertLedgerConformance(create: LedgerConformanceFactory): void 
     throw new Error("ledger conformance: canonical Assistant response was not committed");
   if (first.event.ts !== clock.now().toISOString())
     throw new Error("ledger conformance: injected clock was ignored");
+  const mailEvent = ledger.putMail(
+    {
+      id: "conformance:mail",
+      to: "ceo",
+      from: "verifier",
+      level: "fyi",
+      ...ceoInboxRoute(),
+      body: { type: "conformance" },
+      readAt: null,
+    },
+    "verifier",
+  );
+  if (ledger.mailEventSeqs(["conformance:mail"])[0] !== mailEvent.seq)
+    throw new Error("ledger conformance: mail id did not resolve to its mail.put event");
+  if (ledger.mailEventSeqs(["conformance:missing-mail"]).length !== 0)
+    throw new Error("ledger conformance: unknown mail id resolved to an event");
+  if (
+    !ledger.eventExists(completionEvidence.seq) ||
+    ledger.eventExists(0) ||
+    ledger.eventExists(completionEvidence.seq + 100_000)
+  )
+    throw new Error("ledger conformance: event existence check is wrong");
+  ledger.appendEvent({
+    streamId: "conformance:handoff",
+    ts: clock.now().toISOString(),
+    actor: "a",
+    type: "handoff.recorded",
+    data: { goalId: "root", goalRevision: 2, recordRevision: 0, outcome: "progress", evidence: [] },
+    ignorable: true,
+  });
+  const handoffB = ledger.appendEvent({
+    streamId: "conformance:handoff",
+    ts: clock.now().toISOString(),
+    actor: "b",
+    type: "handoff.recorded",
+    data: { goalId: "root", goalRevision: 2, recordRevision: 0, outcome: "progress", evidence: [] },
+    ignorable: true,
+  });
+  const handoffA2 = ledger.appendEvent({
+    streamId: "conformance:handoff",
+    ts: clock.now().toISOString(),
+    actor: "a",
+    type: "handoff.recorded",
+    data: { goalId: "root", goalRevision: 2, recordRevision: 1, outcome: "progress", evidence: [] },
+    ignorable: true,
+  });
+  const perAgent = ledger.lastHandoffPerAgent();
+  if (
+    perAgent.length !== 2 ||
+    perAgent[0]?.seq !== handoffA2.seq ||
+    perAgent[1]?.seq !== handoffB.seq
+  )
+    throw new Error("ledger conformance: per-agent handoff lookup is not the latest per agent");
+  if (
+    ledger.turnsByStatus("completed").every((turn) => turn.id !== "turn:a") ||
+    ledger.turnsByStatus("in_progress").length !== 0
+  )
+    throw new Error("ledger conformance: status-filtered Turn query is wrong");
+  if (ledger.recentTurns("thread:a", 8)[0]?.id !== "turn:a")
+    throw new Error("ledger conformance: recent Turn query is wrong");
+  if (
+    ledger.wakesByStatus("queued").every((wake) => wake.id !== "a") ||
+    ledger.wakesByStatus("consumed").every((wake) => wake.id !== "z")
+  )
+    throw new Error("ledger conformance: status-filtered Wake query is wrong");
+  if (ledger.lastWakeForAgent("a")?.id !== "z" || ledger.lastWakeForAgent("nobody"))
+    throw new Error("ledger conformance: latest Wake per agent is wrong");
+  ledger.putSchedule(
+    {
+      id: "schedule:conformance",
+      ...specialistAutomaticTarget("a", "verifier"),
+      nextWakeAt: "2030-01-02T00:00:00.000Z",
+      reason: "conformance",
+      setBy: "supervisor",
+      status: "pending",
+      resolvedAt: null,
+    },
+    "supervisor",
+  );
+  if (
+    ledger.schedulesByStatus("pending").every((schedule) => schedule.id !== "schedule:conformance")
+  )
+    throw new Error("ledger conformance: status-filtered Schedule query is wrong");
   const informational = ledger.appendEvent({
     streamId: "conformance:events",
     ts: clock.now().toISOString(),

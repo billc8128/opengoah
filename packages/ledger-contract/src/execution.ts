@@ -490,6 +490,10 @@ export interface Ledger extends EventStore {
   threads(): ThreadSnapshot[];
   turn(id: string): TurnSnapshot | null;
   turns(threadId?: string): TurnSnapshot[];
+  /** Turns currently in one status, cheapest way to enumerate a bounded working set. */
+  turnsByStatus(status: TurnStatus): TurnSnapshot[];
+  /** The `limit` most recently completed Turns of one Thread, oldest first. */
+  recentTurns(threadId: string, limit: number): TurnSnapshot[];
   turnItems(turnId: string): TurnItemSnapshot[];
   activeTurn(threadId: string): TurnSnapshot | null;
   putGoal(
@@ -547,12 +551,20 @@ export interface Ledger extends EventStore {
   lastEvent(actor: string, type: string): EventRecord | null;
   lastGoalHandoff(goalId: string): EventRecord | null;
   latestEvent(): EventRecord | null;
+  /** Whether an event with this exact seq exists, without loading history. */
+  eventExists(seq: number): boolean;
+  /** The latest `handoff.recorded` event per actor, newest first. */
+  lastHandoffPerAgent(): EventRecord[];
+  /** Ascending `mail.put` event seqs for the given mail ids (unknown ids are skipped). */
+  mailEventSeqs(mailIds: string[]): number[];
   eventsForWake(wakeId: string): EventRecord[];
   wake(id: string): WakeSnapshot | null;
   wakeByTrigger(agent: string, triggerRef: string): WakeSnapshot | null;
   wakeTriggers(wakeId: string): WakeTriggerSnapshot[];
   wakeTriggersForAgent(agent: string): WakeTriggerSnapshot[];
   queuedWakeForAgent(agent: string): WakeSnapshot | null;
+  /** The agent's most recently enqueued Wake of any status. */
+  lastWakeForAgent(agent: string): WakeSnapshot | null;
   goalsForOwner(owner: string): GoalSnapshot[];
   goal(id: string): GoalSnapshot | null;
   workRecord(goalId: string): WorkRecordSnapshot | null;
@@ -565,6 +577,10 @@ export interface Ledger extends EventStore {
   workRecords(): WorkRecordSnapshot[];
   schedules(): ScheduleSnapshot[];
   wakes(): WakeSnapshot[];
+  /** Every Schedule currently in one status. */
+  schedulesByStatus(status: ScheduleStatus): ScheduleSnapshot[];
+  /** Every Wake currently in one status. */
+  wakesByStatus(status: WakeStatus): WakeSnapshot[];
   mailbox(): MailSnapshot[];
   rebuildProjections(): void;
   close(): void;
