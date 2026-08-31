@@ -5089,3 +5089,69 @@ test("stuck execution waits time out with a diagnostic event and keep admitting"
   assert.equal(ledger.turn(first.turnId)?.status, "interrupted");
   ledger.close();
 });
+
+test("emergency Mail survives a bounded context budget that fyis would fill", async () => {
+  const clock = new SimulatedClock();
+  const ledger = createMemoryLedger({ clock });
+  const pending = Promise.withResolvers<never>();
+  let request: RunRequest | undefined;
+  const runner: Runner = {
+    isolation: "process",
+    prepare: (value) => {
+      request = value;
+      return {
+        pid: null,
+        begin: () => undefined,
+        result: pending.promise,
+        terminate: async () => {
+          pending.reject(new Error("mail-budget test finished"));
+        },
+      };
+    },
+    terminateProcess: async () => undefined,
+  };
+  // A budget that fits roughly two mails: fyi bodies are large, the emergency
+  // body is small, and the emergency arrives last in delivery order.
+  const supervisor = new Supervisor(ledger, runner, clock, { memoryTailChars: 600 });
+  const body = "x".repeat(150);
+  for (let i = 0; i < 6; i++) {
+    ledger.putMail(
+      {
+        id: `mail:fyi:${i}`,
+        to: "ceo",
+        from: "verifier",
+        level: "fyi",
+        ...ceoInboxRoute(),
+        body: { note: body },
+        readAt: null,
+      },
+      "verifier",
+    );
+  }
+  ledger.putMail(
+    {
+      id: "mail:emergency",
+      to: "ceo",
+      from: "verifier",
+      level: "emergency",
+      ...ceoInboxRoute(),
+      body: { note: "drop everything" },
+      readAt: null,
+    },
+    "verifier",
+  );
+  const accepted = await supervisor.startHumanTurn("status");
+  const incoming = request!.context.text;
+  assert.match(incoming, /\[emergency\] mail:emergency from verifier/);
+  const delivered = [...incoming.matchAll(/- \[(fyi|decision|emergency)\] (mail:[\w:-]+)/g)].map(
+    (match) => match[2],
+  );
+  assert.equal(delivered[0], "mail:emergency");
+  assert.ok(delivered.length >= 2 && delivered.length <= 3, `unexpected budget use: ${delivered}`);
+  assert.ok(
+    delivered.slice(1).every((id) => id?.startsWith("mail:fyi:")),
+    "only fyi may follow the emergency inside the budget",
+  );
+  await supervisor.interruptTurn(accepted.turnId);
+  ledger.close();
+});

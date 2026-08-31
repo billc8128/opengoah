@@ -303,7 +303,15 @@ export function contextMail(
       : role === "ceo"
         ? mail.routeKind === "ceo_inbox"
         : mail.routeKind === "specialist_inbox" && mail.specialistRole === role;
-  for (const mail of deps.ledger.unreadMail(agent).filter(matches)) {
+  // Delivery order within one level is preserved, but higher levels are
+  // considered first so bounded budgets never evict emergency Mail with fyi.
+  const candidates = deps.ledger.unreadMail(agent).filter(matches);
+  const prioritized = [
+    ...candidates.filter((mail) => mail.level === "emergency"),
+    ...candidates.filter((mail) => mail.level === "decision"),
+    ...candidates.filter((mail) => mail.level === "fyi"),
+  ];
+  for (const mail of prioritized) {
     const cost = Math.min(JSON.stringify(mail.body).length, 2_000) + 128;
     if (selected.length >= 20 || (selected.length > 0 && used + cost > deps.memoryTailChars)) break;
     selected.push(mail);
