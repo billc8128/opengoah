@@ -1,5 +1,38 @@
-// Handoff validation: per-Turn attempt sequencing, validation tokens, and the
-// committed-Turn handoff commit path. Extracted verbatim from index.ts.
+/**
+ * Handoff validation: per-Turn attempt sequencing, validation tokens, and the
+ * committed-Turn handoff commit path.
+ *
+ * ## Threat model
+ *
+ * The defense here is against a self-spawned Runner subprocess returning a
+ * stale or fabricated Handoff: replaying an old validation token, attaching
+ * another Turn's work, or committing against a Goal fence it no longer holds.
+ * The Supervisor trusts the Ledger, never the Runner's self-report.
+ *
+ * `validateDraft` mints an unguessable token only when the draft carries a
+ * readable Assistant message and a current-Turn Work Record update.
+ * `commitTurnGoalWork` then re-checks an equality chain before committing.
+ * The load-bearing lines are:
+ *
+ * - **Message identity** — `messageItemId` plus the full normalized message
+ *   text must equal the Turn's committed response. This binds the declarative
+ *   outcome to the exact prose the organization (and Human) will read, so the
+ *   Runner cannot swap cheerful text for a validated bleak draft.
+ * - **Goal fence** — `goalId` and `goalRevision` must equal the Turn's frozen
+ *   commitment, so a superseded Goal cannot be completed by stale work.
+ *
+ * The remaining fields are fail-closed redundancy against narrower confusions;
+ * they can be reduced if they ever block a legitimate flow, with the
+ * conformance and handoff tests as the safety net:
+ *
+ * - `token`/`turnId`/`agent` — the token was minted for this Turn and agent.
+ * - `attemptId` + the Turn's attempt sequence — only the newest validation
+ *   attempt is valid; `beginAttempt` invalidates every older token.
+ * - `attempt`/`leaseToken` — minted under the Turn's current retry attempt and
+ *   lease, so a fenced or preempted execution cannot commit.
+ * - `outcome`/`evidence` — the committed values equal the validated draft, so
+ *   the Runner cannot bait-and-switch after acceptance.
+ */
 import { randomUUID } from "node:crypto";
 import {
   assertAgentHandoff,

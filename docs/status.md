@@ -26,6 +26,7 @@ The full capability checklist behind the README status summary.
 ## Operational acceptance evidence not yet produced
 
 - Real 7/14-day wall-clock soak evidence, a public sanitized long-run ledger, calibrated production verifier labels, and explicitly authorized small-money operation
+- Runner isolation: the default Pi Runner inherits the launching operating-system user's full filesystem, process, and network authority (`cwd` is a working context, not a permission boundary), which does not yet match the long-running-autonomy-plus-authorized-small-money goal. Until a fenced execution story exists, isolation remains a deployment-layer responsibility (sandbox, container, VM, or restricted account)
 
 ## Fault canary
 
