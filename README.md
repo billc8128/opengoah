@@ -24,7 +24,7 @@ goah does not replace your agent runner (pi, or any runner that implements the `
 
 ## Status
 
-**Experimental.** Contracts are `0.11.0` / `experimental`. SQLite schema changes are version checked; development workspaces may be recreated before 1.0.
+**Experimental.** The contract stability level is `experimental`; the current contract version is whatever `CONTRACT_VERSION` is exported by `goah-ledger-contract` (re-exported from `@goah/cli/kernel`), and this README deliberately does not restate it. SQLite schema changes are version checked; development workspaces may be recreated before 1.0.
 
 Implemented and tested today:
 
