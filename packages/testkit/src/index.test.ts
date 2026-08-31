@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { getEventListeners } from "node:events";
+import { performance } from "node:perf_hooks";
 import test from "node:test";
 import {
   ceoInboxRoute,
@@ -21,9 +22,12 @@ import {
   type EventInput,
   type GoalSnapshot,
   type JsonValue,
+  type MailSnapshot,
   type RunRequest,
   type Runner,
   type RunnerCandidateResult,
+  type RunnerHandle,
+  type TurnItemSnapshot,
   type TurnSnapshot,
   type WakeSnapshot,
 } from "goah-ledger-contract";
@@ -4712,3 +4716,228 @@ function git(cwd: string, args: string[]): string {
   if (result.status !== 0) throw new Error(result.stderr);
   return result.stdout.trim();
 }
+
+/** A Runner whose result rejects immediately: context assembly still runs, the Turn fails fast. */
+class RefusingProbeRunner implements Runner {
+  readonly isolation = "process" as const;
+  prepare(_request: RunRequest): RunnerHandle {
+    return {
+      pid: null,
+      begin() {},
+      result: Promise.reject(new Error("probe runner refuses to produce a response")),
+      terminate: async () => {},
+    };
+  }
+  async terminateProcess(): Promise<void> {}
+}
+
+test("turn admission stays bounded on a large ledger", async () => {
+  const clock = new SimulatedClock("2030-01-01T00:00:00.000Z");
+  const ledger = createMemoryLedger({ clock });
+  const ts = "2030-01-01T00:00:00.000Z";
+  const thread = {
+    id: "thread:ceo",
+    agent: "ceo",
+    role: "ceo" as const,
+    parentThreadId: null,
+    createdAt: ts,
+    updatedAt: ts,
+  };
+  ledger.putThread(thread, "supervisor");
+  const root: GoalSnapshot = {
+    id: "root-batch",
+    parentId: null,
+    objective: "large-ledger root",
+    observationMethod: null,
+    verificationMethod: null,
+    owner: "ceo",
+    phase: "active",
+    revision: 0,
+  };
+  ledger.putGoal(root, "human");
+  for (let i = 0; i < 50; i++) {
+    ledger.putGoal(
+      {
+        id: `child-${i}`,
+        parentId: "root-batch",
+        objective: `child ${i}`,
+        observationMethod: "observe",
+        verificationMethod: "verify",
+        owner: `worker-${i % 5}`,
+        phase: "active",
+        revision: 0,
+      },
+      "ceo",
+    );
+  }
+  // Completed CEO conversation history: each Turn costs ~5 events through the public APIs.
+  for (let i = 0; i < 7_000; i++) {
+    const turn: TurnSnapshot = {
+      id: `turn:${i}`,
+      threadId: thread.id,
+      triggerKind: "user_message",
+      goalId: null,
+      goalRevision: null,
+      status: "in_progress",
+      attempt: 1,
+      error: null,
+      startedAt: ts,
+      endedAt: null,
+      leaseUntil: "2030-01-01T00:10:00.000Z",
+      leaseToken: `lease:${i}`,
+      runnerPid: null,
+    };
+    const messageItem: TurnItemSnapshot = {
+      id: `turn:${i}:user_message`,
+      turnId: turn.id,
+      ordinal: 1,
+      type: "user_message",
+      status: "completed",
+      data: { text: `message ${i}` },
+      createdAt: ts,
+      completedAt: ts,
+    };
+    ledger.admitHumanTurn({ thread, turn, messageItem, replaceTurnId: null });
+    const answer: TurnItemSnapshot = {
+      id: `turn:${i}:assistant_message`,
+      turnId: turn.id,
+      ordinal: 2,
+      type: "assistant_message",
+      status: "completed",
+      data: { text: `answer ${i}` },
+      createdAt: ts,
+      completedAt: ts,
+    };
+    ledger.putTurnItem(answer, "ceo");
+    ledger.commitTurnResponse(turn.id, answer.id, ts, "supervisor");
+  }
+  // Mail history: goal-routed to workers, plus goal-routed and inbox mail for the CEO.
+  const mails: MailSnapshot[] = [];
+  for (let i = 0; i < 1_500; i++) {
+    mails.push(
+      i < 30
+        ? {
+            id: `mail:ceo-goal:${i}`,
+            to: "ceo",
+            from: "worker-0",
+            level: "fyi",
+            ...goalRoute("root-batch"),
+            body: { n: i },
+            readAt: null,
+          }
+        : i < 70
+          ? {
+              id: `mail:ceo:${i}`,
+              to: "ceo",
+              from: "verifier",
+              level: "fyi",
+              ...ceoInboxRoute(),
+              body: { n: i },
+              readAt: null,
+            }
+          : {
+              id: `mail:w:${i}`,
+              to: `worker-${i % 5}`,
+              from: "ceo",
+              level: "fyi",
+              ...goalRoute(`child-${i % 50}`),
+              body: { n: i },
+              readAt: null,
+            },
+    );
+  }
+  for (let i = 0; i < mails.length; i += 500)
+    ledger.putMails(mails.slice(i, i + 500), "supervisor");
+  // Raw event bulk: handoffs by several agents, CEO memory notes, and trace noise.
+  const raw = (count: number, make: (index: number) => EventInput): void => {
+    for (let i = 0; i < count; i += 5_000) {
+      const batch: EventInput[] = [];
+      for (let j = i; j < Math.min(i + 5_000, count); j++) batch.push(make(j));
+      ledger.appendEvents(batch);
+    }
+  };
+  raw(5_000, (i) => ({
+    streamId: "filler:handoff",
+    ts,
+    actor: `worker-${i % 5}`,
+    type: "handoff.recorded",
+    data: {
+      goalId: `child-${i % 50}`,
+      goalRevision: 0,
+      recordRevision: 1,
+      outcome: "progress",
+      evidence: [],
+    },
+    ignorable: true,
+  }));
+  raw(500, (i) => ({
+    streamId: `memory:ceo`,
+    ts,
+    actor: "ceo",
+    type: "memory.appended",
+    data: { note: `note ${i}` },
+  }));
+  raw(55_000, (i) => ({
+    streamId: `filler:${i % 64}`,
+    ts,
+    actor: "worker-0",
+    type: "trace.filler",
+    data: { i },
+    ignorable: true,
+  }));
+  for (let i = 0; i < 50; i++) {
+    ledger.putSchedule(
+      {
+        id: `schedule:${i}`,
+        ...goalAutomaticTarget(`worker-${i % 5}`, `child-${i % 50}`),
+        nextWakeAt: "2031-01-01T00:00:00.000Z",
+        reason: "large-ledger",
+        setBy: "supervisor",
+        status: "pending",
+        resolvedAt: null,
+      },
+      "supervisor",
+    );
+  }
+  const eventCount = ledger.latestEvent()?.seq ?? 0;
+  assert.ok(eventCount >= 100_000, `large ledger only reached ${eventCount} events`);
+
+  // Regression guard: admission must not degrade with ledger history. Measured ~15-20ms per
+  // admission at this size; 150ms leaves headroom for slower CI machines while a return to
+  // full-history scans (~0.5s here) still fails loudly.
+  const limitMs = 150;
+  const supervisor = new Supervisor(ledger, new RefusingProbeRunner(), clock);
+  const humanStart = performance.now();
+  const accepted = await supervisor.startHumanTurn("probe");
+  const humanMs = performance.now() - humanStart;
+  await supervisor.waitForTurn(accepted.turnId);
+  assert.ok(
+    humanMs < limitMs,
+    `human Turn admission took ${humanMs.toFixed(1)}ms on a ${eventCount}-event ledger`,
+  );
+
+  ledger.enqueueWake(
+    {
+      id: "wake:probe",
+      ...goalAutomaticTarget("ceo", "root-batch"),
+      triggerRef: "probe",
+      status: "queued",
+      attempt: 0,
+      enqueuedSeq: 0,
+      claimedAt: null,
+      consumedAt: null,
+      turnId: null,
+    },
+    "supervisor",
+  );
+  const wakeStart = performance.now();
+  const wake = await supervisor.tick();
+  const wakeMs = performance.now() - wakeStart;
+  assert.ok(wake?.turnId, "probe wake did not start a Turn");
+  await supervisor.waitForTurn(wake.turnId);
+  assert.ok(
+    wakeMs < limitMs,
+    `wake Turn admission took ${wakeMs.toFixed(1)}ms on a ${eventCount}-event ledger`,
+  );
+  ledger.close();
+});
