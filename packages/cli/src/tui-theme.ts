@@ -1,5 +1,6 @@
 const enabled = !process.env.NO_COLOR && process.env.TERM !== "dumb";
-const paint = (open: string, value: string): string => enabled ? `\u001b[${open}m${value}\u001b[0m` : value;
+const paint = (open: string, value: string): string =>
+  enabled ? `\u001b[${open}m${value}\u001b[0m` : value;
 
 export const tuiTheme = {
   brand: (value: string) => paint("1;38;5;231;48;5;33", value),
@@ -17,4 +18,6 @@ export const tuiTheme = {
   active: (value: string) => paint("1;38;5;17;48;5;75", value),
 };
 
-export function stripAnsi(value: string): string { return value.replace(/\u001b\[[0-9;]*m/g, ""); }
+export function stripAnsi(value: string): string {
+  return value.replace(/\u001b\[[0-9;]*m/g, "");
+}

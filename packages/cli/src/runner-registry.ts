@@ -16,4 +16,6 @@ export function runnerPlugin(id: string): RunnerPlugin {
   return plugin;
 }
 
-export function runnerManifests(): RunnerManifest[] { return [...plugins.values()].map((plugin) => plugin.configurator.describe()); }
+export function runnerManifests(): RunnerManifest[] {
+  return [...plugins.values()].map((plugin) => plugin.configurator.describe());
+}

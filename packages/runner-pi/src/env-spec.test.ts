@@ -7,7 +7,13 @@ import { ProcessRunner, resolveEnvSpec } from "./index.js";
 import { wakeContext } from "./test-helpers.js";
 
 function printEnvRunner(): ProcessRunner {
-  return new ProcessRunner({ command: process.execPath, args: ["-e", "process.stdout.write(JSON.stringify({type:'result',result:{outcome:'abnormal',reason:process.env.GOAH_TEST_CRED ?? 'unset'}})+'\\n')"] });
+  return new ProcessRunner({
+    command: process.execPath,
+    args: [
+      "-e",
+      "process.stdout.write(JSON.stringify({type:'result',result:{outcome:'abnormal',reason:process.env.GOAH_TEST_CRED ?? 'unset'}})+'\\n')",
+    ],
+  });
 }
 
 test("resolveEnvSpec resolves references through the process environment at call time", () => {
@@ -32,16 +38,30 @@ test("resolveEnvSpec reads workspace .env and ~/.goah/.env with workspace preced
 
 test("resolveEnvSpec throws an honest error naming the missing variable", () => {
   delete process.env.GOAH_SPEC_MISSING_KEY;
-  assert.throws(() => resolveEnvSpec({ K: "env:GOAH_SPEC_MISSING_KEY" }, { root: tmpdir() }), /GOAH_SPEC_MISSING_KEY/);
+  assert.throws(
+    () => resolveEnvSpec({ K: "env:GOAH_SPEC_MISSING_KEY" }, { root: tmpdir() }),
+    /GOAH_SPEC_MISSING_KEY/,
+  );
 });
 
 test("a runner envSpec is re-resolved on every spawn, so .env edits apply to the next wake", async () => {
   const root = mkdtempSync(join(tmpdir(), "goah-envspec-live-"));
   writeFileSync(join(root, ".env"), "GOAH_TEST_CRED=first-value\n");
-  const runner = new ProcessRunner({ command: process.execPath, args: ["-e", "process.stdout.write(JSON.stringify({type:'result',result:{outcome:'abnormal',reason:process.env.GOAH_TEST_CRED ?? 'unset'}})+'\\n')"], envSpec: { GOAH_TEST_CRED: "env:GOAH_TEST_CRED" }, cwd: root });
+  const runner = new ProcessRunner({
+    command: process.execPath,
+    args: [
+      "-e",
+      "process.stdout.write(JSON.stringify({type:'result',result:{outcome:'abnormal',reason:process.env.GOAH_TEST_CRED ?? 'unset'}})+'\\n')",
+    ],
+    envSpec: { GOAH_TEST_CRED: "env:GOAH_TEST_CRED" },
+    cwd: root,
+  });
   const first = await runner.prepare(wakeContext()).result;
   assert.equal(first.outcome === "abnormal" ? first.reason : "unexpected handoff", "first-value");
   writeFileSync(join(root, ".env"), "GOAH_TEST_CRED=rotated-value\n");
   const second = await runner.prepare(wakeContext()).result;
-  assert.equal(second.outcome === "abnormal" ? second.reason : "unexpected handoff", "rotated-value");
+  assert.equal(
+    second.outcome === "abnormal" ? second.reason : "unexpected handoff",
+    "rotated-value",
+  );
 });

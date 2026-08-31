@@ -1,9 +1,30 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Agent, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
-import { fauxAssistantMessage, fauxText, fauxToolCall, Type, type AssistantMessageEvent,type Message, type Provider } from "@earendil-works/pi-ai";
+import {
+  fauxAssistantMessage,
+  fauxText,
+  fauxToolCall,
+  Type,
+  type AssistantMessageEvent,
+  type Message,
+  type Provider,
+} from "@earendil-works/pi-ai";
 import { createCodingTools } from "@earendil-works/pi-coding-agent";
-import { normalizeAssistantText, requestComponentHash, TRANSCRIPT_FORMAT_VERSION, type AgentCapability, type AgentHandoff,type AssistantLiveDelta, type HandoffValidationResult, type JsonValue, type RequestComponentKind, type RunnerCandidateResult, type TranscriptMessage, type TurnOutput } from "goah-ledger-contract";
+import {
+  normalizeAssistantText,
+  requestComponentHash,
+  TRANSCRIPT_FORMAT_VERSION,
+  type AgentCapability,
+  type AgentHandoff,
+  type AssistantLiveDelta,
+  type HandoffValidationResult,
+  type JsonValue,
+  type RequestComponentKind,
+  type RunnerCandidateResult,
+  type TranscriptMessage,
+  type TurnOutput,
+} from "goah-ledger-contract";
 import { runProcessWorker, type WorkerRpc } from "./index.js";
 import { createPiModel } from "./model-provider.js";
 
@@ -14,234 +35,652 @@ Call handoff exactly once, only at a genuine control boundary: the current actio
 export function compactMessages(messages: AgentMessage[], maxRecent = 8): AgentMessage[] {
   if (messages.length <= maxRecent + 1) return messages;
   const removed = messages.slice(1, -maxRecent);
-  const summary = removed.map((message, index) => `${index + 1}. ${messageText(message).slice(0, 240)}`).join("\n");
+  const summary = removed
+    .map((message, index) => `${index + 1}. ${messageText(message).slice(0, 240)}`)
+    .join("\n");
   return [
     messages[0]!,
-    { role: "user", content: `Compacted model view. Original trace is unchanged. Source message indexes 1-${removed.length}:\n${summary}`, timestamp: Date.now() },
+    {
+      role: "user",
+      content: `Compacted model view. Original trace is unchanged. Source message indexes 1-${removed.length}:\n${summary}`,
+      timestamp: Date.now(),
+    },
     ...messages.slice(-maxRecent),
   ];
 }
 
 export async function runPiWorker(): Promise<void> {
-  await runProcessWorker(async (request, emit, rpc, controls,emitLive): Promise<RunnerCandidateResult> => {
-    const contextRecord = typeof request.context === "object" && request.context !== null && !Array.isArray(request.context) ? request.context : {};
-    const legacyRequest = request.turn === undefined;
-    const binding = request.turn?.goalCommitment;
-    const goalState: { bound: boolean; binding?: { goalId: string; goalRevision: number }; recordRevision?: number } = { bound: legacyRequest || binding !== null && binding !== undefined, ...(binding ? { binding } : {}) };
-    const profile = contextRecord.runnerProfile && typeof contextRecord.runnerProfile === "object" && !Array.isArray(contextRecord.runnerProfile) ? contextRecord.runnerProfile as Record<string, unknown> : {};
-    const runnerConfig = profile.config && typeof profile.config === "object" && !Array.isArray(profile.config) ? profile.config as Record<string, unknown> : {};
-    const provider = typeof runnerConfig.provider === "string" ? runnerConfig.provider : process.env.GOAH_PI_PROVIDER ?? "anthropic";
-    const modelId = typeof runnerConfig.model === "string" ? runnerConfig.model : process.env.GOAH_PI_MODEL;
-    if (!modelId) throw new Error("GOAH_PI_MODEL is required");
-    const configured = createPiModel(provider, modelId);
-    const { models } = configured;
-    const privateAuth = request.runtime && typeof request.runtime === "object" && !Array.isArray(request.runtime) ? request.runtime as Record<string, unknown> : {};
-    const model = typeof privateAuth.baseUrl === "string" ? { ...configured.model, baseUrl: privateAuth.baseUrl } : configured.model;
-    if (provider === "faux") {
-      const faux = configured.faux!;
-      if (process.env.GOAH_PI_FAUX_ERROR) {
-        faux.setResponses([fauxAssistantMessage([], { stopReason: "error", errorMessage: process.env.GOAH_PI_FAUX_ERROR })]);
-      } else if (goalState.bound && !legacyRequest) {
-        const handoff = JSON.parse(process.env.GOAH_PI_FAUX_HANDOFF ?? "{}") as Record<string, unknown>;
-        const current = contextRecord.workRecord && typeof contextRecord.workRecord === "object" && !Array.isArray(contextRecord.workRecord) ? contextRecord.workRecord as Record<string, unknown> : {};
-        const evidence = Array.isArray(contextRecord.sourceSeqs) ? contextRecord.sourceSeqs.filter((value): value is number => typeof value === "number") : [];
-        const outcome=["progress","waiting","blocked","completion_proposed"].includes(String(handoff.outcome))?String(handoff.outcome):"progress";const handoffEvidence=Array.isArray(handoff.evidence)&&handoff.evidence.every((value)=>typeof value==="number")?handoff.evidence:evidence.length?[Math.max(...evidence)]:[];
-        const record = `# Current State\n\nFaux Goal outcome: ${outcome}.\n\n# Observations\n\nSee the cited Ledger evidence.\n\n# Work Completed\n\nExecuted the scripted faux Goal turn.\n\n# Decisions\n\nRecord the scripted result from ${request.execution.id}.\n\n# Blockers\n\n${outcome==="blocked"?"Blocked.":"None."}\n\n# Next Steps\n\nFollow the current Goal and explicit tools.\n`;
-        const finalResponse=fauxAssistantMessage([fauxText(String(handoff.message??`Goal work recorded with outcome ${outcome}.`)),fauxToolCall("handoff", {outcome,evidence:handoffEvidence})], { stopReason: "toolUse" });
-        const recordResponse=fauxAssistantMessage(fauxToolCall("work_record_update", { expectedRevision: Number(current.recordRevision ?? 0), content: record, reason: "record faux Goal progress", evidence: evidence.length ? [Math.max(...evidence)] : [] }), { stopReason: "toolUse" });
-        const narratedScheduleResponse=fauxAssistantMessage([fauxText(String(handoff.message??"Work Record updated; the next wake is scheduled.")),fauxToolCall("schedule_wake",{at:new Date(Date.parse(request.execution.startedAt)+60_000).toISOString(),reason:"continue Goal work"})],{stopReason:"toolUse"});
-        const toolOnlyHandoff=fauxAssistantMessage(fauxToolCall("handoff",{outcome,evidence:handoffEvidence}),{stopReason:"toolUse"});
-        const fatalBatch=fauxAssistantMessage([fauxText("Stale completion attempt."),fauxToolCall("handoff",{outcome,evidence:handoffEvidence}),fauxToolCall("write",{path:"fatal.txt",content:"must not be written"})],{stopReason:"toolUse"});
-        faux.setResponses(process.env.GOAH_PI_FAUX_FATAL_BATCH==="1"?[fatalBatch]:process.env.GOAH_PI_FAUX_HANDOFF_REPAIR==="1"?[fauxAssistantMessage([fauxText("Premature completion attempt."),fauxToolCall("handoff",{outcome,evidence:handoffEvidence})],{stopReason:"toolUse"}),recordResponse,finalResponse]:process.env.GOAH_PI_FAUX_TOOL_ONLY_HANDOFF==="1"?[recordResponse,narratedScheduleResponse,toolOnlyHandoff]:[recordResponse,finalResponse]);
-      } else if (!goalState.bound) {
-        faux.setResponses([fauxAssistantMessage([fauxText(process.env.GOAH_PI_FAUX_RESPONSE ?? "Hello from Goah.")])]);
-      } else {
-        const handoff = JSON.parse(process.env.GOAH_PI_FAUX_HANDOFF ?? "{}") as Record<string, unknown>;
-        const{message,...handoffData}=handoff;faux.setResponses([fauxAssistantMessage([fauxText(String(message??"Goal work recorded.")),fauxToolCall("handoff",handoffData)], { stopReason: "toolUse" })]);
-      }
-    }
-
-    let output: TurnOutput | null = null;
-    let acceptedHandoff:{attemptId:number;token:string;messageItemId:string;handoff:AgentHandoff}|null=null;
-    let revokedReason="";
-    let lastReadableMessage:{id:string;text:string}|null=null;
-    let responseFailure = "";
-    let compactions = 0;
-    let messageCounter = 0;
-    let activeAssistantMessageId:string|null=null;
-    const messageIds = new WeakMap<object, string>();
-    const emittedUsers = new Set<string>();
-    const idFor = (message: AgentMessage): string => {
-      if (typeof message !== "object" || message === null) return `message:${++messageCounter}`;
-      const existing = messageIds.get(message);
-      if (existing) return existing;
-      const id = `${request.execution.id}:attempt:${request.execution.attempt}:message:${++messageCounter}`;
-      messageIds.set(message, id);
-      return id;
-    };
-    const root = resolve(process.cwd());
-    const capabilities = Array.isArray(contextRecord.capabilities)
-      ? new Set(contextRecord.capabilities.filter((value): value is AgentCapability => typeof value === "string"))
-      : undefined;
-    if (contextRecord.workRecord && typeof contextRecord.workRecord === "object" && !Array.isArray(contextRecord.workRecord) && typeof contextRecord.workRecord.recordRevision === "number") goalState.recordRevision = contextRecord.workRecord.recordRevision;
-    const tools = createTools(root, (value) => {if(!acceptedHandoff||!sameHandoff(acceptedHandoff.handoff,value))throw new Error("Handoff tool executed without accepted validation");output={validationAttemptId:acceptedHandoff.attemptId,validationToken:acceptedHandoff.token,handoff:value};}, rpc, capabilities, goalState);
-    const contextPolicy = resolveContextPolicy(model.contextWindow, process.env);
-    emit({ type: "transcript.started", data: { formatVersion: TRANSCRIPT_FORMAT_VERSION, provider, model: modelId, runner: "pi", contextWindowTokens: model.contextWindow, maxOutputTokensPerTurn: model.maxTokens } });
-    const suppliedPrompt = typeof contextRecord.systemPrompt === "string" ? contextRecord.systemPrompt : undefined;
-    const activeContext = typeof contextRecord.text === "string" ? contextRecord.text : JSON.stringify(request.context);
-    const sourceSeqs = Array.isArray(contextRecord.sourceSeqs) ? contextRecord.sourceSeqs.filter((value): value is number => Number.isInteger(value)) : [];
-    const requestComponents = new Set<string>();
-    const component = (kind: RequestComponentKind, content: JsonValue): string => {
-      const hash = requestComponentHash(kind, content);
-      if (!requestComponents.has(hash)) {
-        requestComponents.add(hash);
-        emit({ type: "request.component", data: { hash, kind, content } });
-      }
-      return hash;
-    };
-    const basePrompt = process.env.GOAH_PI_SYSTEM_PROMPT ?? suppliedPrompt ?? (request.turn?.trigger.kind === "user_message" ? "You are Goah's primary Agent. Respond naturally to the Human." : `You are Goah Agent ${request.agent}. Inspect the supplied context and respond appropriately.`);
-    const systemPrompt = goalState.bound
-      ? `${basePrompt}\n\n${GOAL_TURN_POLICY}`
-      : request.turn?.trigger.kind === "user_message"
-        ? `${basePrompt}\nThe active Goal, when supplied, is context rather than an assignment. Finish with an ordinary response unless a Goal tool establishes a commitment during this Turn. If a Goal commitment is established, follow this policy for the rest of the Turn:\n\n${GOAL_TURN_POLICY}`
-        : `${basePrompt}\nThis Turn has no Goal commitment. Finish with an ordinary response and do not call handoff. Treat the supplied context as authoritative.`;
-    const agent = new Agent({
-      initialState: {
-        systemPrompt,
-        model,
-        thinkingLevel: typeof runnerConfig.thinking === "string" ? runnerConfig.thinking as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" : "off",
-        tools,
-      },
-      streamFn: async (requestModel, context, options) => {
-        const messages = JSON.parse(JSON.stringify(context.messages)) as JsonValue[];
-        const tools = (context.tools ?? []).map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters as unknown as JsonValue })) as unknown as JsonValue[];
-        emit({
-          type: "request.prepared",
-          data: {
-            provider: requestModel.provider,
-            model: requestModel.id,
-            systemPromptHash: component("system_prompt", context.systemPrompt ?? ""),
-            activeContextHash: component("active_context", activeContext),
-            messageHashes: messages.map((message) => component("message", message)),
-            toolsetHash: component("toolset", tools),
-            modelConfig: snapshotModelConfig(options),
-            sourceSeqs,
-          },
-        });
-        const runtimeProvider = models.getProvider(requestModel.provider) as Provider | undefined;
-        if (!runtimeProvider) throw new Error(`Provider not found: ${requestModel.provider}`);
-        const runtimeModel = typeof privateAuth.baseUrl === "string" ? { ...requestModel, baseUrl: privateAuth.baseUrl } : requestModel;
-        return runtimeProvider.streamSimple(runtimeModel, context, { ...options, ...(typeof privateAuth.apiKey === "string" ? { apiKey: privateAuth.apiKey } : {}), ...(privateAuth.headers && typeof privateAuth.headers === "object" && !Array.isArray(privateAuth.headers) ? { headers: privateAuth.headers as Record<string, string> } : {}), ...(process.env.GOAH_PI_CACHE_RETENTION === "none" ? { cacheRetention: "none" as const } : {}) });
-      },
-      getApiKey: () => typeof privateAuth.apiKey === "string" ? privateAuth.apiKey : undefined,
-      transformContext: async (messages) => {
-        let view = messages;
-        if (estimateMessages(messages) >= contextPolicy.compactAtTokens) {
-          compactions += 1;
-          view = compactMessagesToTokenBudget(messages, contextPolicy.retainAfterCompactTokens);
-          const retained = new Set(view.filter((message) => messages.includes(message)));
-          const summary = view.find((message) => !messages.includes(message));
-          if (summary) emit({ type: "context.compacted", data: { compaction: compactions, sourceMessageCount: messages.length, replacedMessageIds: messages.filter((message) => !retained.has(message)).map(idFor), retainedMessageIds: messages.filter((message) => retained.has(message)).map(idFor), summaryMessageId: idFor(summary), summary: messageText(summary) } });
+  await runProcessWorker(
+    async (request, emit, rpc, controls, emitLive): Promise<RunnerCandidateResult> => {
+      const contextRecord =
+        typeof request.context === "object" &&
+        request.context !== null &&
+        !Array.isArray(request.context)
+          ? request.context
+          : {};
+      const legacyRequest = request.turn === undefined;
+      const binding = request.turn?.goalCommitment;
+      const goalState: {
+        bound: boolean;
+        binding?: { goalId: string; goalRevision: number };
+        recordRevision?: number;
+      } = {
+        bound: legacyRequest || (binding !== null && binding !== undefined),
+        ...(binding ? { binding } : {}),
+      };
+      const profile =
+        contextRecord.runnerProfile &&
+        typeof contextRecord.runnerProfile === "object" &&
+        !Array.isArray(contextRecord.runnerProfile)
+          ? (contextRecord.runnerProfile as Record<string, unknown>)
+          : {};
+      const runnerConfig =
+        profile.config && typeof profile.config === "object" && !Array.isArray(profile.config)
+          ? (profile.config as Record<string, unknown>)
+          : {};
+      const provider =
+        typeof runnerConfig.provider === "string"
+          ? runnerConfig.provider
+          : (process.env.GOAH_PI_PROVIDER ?? "anthropic");
+      const modelId =
+        typeof runnerConfig.model === "string" ? runnerConfig.model : process.env.GOAH_PI_MODEL;
+      if (!modelId) throw new Error("GOAH_PI_MODEL is required");
+      const configured = createPiModel(provider, modelId);
+      const { models } = configured;
+      const privateAuth =
+        request.runtime && typeof request.runtime === "object" && !Array.isArray(request.runtime)
+          ? (request.runtime as Record<string, unknown>)
+          : {};
+      const model =
+        typeof privateAuth.baseUrl === "string"
+          ? { ...configured.model, baseUrl: privateAuth.baseUrl }
+          : configured.model;
+      if (provider === "faux") {
+        const faux = configured.faux!;
+        if (process.env.GOAH_PI_FAUX_ERROR) {
+          faux.setResponses([
+            fauxAssistantMessage([], {
+              stopReason: "error",
+              errorMessage: process.env.GOAH_PI_FAUX_ERROR,
+            }),
+          ]);
+        } else if (goalState.bound && !legacyRequest) {
+          const handoff = JSON.parse(process.env.GOAH_PI_FAUX_HANDOFF ?? "{}") as Record<
+            string,
+            unknown
+          >;
+          const current =
+            contextRecord.workRecord &&
+            typeof contextRecord.workRecord === "object" &&
+            !Array.isArray(contextRecord.workRecord)
+              ? (contextRecord.workRecord as Record<string, unknown>)
+              : {};
+          const evidence = Array.isArray(contextRecord.sourceSeqs)
+            ? contextRecord.sourceSeqs.filter((value): value is number => typeof value === "number")
+            : [];
+          const outcome = ["progress", "waiting", "blocked", "completion_proposed"].includes(
+            String(handoff.outcome),
+          )
+            ? String(handoff.outcome)
+            : "progress";
+          const handoffEvidence =
+            Array.isArray(handoff.evidence) &&
+            handoff.evidence.every((value) => typeof value === "number")
+              ? handoff.evidence
+              : evidence.length
+                ? [Math.max(...evidence)]
+                : [];
+          const record = `# Current State\n\nFaux Goal outcome: ${outcome}.\n\n# Observations\n\nSee the cited Ledger evidence.\n\n# Work Completed\n\nExecuted the scripted faux Goal turn.\n\n# Decisions\n\nRecord the scripted result from ${request.execution.id}.\n\n# Blockers\n\n${outcome === "blocked" ? "Blocked." : "None."}\n\n# Next Steps\n\nFollow the current Goal and explicit tools.\n`;
+          const finalResponse = fauxAssistantMessage(
+            [
+              fauxText(String(handoff.message ?? `Goal work recorded with outcome ${outcome}.`)),
+              fauxToolCall("handoff", { outcome, evidence: handoffEvidence }),
+            ],
+            { stopReason: "toolUse" },
+          );
+          const recordResponse = fauxAssistantMessage(
+            fauxToolCall("work_record_update", {
+              expectedRevision: Number(current.recordRevision ?? 0),
+              content: record,
+              reason: "record faux Goal progress",
+              evidence: evidence.length ? [Math.max(...evidence)] : [],
+            }),
+            { stopReason: "toolUse" },
+          );
+          const narratedScheduleResponse = fauxAssistantMessage(
+            [
+              fauxText(
+                String(handoff.message ?? "Work Record updated; the next wake is scheduled."),
+              ),
+              fauxToolCall("schedule_wake", {
+                at: new Date(Date.parse(request.execution.startedAt) + 60_000).toISOString(),
+                reason: "continue Goal work",
+              }),
+            ],
+            { stopReason: "toolUse" },
+          );
+          const toolOnlyHandoff = fauxAssistantMessage(
+            fauxToolCall("handoff", { outcome, evidence: handoffEvidence }),
+            { stopReason: "toolUse" },
+          );
+          const fatalBatch = fauxAssistantMessage(
+            [
+              fauxText("Stale completion attempt."),
+              fauxToolCall("handoff", { outcome, evidence: handoffEvidence }),
+              fauxToolCall("write", { path: "fatal.txt", content: "must not be written" }),
+            ],
+            { stopReason: "toolUse" },
+          );
+          faux.setResponses(
+            process.env.GOAH_PI_FAUX_FATAL_BATCH === "1"
+              ? [fatalBatch]
+              : process.env.GOAH_PI_FAUX_HANDOFF_REPAIR === "1"
+                ? [
+                    fauxAssistantMessage(
+                      [
+                        fauxText("Premature completion attempt."),
+                        fauxToolCall("handoff", { outcome, evidence: handoffEvidence }),
+                      ],
+                      { stopReason: "toolUse" },
+                    ),
+                    recordResponse,
+                    finalResponse,
+                  ]
+                : process.env.GOAH_PI_FAUX_TOOL_ONLY_HANDOFF === "1"
+                  ? [recordResponse, narratedScheduleResponse, toolOnlyHandoff]
+                  : [recordResponse, finalResponse],
+          );
+        } else if (!goalState.bound) {
+          faux.setResponses([
+            fauxAssistantMessage([
+              fauxText(process.env.GOAH_PI_FAUX_RESPONSE ?? "Hello from Goah."),
+            ]),
+          ]);
+        } else {
+          const handoff = JSON.parse(process.env.GOAH_PI_FAUX_HANDOFF ?? "{}") as Record<
+            string,
+            unknown
+          >;
+          const { message, ...handoffData } = handoff;
+          faux.setResponses([
+            fauxAssistantMessage(
+              [
+                fauxText(String(message ?? "Goal work recorded.")),
+                fauxToolCall("handoff", handoffData),
+              ],
+              { stopReason: "toolUse" },
+            ),
+          ]);
         }
-        return view;
-      },
-      beforeToolCall:async({assistantMessage,toolCall,args})=>{if(revokedReason)return{block:true,reason:`Turn authority was revoked: ${revokedReason}`,terminate:true};if(toolCall.name!=="handoff")return;acceptedHandoff=null;output=null;const handoff=args as AgentHandoff;const currentText=assistantResponseText(assistantMessage);const candidate=currentText?(activeAssistantMessageId?{id:activeAssistantMessageId,text:currentText}:lastReadableMessage?.text===currentText?lastReadableMessage:{id:idFor(assistantMessage),text:currentText}):lastReadableMessage;try{const result=await rpc("goal.handoff.validate",{handoff,candidateMessageId:candidate?.id??"",candidateMessage:candidate?.text??""} as unknown as JsonValue) as unknown as HandoffValidationResult;if(result.accepted){if(!candidate||result.messageItemId!==candidate.id){revokedReason="Handoff validation returned a different assistant message identity";return{block:true,reason:revokedReason,terminate:true};}acceptedHandoff={attemptId:result.attemptId,token:result.token,messageItemId:result.messageItemId,handoff};return;}const reason=result.issues.map((issue)=>`- ${issue.message}`).join("\n");if(result.fatal)revokedReason=reason;return{block:true,reason:`Handoff was not accepted:\n${reason}`,terminate:result.fatal};}catch(error){revokedReason=error instanceof Error?error.message:String(error);return{block:true,reason:`Handoff validation could not continue: ${revokedReason}`,terminate:true};}},
-      shouldStopAfterTurn: () => output !== null||Boolean(revokedReason),
-      toolExecution: "sequential",
-    });
-    let acceptingSteering = true;
-    controls.onSteer((message) => {
-      if (!acceptingSteering) return false;
-      agent.steer({ role: "user", content: message, timestamp: Date.now() });
-      return true;
-    });
-    agent.subscribe((event) => {
-      if (event.type === "turn_start") emit({ type: "turn.started", data: {} });
-      else if (event.type === "message_start") {
-        if(event.message.role==="assistant"){activeAssistantMessageId=idFor(event.message);return;}
-        if(event.message.role!=="user")return;const id = idFor(event.message);
-        if (!emittedUsers.has(id)) { emittedUsers.add(id); emit({ type: "message.user", data: { message: transcriptMessage(event.message, id) as unknown as JsonValue } }); }
-      } else if (event.type === "message_update") {
-        const delta=minimalLiveDelta(event.assistantMessageEvent);if(delta)emitLive({type:"message.assistant.delta",data:{messageId:activeAssistantMessageId??idFor(event.message),delta}});
-      } else if (event.type === "message_end" && event.message.role === "assistant") {
-        const messageId=activeAssistantMessageId??idFor(event.message);messageIds.set(event.message,messageId);const text=assistantResponseText(event.message);if(text)lastReadableMessage={id:messageId,text};
-        if ((event.message.stopReason === "error" || event.message.stopReason === "aborted") && event.message.errorMessage) responseFailure = event.message.errorMessage;
-        const handoffIntent=hasAgentToolCall(event.message,"handoff");emit({ type: "message.assistant.completed", data: { message: transcriptMessage(event.message, messageId) as unknown as JsonValue,commitState:handoffIntent?"provisional":"committed" } });
-        activeAssistantMessageId=null;
-      } else if (event.type === "tool_execution_start") emit({ type: "tool.called", data: { callId: event.toolCallId, name: event.toolName, arguments: JSON.parse(JSON.stringify(event.args)) as JsonValue } });
-      else if (event.type === "tool_execution_end") emit({ type: "tool.completed", data: { callId: event.toolCallId, messageId: `tool:${event.toolCallId}`, name: event.toolName, result: JSON.parse(JSON.stringify(event.result)) as JsonValue, isError: event.isError } });
-      else if (event.type === "turn_end") emit({ type: "turn.completed", data: {} });
-    });
-    const abortAgent = () => agent.abort();
-    process.once("SIGTERM", abortAgent);
-    process.once("SIGINT", abortAgent);
-    try {
-      await agent.prompt(`Turn started at: ${request.execution.startedAt}\n\n${activeContext}\n\nRunner root: ${root}. Manage local files directly when the goal requires them.`);
-    } finally {
-      acceptingSteering = false;
-      process.off("SIGTERM", abortAgent);
-      process.off("SIGINT", abortAgent);
-    }
-    if(revokedReason)return{outcome:"abnormal",reason:revokedReason};
-    const finalMessage=lastReadableMessage as {id:string;text:string}|null;
-    if (!goalState.bound) return finalMessage ? { outcome: "completed", finalMessageId: finalMessage.id } : { outcome: "abnormal", reason: responseFailure || "Pi worker exited without a response" };
-    if (responseFailure) return { outcome: "abnormal", reason: responseFailure };
-    if (!output) return { outcome: "abnormal", reason: "Pi worker exited without an accepted Handoff" };
-    const finalHandoff=acceptedHandoff as {attemptId:number;token:string;messageItemId:string;handoff:AgentHandoff}|null;
-    if(!finalHandoff)return{outcome:"abnormal",reason:"Pi worker exited without an accepted Handoff message"};
-    return { outcome: "completed", finalMessageId:finalHandoff.messageItemId, handoff:output };
-  });
+      }
+
+      let output: TurnOutput | null = null;
+      let acceptedHandoff: {
+        attemptId: number;
+        token: string;
+        messageItemId: string;
+        handoff: AgentHandoff;
+      } | null = null;
+      let revokedReason = "";
+      let lastReadableMessage: { id: string; text: string } | null = null;
+      let responseFailure = "";
+      let compactions = 0;
+      let messageCounter = 0;
+      let activeAssistantMessageId: string | null = null;
+      const messageIds = new WeakMap<object, string>();
+      const emittedUsers = new Set<string>();
+      const idFor = (message: AgentMessage): string => {
+        if (typeof message !== "object" || message === null) return `message:${++messageCounter}`;
+        const existing = messageIds.get(message);
+        if (existing) return existing;
+        const id = `${request.execution.id}:attempt:${request.execution.attempt}:message:${++messageCounter}`;
+        messageIds.set(message, id);
+        return id;
+      };
+      const root = resolve(process.cwd());
+      const capabilities = Array.isArray(contextRecord.capabilities)
+        ? new Set(
+            contextRecord.capabilities.filter(
+              (value): value is AgentCapability => typeof value === "string",
+            ),
+          )
+        : undefined;
+      if (
+        contextRecord.workRecord &&
+        typeof contextRecord.workRecord === "object" &&
+        !Array.isArray(contextRecord.workRecord) &&
+        typeof contextRecord.workRecord.recordRevision === "number"
+      )
+        goalState.recordRevision = contextRecord.workRecord.recordRevision;
+      const tools = createTools(
+        root,
+        (value) => {
+          if (!acceptedHandoff || !sameHandoff(acceptedHandoff.handoff, value))
+            throw new Error("Handoff tool executed without accepted validation");
+          output = {
+            validationAttemptId: acceptedHandoff.attemptId,
+            validationToken: acceptedHandoff.token,
+            handoff: value,
+          };
+        },
+        rpc,
+        capabilities,
+        goalState,
+      );
+      const contextPolicy = resolveContextPolicy(model.contextWindow, process.env);
+      emit({
+        type: "transcript.started",
+        data: {
+          formatVersion: TRANSCRIPT_FORMAT_VERSION,
+          provider,
+          model: modelId,
+          runner: "pi",
+          contextWindowTokens: model.contextWindow,
+          maxOutputTokensPerTurn: model.maxTokens,
+        },
+      });
+      const suppliedPrompt =
+        typeof contextRecord.systemPrompt === "string" ? contextRecord.systemPrompt : undefined;
+      const activeContext =
+        typeof contextRecord.text === "string"
+          ? contextRecord.text
+          : JSON.stringify(request.context);
+      const sourceSeqs = Array.isArray(contextRecord.sourceSeqs)
+        ? contextRecord.sourceSeqs.filter((value): value is number => Number.isInteger(value))
+        : [];
+      const requestComponents = new Set<string>();
+      const component = (kind: RequestComponentKind, content: JsonValue): string => {
+        const hash = requestComponentHash(kind, content);
+        if (!requestComponents.has(hash)) {
+          requestComponents.add(hash);
+          emit({ type: "request.component", data: { hash, kind, content } });
+        }
+        return hash;
+      };
+      const basePrompt =
+        process.env.GOAH_PI_SYSTEM_PROMPT ??
+        suppliedPrompt ??
+        (request.turn?.trigger.kind === "user_message"
+          ? "You are Goah's primary Agent. Respond naturally to the Human."
+          : `You are Goah Agent ${request.agent}. Inspect the supplied context and respond appropriately.`);
+      const systemPrompt = goalState.bound
+        ? `${basePrompt}\n\n${GOAL_TURN_POLICY}`
+        : request.turn?.trigger.kind === "user_message"
+          ? `${basePrompt}\nThe active Goal, when supplied, is context rather than an assignment. Finish with an ordinary response unless a Goal tool establishes a commitment during this Turn. If a Goal commitment is established, follow this policy for the rest of the Turn:\n\n${GOAL_TURN_POLICY}`
+          : `${basePrompt}\nThis Turn has no Goal commitment. Finish with an ordinary response and do not call handoff. Treat the supplied context as authoritative.`;
+      const agent = new Agent({
+        initialState: {
+          systemPrompt,
+          model,
+          thinkingLevel:
+            typeof runnerConfig.thinking === "string"
+              ? (runnerConfig.thinking as
+                  "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max")
+              : "off",
+          tools,
+        },
+        streamFn: async (requestModel, context, options) => {
+          const messages = JSON.parse(JSON.stringify(context.messages)) as JsonValue[];
+          const tools = (context.tools ?? []).map((tool) => ({
+            name: tool.name,
+            description: tool.description,
+            parameters: tool.parameters as unknown as JsonValue,
+          })) as unknown as JsonValue[];
+          emit({
+            type: "request.prepared",
+            data: {
+              provider: requestModel.provider,
+              model: requestModel.id,
+              systemPromptHash: component("system_prompt", context.systemPrompt ?? ""),
+              activeContextHash: component("active_context", activeContext),
+              messageHashes: messages.map((message) => component("message", message)),
+              toolsetHash: component("toolset", tools),
+              modelConfig: snapshotModelConfig(options),
+              sourceSeqs,
+            },
+          });
+          const runtimeProvider = models.getProvider(requestModel.provider) as Provider | undefined;
+          if (!runtimeProvider) throw new Error(`Provider not found: ${requestModel.provider}`);
+          const runtimeModel =
+            typeof privateAuth.baseUrl === "string"
+              ? { ...requestModel, baseUrl: privateAuth.baseUrl }
+              : requestModel;
+          return runtimeProvider.streamSimple(runtimeModel, context, {
+            ...options,
+            ...(typeof privateAuth.apiKey === "string" ? { apiKey: privateAuth.apiKey } : {}),
+            ...(privateAuth.headers &&
+            typeof privateAuth.headers === "object" &&
+            !Array.isArray(privateAuth.headers)
+              ? { headers: privateAuth.headers as Record<string, string> }
+              : {}),
+            ...(process.env.GOAH_PI_CACHE_RETENTION === "none"
+              ? { cacheRetention: "none" as const }
+              : {}),
+          });
+        },
+        getApiKey: () => (typeof privateAuth.apiKey === "string" ? privateAuth.apiKey : undefined),
+        transformContext: async (messages) => {
+          let view = messages;
+          if (estimateMessages(messages) >= contextPolicy.compactAtTokens) {
+            compactions += 1;
+            view = compactMessagesToTokenBudget(messages, contextPolicy.retainAfterCompactTokens);
+            const retained = new Set(view.filter((message) => messages.includes(message)));
+            const summary = view.find((message) => !messages.includes(message));
+            if (summary)
+              emit({
+                type: "context.compacted",
+                data: {
+                  compaction: compactions,
+                  sourceMessageCount: messages.length,
+                  replacedMessageIds: messages
+                    .filter((message) => !retained.has(message))
+                    .map(idFor),
+                  retainedMessageIds: messages
+                    .filter((message) => retained.has(message))
+                    .map(idFor),
+                  summaryMessageId: idFor(summary),
+                  summary: messageText(summary),
+                },
+              });
+          }
+          return view;
+        },
+        beforeToolCall: async ({ assistantMessage, toolCall, args }) => {
+          if (revokedReason)
+            return {
+              block: true,
+              reason: `Turn authority was revoked: ${revokedReason}`,
+              terminate: true,
+            };
+          if (toolCall.name !== "handoff") return;
+          acceptedHandoff = null;
+          output = null;
+          const handoff = args as AgentHandoff;
+          const currentText = assistantResponseText(assistantMessage);
+          const candidate = currentText
+            ? activeAssistantMessageId
+              ? { id: activeAssistantMessageId, text: currentText }
+              : lastReadableMessage?.text === currentText
+                ? lastReadableMessage
+                : { id: idFor(assistantMessage), text: currentText }
+            : lastReadableMessage;
+          try {
+            const result = (await rpc("goal.handoff.validate", {
+              handoff,
+              candidateMessageId: candidate?.id ?? "",
+              candidateMessage: candidate?.text ?? "",
+            } as unknown as JsonValue)) as unknown as HandoffValidationResult;
+            if (result.accepted) {
+              if (!candidate || result.messageItemId !== candidate.id) {
+                revokedReason =
+                  "Handoff validation returned a different assistant message identity";
+                return { block: true, reason: revokedReason, terminate: true };
+              }
+              acceptedHandoff = {
+                attemptId: result.attemptId,
+                token: result.token,
+                messageItemId: result.messageItemId,
+                handoff,
+              };
+              return;
+            }
+            const reason = result.issues.map((issue) => `- ${issue.message}`).join("\n");
+            if (result.fatal) revokedReason = reason;
+            return {
+              block: true,
+              reason: `Handoff was not accepted:\n${reason}`,
+              terminate: result.fatal,
+            };
+          } catch (error) {
+            revokedReason = error instanceof Error ? error.message : String(error);
+            return {
+              block: true,
+              reason: `Handoff validation could not continue: ${revokedReason}`,
+              terminate: true,
+            };
+          }
+        },
+        shouldStopAfterTurn: () => output !== null || Boolean(revokedReason),
+        toolExecution: "sequential",
+      });
+      let acceptingSteering = true;
+      controls.onSteer((message) => {
+        if (!acceptingSteering) return false;
+        agent.steer({ role: "user", content: message, timestamp: Date.now() });
+        return true;
+      });
+      agent.subscribe((event) => {
+        if (event.type === "turn_start") emit({ type: "turn.started", data: {} });
+        else if (event.type === "message_start") {
+          if (event.message.role === "assistant") {
+            activeAssistantMessageId = idFor(event.message);
+            return;
+          }
+          if (event.message.role !== "user") return;
+          const id = idFor(event.message);
+          if (!emittedUsers.has(id)) {
+            emittedUsers.add(id);
+            emit({
+              type: "message.user",
+              data: { message: transcriptMessage(event.message, id) as unknown as JsonValue },
+            });
+          }
+        } else if (event.type === "message_update") {
+          const delta = minimalLiveDelta(event.assistantMessageEvent);
+          if (delta)
+            emitLive({
+              type: "message.assistant.delta",
+              data: { messageId: activeAssistantMessageId ?? idFor(event.message), delta },
+            });
+        } else if (event.type === "message_end" && event.message.role === "assistant") {
+          const messageId = activeAssistantMessageId ?? idFor(event.message);
+          messageIds.set(event.message, messageId);
+          const text = assistantResponseText(event.message);
+          if (text) lastReadableMessage = { id: messageId, text };
+          if (
+            (event.message.stopReason === "error" || event.message.stopReason === "aborted") &&
+            event.message.errorMessage
+          )
+            responseFailure = event.message.errorMessage;
+          const handoffIntent = hasAgentToolCall(event.message, "handoff");
+          emit({
+            type: "message.assistant.completed",
+            data: {
+              message: transcriptMessage(event.message, messageId) as unknown as JsonValue,
+              commitState: handoffIntent ? "provisional" : "committed",
+            },
+          });
+          activeAssistantMessageId = null;
+        } else if (event.type === "tool_execution_start")
+          emit({
+            type: "tool.called",
+            data: {
+              callId: event.toolCallId,
+              name: event.toolName,
+              arguments: JSON.parse(JSON.stringify(event.args)) as JsonValue,
+            },
+          });
+        else if (event.type === "tool_execution_end")
+          emit({
+            type: "tool.completed",
+            data: {
+              callId: event.toolCallId,
+              messageId: `tool:${event.toolCallId}`,
+              name: event.toolName,
+              result: JSON.parse(JSON.stringify(event.result)) as JsonValue,
+              isError: event.isError,
+            },
+          });
+        else if (event.type === "turn_end") emit({ type: "turn.completed", data: {} });
+      });
+      const abortAgent = () => agent.abort();
+      process.once("SIGTERM", abortAgent);
+      process.once("SIGINT", abortAgent);
+      try {
+        await agent.prompt(
+          `Turn started at: ${request.execution.startedAt}\n\n${activeContext}\n\nRunner root: ${root}. Manage local files directly when the goal requires them.`,
+        );
+      } finally {
+        acceptingSteering = false;
+        process.off("SIGTERM", abortAgent);
+        process.off("SIGINT", abortAgent);
+      }
+      if (revokedReason) return { outcome: "abnormal", reason: revokedReason };
+      const finalMessage = lastReadableMessage as { id: string; text: string } | null;
+      if (!goalState.bound)
+        return finalMessage
+          ? { outcome: "completed", finalMessageId: finalMessage.id }
+          : {
+              outcome: "abnormal",
+              reason: responseFailure || "Pi worker exited without a response",
+            };
+      if (responseFailure) return { outcome: "abnormal", reason: responseFailure };
+      if (!output)
+        return { outcome: "abnormal", reason: "Pi worker exited without an accepted Handoff" };
+      const finalHandoff = acceptedHandoff as {
+        attemptId: number;
+        token: string;
+        messageItemId: string;
+        handoff: AgentHandoff;
+      } | null;
+      if (!finalHandoff)
+        return {
+          outcome: "abnormal",
+          reason: "Pi worker exited without an accepted Handoff message",
+        };
+      return { outcome: "completed", finalMessageId: finalHandoff.messageItemId, handoff: output };
+    },
+  );
 }
 
 /** Persist only model behavior, never transport credentials or abort handles. */
 export function snapshotModelConfig(options: unknown): JsonValue {
   if (!options || typeof options !== "object" || Array.isArray(options)) return {};
   const record = options as Record<string, unknown>;
-  const allowed = ["transport", "toolExecution", "temperature", "topP", "maxTokens", "reasoning", "thinkingLevel", "toolChoice"];
-  return Object.fromEntries(allowed.flatMap((key) => isJson(record[key]) ? [[key, JSON.parse(JSON.stringify(record[key])) as JsonValue]] : []));
+  const allowed = [
+    "transport",
+    "toolExecution",
+    "temperature",
+    "topP",
+    "maxTokens",
+    "reasoning",
+    "thinkingLevel",
+    "toolChoice",
+  ];
+  return Object.fromEntries(
+    allowed.flatMap((key) =>
+      isJson(record[key]) ? [[key, JSON.parse(JSON.stringify(record[key])) as JsonValue]] : [],
+    ),
+  );
 }
 
 function isJson(value: unknown): boolean {
   if (value === null || ["string", "number", "boolean"].includes(typeof value)) return true;
   if (Array.isArray(value)) return value.every(isJson);
-  return Boolean(value && typeof value === "object" && Object.values(value as Record<string, unknown>).every(isJson));
+  return Boolean(
+    value &&
+    typeof value === "object" &&
+    Object.values(value as Record<string, unknown>).every(isJson),
+  );
 }
 
 function transcriptMessage(message: AgentMessage, id: string): TranscriptMessage {
   const value = JSON.parse(JSON.stringify(message)) as Record<string, unknown>;
-  const role = message.role === "assistant" ? "assistant" : message.role === "user" ? "user" : "tool";
-  return { id, role, content: (value.content ?? value) as JsonValue, ...(value.usage !== undefined ? { usage: value.usage as JsonValue } : {}), ...(typeof value.stopReason === "string" ? { stopReason: value.stopReason } : {}), ...(typeof value.errorMessage === "string" ? { errorMessage: value.errorMessage } : {}) };
+  const role =
+    message.role === "assistant" ? "assistant" : message.role === "user" ? "user" : "tool";
+  return {
+    id,
+    role,
+    content: (value.content ?? value) as JsonValue,
+    ...(value.usage !== undefined ? { usage: value.usage as JsonValue } : {}),
+    ...(typeof value.stopReason === "string" ? { stopReason: value.stopReason } : {}),
+    ...(typeof value.errorMessage === "string" ? { errorMessage: value.errorMessage } : {}),
+  };
 }
 
-export function minimalLiveDelta(event:AssistantMessageEvent):AssistantLiveDelta|null{
-  if(event.type==="start")return{type:"start"};
-  if(event.type==="text_delta"||event.type==="thinking_delta"||event.type==="toolcall_delta")return{type:event.type,contentIndex:event.contentIndex,delta:event.delta};
-  if(event.type==="text_start"||event.type==="text_end"||event.type==="thinking_start"||event.type==="thinking_end"||event.type==="toolcall_start"||event.type==="toolcall_end")return{type:event.type,contentIndex:event.contentIndex};
+export function minimalLiveDelta(event: AssistantMessageEvent): AssistantLiveDelta | null {
+  if (event.type === "start") return { type: "start" };
+  if (
+    event.type === "text_delta" ||
+    event.type === "thinking_delta" ||
+    event.type === "toolcall_delta"
+  )
+    return { type: event.type, contentIndex: event.contentIndex, delta: event.delta };
+  if (
+    event.type === "text_start" ||
+    event.type === "text_end" ||
+    event.type === "thinking_start" ||
+    event.type === "thinking_end" ||
+    event.type === "toolcall_start" ||
+    event.type === "toolcall_end"
+  )
+    return { type: event.type, contentIndex: event.contentIndex };
   return null;
 }
 
-function createTools(root: string, handoff: (output: AgentHandoff) => void, rpc: WorkerRpc, capabilities: ReadonlySet<AgentCapability> | undefined, goalState: { bound: boolean; binding?: { goalId: string; goalRevision: number }; recordRevision?: number }): AgentTool<any>[] {
+function createTools(
+  root: string,
+  handoff: (output: AgentHandoff) => void,
+  rpc: WorkerRpc,
+  capabilities: ReadonlySet<AgentCapability> | undefined,
+  goalState: {
+    bound: boolean;
+    binding?: { goalId: string; goalRevision: number };
+    recordRevision?: number;
+  },
+): AgentTool<any>[] {
   const handoffTool: AgentTool<any> = {
     name: "handoff",
     label: "Handoff",
-    description: "End the current Goal Turn at a genuine control boundary. Do not call while another safe and useful action can be completed now. Planning, partial progress, a Work Record update, or a scheduled Wake does not by itself justify Handoff.",
+    description:
+      "End the current Goal Turn at a genuine control boundary. Do not call while another safe and useful action can be completed now. Planning, partial progress, a Work Record update, or a scheduled Wake does not by itself justify Handoff.",
     parameters: Type.Object({
-      outcome: Type.Union([Type.Literal("progress"), Type.Literal("waiting"), Type.Literal("blocked"), Type.Literal("completion_proposed")]),
+      outcome: Type.Union([
+        Type.Literal("progress"),
+        Type.Literal("waiting"),
+        Type.Literal("blocked"),
+        Type.Literal("completion_proposed"),
+      ]),
       evidence: Type.Array(Type.Number()),
     }),
     execute: async (_id, params) => {
-      const input = params as {outcome: "progress" | "waiting" | "blocked" | "completion_proposed"; evidence: number[] };
-      const value: AgentHandoff = {outcome:input.outcome,evidence:input.evidence};
+      const input = params as {
+        outcome: "progress" | "waiting" | "blocked" | "completion_proposed";
+        evidence: number[];
+      };
+      const value: AgentHandoff = { outcome: input.outcome, evidence: input.evidence };
       handoff(value);
-      return { content: [{ type: "text", text: "handoff recorded" }], details: value, terminate: true };
+      return {
+        content: [{ type: "text", text: "handoff recorded" }],
+        details: value,
+        terminate: true,
+      };
     },
   };
   const rpcTools = createRpcTools(rpc, capabilities, (method, result) => {
-    if ((method === "goal.create" || method === "goal.work" || method === "goal.resume") && result && typeof result === "object" && !Array.isArray(result) && result.goalCommitment && typeof result.goalCommitment === "object" && !Array.isArray(result.goalCommitment)) {
+    if (
+      (method === "goal.create" || method === "goal.work" || method === "goal.resume") &&
+      result &&
+      typeof result === "object" &&
+      !Array.isArray(result) &&
+      result.goalCommitment &&
+      typeof result.goalCommitment === "object" &&
+      !Array.isArray(result.goalCommitment)
+    ) {
       const binding = result.goalCommitment as Record<string, JsonValue>;
-      if (typeof binding.goalId === "string" && typeof binding.goalRevision === "number") { goalState.bound = true; goalState.binding = { goalId: binding.goalId, goalRevision: binding.goalRevision }; }
+      if (typeof binding.goalId === "string" && typeof binding.goalRevision === "number") {
+        goalState.bound = true;
+        goalState.binding = { goalId: binding.goalId, goalRevision: binding.goalRevision };
+      }
     }
-    if (method === "work_record.update" && result && typeof result === "object" && !Array.isArray(result) && typeof result.recordRevision === "number") goalState.recordRevision = result.recordRevision;
+    if (
+      method === "work_record.update" &&
+      result &&
+      typeof result === "object" &&
+      !Array.isArray(result) &&
+      typeof result.recordRevision === "number"
+    )
+      goalState.recordRevision = result.recordRevision;
   });
   return [...createPiCodingTools(root), ...rpcTools, handoffTool];
 }
@@ -251,21 +690,34 @@ export function createPiCodingTools(root: string): AgentTool<any>[] {
   return createCodingTools(root);
 }
 
-
 export interface ContextPolicy {
   compactAtTokens: number;
   retainAfterCompactTokens: number;
 }
 
-export function resolveContextPolicy(contextWindowTokens: number, env: NodeJS.ProcessEnv): ContextPolicy {
-  if (!Number.isInteger(contextWindowTokens) || contextWindowTokens <= 0) throw new Error("model context window is missing");
-  const compactAtTokens = integerSetting(env.GOAH_PI_COMPACT_AT_TOKENS, Math.floor(contextWindowTokens * 0.7));
-  const retainAfterCompactTokens = integerSetting(env.GOAH_PI_RETAIN_CONTEXT_TOKENS, Math.floor(contextWindowTokens * 0.2));
-  if (retainAfterCompactTokens >= compactAtTokens || compactAtTokens >= contextWindowTokens) throw new Error("invalid Pi context policy");
+export function resolveContextPolicy(
+  contextWindowTokens: number,
+  env: NodeJS.ProcessEnv,
+): ContextPolicy {
+  if (!Number.isInteger(contextWindowTokens) || contextWindowTokens <= 0)
+    throw new Error("model context window is missing");
+  const compactAtTokens = integerSetting(
+    env.GOAH_PI_COMPACT_AT_TOKENS,
+    Math.floor(contextWindowTokens * 0.7),
+  );
+  const retainAfterCompactTokens = integerSetting(
+    env.GOAH_PI_RETAIN_CONTEXT_TOKENS,
+    Math.floor(contextWindowTokens * 0.2),
+  );
+  if (retainAfterCompactTokens >= compactAtTokens || compactAtTokens >= contextWindowTokens)
+    throw new Error("invalid Pi context policy");
   return { compactAtTokens, retainAfterCompactTokens };
 }
 
-export function compactMessagesToTokenBudget(messages: AgentMessage[], retainTokens: number): AgentMessage[] {
+export function compactMessagesToTokenBudget(
+  messages: AgentMessage[],
+  retainTokens: number,
+): AgentMessage[] {
   if (messages.length <= 2 || estimateMessages(messages) <= retainTokens) return messages;
   const tailBudget = Math.max(1, Math.floor(retainTokens * 0.6));
   let start = messages.length;
@@ -277,60 +729,327 @@ export function compactMessagesToTokenBudget(messages: AgentMessage[], retainTok
     start -= 1;
   }
   const removed = messages.slice(1, start);
-  const rawSummary = removed.map((message, index) => `${index + 1}. ${messageText(message).slice(0, 240)}`).join("\n");
+  const rawSummary = removed
+    .map((message, index) => `${index + 1}. ${messageText(message).slice(0, 240)}`)
+    .join("\n");
   const summaryChars = Math.max(0, (retainTokens - retained - 80) * 4);
-  const summary = summaryChars === 0 ? "[older entries truncated]"
-    : rawSummary.length <= summaryChars ? rawSummary : `[older entries truncated]\n${rawSummary.slice(-summaryChars)}`;
+  const summary =
+    summaryChars === 0
+      ? "[older entries truncated]"
+      : rawSummary.length <= summaryChars
+        ? rawSummary
+        : `[older entries truncated]\n${rawSummary.slice(-summaryChars)}`;
   return [
     messages[0]!,
-    { role: "user", content: `Compacted model view. Original trace is unchanged. Source message indexes 1-${removed.length}:\n${summary}`, timestamp: Date.now() },
+    {
+      role: "user",
+      content: `Compacted model view. Original trace is unchanged. Source message indexes 1-${removed.length}:\n${summary}`,
+      timestamp: Date.now(),
+    },
     ...messages.slice(start),
   ];
 }
 
-function createRpcTools(rpc: WorkerRpc, allowed?: ReadonlySet<AgentCapability>, onResult?: (method: AgentCapability, result: JsonValue) => void): AgentTool<any>[] {
-  const tool = (name: string, description: string, method: AgentCapability, parameters: ReturnType<typeof Type.Object>): AgentTool<any> => ({
-    name, label: name, description, parameters,
-    execute: async (_id, params) => { const result = await rpc(method, params as JsonValue); onResult?.(method, result); return { content: [{ type: "text", text: JSON.stringify(result) }], details: result }; },
+function createRpcTools(
+  rpc: WorkerRpc,
+  allowed?: ReadonlySet<AgentCapability>,
+  onResult?: (method: AgentCapability, result: JsonValue) => void,
+): AgentTool<any>[] {
+  const tool = (
+    name: string,
+    description: string,
+    method: AgentCapability,
+    parameters: ReturnType<typeof Type.Object>,
+  ): AgentTool<any> => ({
+    name,
+    label: name,
+    description,
+    parameters,
+    execute: async (_id, params) => {
+      const result = await rpc(method, params as JsonValue);
+      onResult?.(method, result);
+      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+    },
   });
   const definitions: Array<[AgentCapability, AgentTool<any>]> = [
-    ["ledger.search", tool("ledger_search", "Search durable ledger facts.", "ledger.search", Type.Object({ query: Type.String(), limit: Type.Optional(Type.Number()) }))],
-    ["memory.append", tool("memory_append", "Append a durable working-memory note that is injected into your future wakes. Record procedural knowledge, active hypotheses, and abandoned approaches with the reason; keep notes concise.", "memory.append", Type.Object({ note: Type.String() }))],
-    ["mail.send", tool("send_mail", "Send durable Mail to another Agent that owns the routed Goal. Human communication belongs in the readable Assistant Message.", "mail.send", Type.Object({ to: Type.String(), goalId: Type.String(), level: Type.Union([Type.Literal("fyi"), Type.Literal("decision"), Type.Literal("emergency")]), body: Type.Any() }))],
-    ["schedule.set", tool("schedule_wake", "Schedule genuinely time-dependent future observation. Scheduling does not end the current Turn; continue all useful work that can be completed before waiting.", "schedule.set", Type.Object({ at: Type.String(), reason: Type.String() }))],
-    ["team.list", tool("team_list", "Read the ledger-derived team roster and liveness state.", "team.list", Type.Object({}))],
-    ["goal.get", tool("get_goal", "Read the active Goal visible to this Turn. Visibility does not establish a Goal commitment.", "goal.get", Type.Object({}))],
-    ["goal.create", tool("create_goal", "Create a Root Goal from durable Human intent and bind this Turn. Do not use for greetings, questions, or routine single-turn work.", "goal.create", Type.Object({ objective: Type.String(), id: Type.Optional(Type.String()) }))],
-    ["goal.work", tool("work_on_goal", "Commit this direct CEO Turn to an existing active Root Goal owned by this Agent.", "goal.work", Type.Object({ goalId: Type.String() }))],
-    ["goal.delegate", tool("delegate_goal", "Atomically create a Child Goal with observation and verification methods, its Work Record, decision brief, and initial Wake.", "goal.delegate", Type.Object({ id: Type.String(), parentGoalId: Type.String(),expectedParentRevision:Type.Number(), childGoal: Type.Object({ id: Type.String(), objective: Type.String(), observationMethod: Type.String(), verificationMethod: Type.String(), owner: Type.String() }), brief: Type.Any(), reason: Type.String(), evidence: Type.Array(Type.Number()) }))],
-    ["goal.reassign", tool("reassign_goal", "Atomically transfer a child goal, notify both owners, and queue the new owner.", "goal.reassign", Type.Object({ id: Type.String(), goalId: Type.String(),expectedGoalRevision:Type.Number(), newOwner: Type.String(), brief: Type.Any(), reason: Type.String(), evidence: Type.Array(Type.Number()) }))],
-    ["goal.revise", tool("revise_goal", "Revise a Child Goal objective, observation method, and verification method as one new revision.", "goal.revise", Type.Object({ goalId: Type.String(), objective: Type.String(), observationMethod: Type.String(), verificationMethod: Type.String(), reason: Type.String(), evidence: Type.Array(Type.Number()) }))],
-    ["goal.pause", tool("pause_goal", "Pause a child goal and suppress queued motion.", "goal.pause", Type.Object({ goalId: Type.String() }))],
-    ["goal.resume", tool("resume_goal", "Resume a Goal. A direct Human Root resume binds the current Turn; Child Goal resume requires an already bound parent Turn.", "goal.resume", Type.Object({ goalId: Type.String() }))],
-    ["goal.complete", tool("complete_goal", "Complete a child goal only after its owner committed a current Work Record and Handoff; cite that Work Record or Handoff in evidence. Root completion remains human authority.", "goal.complete", Type.Object({ goalId: Type.String(), revision: Type.Number(), reason: Type.String(), evidence: Type.Array(Type.Number()) }))],
-    ["work_record.list", tool("work_record_list", "List the current Work Record for every Goal in the organization.", "work_record.list", Type.Object({}))],
-    ["work_record.read", tool("work_record_read", "Read one current Goal Work Record. Omit goalId to use the committed or visible Goal.", "work_record.read", Type.Object({ goalId: Type.Optional(Type.String()) }))],
-    ["work_record.history", tool("work_record_history", "Read the version timeline for a Goal Work Record.", "work_record.history", Type.Object({ goalId: Type.Optional(Type.String()) }))],
-    ["work_record.diff", tool("work_record_diff", "Compare two revisions of a Goal Work Record.", "work_record.diff", Type.Object({ goalId: Type.Optional(Type.String()), fromRevision: Type.Number(), toRevision: Type.Number() }))],
-    ["work_record.search", tool("work_record_search", "Search every Goal Work Record.", "work_record.search", Type.Object({ query: Type.String(), limit: Type.Optional(Type.Number()) }))],
-    ["work_record.update", tool("work_record_update", "Create the next version of the Work Record committed to this Turn with Ledger evidence.", "work_record.update", Type.Object({ expectedRevision: Type.Number(), content: Type.String(), reason: Type.String(), evidence: Type.Array(Type.Number()) }))],
-    ["goal.put", tool("put_goal", "Create or update a Goal through the authoritative goal.changed protocol using parent-layer authority.", "goal.put", Type.Object({ goal: Type.Any(),reason:Type.String(),evidence:Type.Array(Type.Number()) }))],
+    [
+      "ledger.search",
+      tool(
+        "ledger_search",
+        "Search durable ledger facts.",
+        "ledger.search",
+        Type.Object({ query: Type.String(), limit: Type.Optional(Type.Number()) }),
+      ),
+    ],
+    [
+      "memory.append",
+      tool(
+        "memory_append",
+        "Append a durable working-memory note that is injected into your future wakes. Record procedural knowledge, active hypotheses, and abandoned approaches with the reason; keep notes concise.",
+        "memory.append",
+        Type.Object({ note: Type.String() }),
+      ),
+    ],
+    [
+      "mail.send",
+      tool(
+        "send_mail",
+        "Send durable Mail to another Agent that owns the routed Goal. Human communication belongs in the readable Assistant Message.",
+        "mail.send",
+        Type.Object({
+          to: Type.String(),
+          goalId: Type.String(),
+          level: Type.Union([
+            Type.Literal("fyi"),
+            Type.Literal("decision"),
+            Type.Literal("emergency"),
+          ]),
+          body: Type.Any(),
+        }),
+      ),
+    ],
+    [
+      "schedule.set",
+      tool(
+        "schedule_wake",
+        "Schedule genuinely time-dependent future observation. Scheduling does not end the current Turn; continue all useful work that can be completed before waiting.",
+        "schedule.set",
+        Type.Object({ at: Type.String(), reason: Type.String() }),
+      ),
+    ],
+    [
+      "team.list",
+      tool(
+        "team_list",
+        "Read the ledger-derived team roster and liveness state.",
+        "team.list",
+        Type.Object({}),
+      ),
+    ],
+    [
+      "goal.get",
+      tool(
+        "get_goal",
+        "Read the active Goal visible to this Turn. Visibility does not establish a Goal commitment.",
+        "goal.get",
+        Type.Object({}),
+      ),
+    ],
+    [
+      "goal.create",
+      tool(
+        "create_goal",
+        "Create a Root Goal from durable Human intent and bind this Turn. Do not use for greetings, questions, or routine single-turn work.",
+        "goal.create",
+        Type.Object({ objective: Type.String(), id: Type.Optional(Type.String()) }),
+      ),
+    ],
+    [
+      "goal.work",
+      tool(
+        "work_on_goal",
+        "Commit this direct CEO Turn to an existing active Root Goal owned by this Agent.",
+        "goal.work",
+        Type.Object({ goalId: Type.String() }),
+      ),
+    ],
+    [
+      "goal.delegate",
+      tool(
+        "delegate_goal",
+        "Atomically create a Child Goal with observation and verification methods, its Work Record, decision brief, and initial Wake.",
+        "goal.delegate",
+        Type.Object({
+          id: Type.String(),
+          parentGoalId: Type.String(),
+          expectedParentRevision: Type.Number(),
+          childGoal: Type.Object({
+            id: Type.String(),
+            objective: Type.String(),
+            observationMethod: Type.String(),
+            verificationMethod: Type.String(),
+            owner: Type.String(),
+          }),
+          brief: Type.Any(),
+          reason: Type.String(),
+          evidence: Type.Array(Type.Number()),
+        }),
+      ),
+    ],
+    [
+      "goal.reassign",
+      tool(
+        "reassign_goal",
+        "Atomically transfer a child goal, notify both owners, and queue the new owner.",
+        "goal.reassign",
+        Type.Object({
+          id: Type.String(),
+          goalId: Type.String(),
+          expectedGoalRevision: Type.Number(),
+          newOwner: Type.String(),
+          brief: Type.Any(),
+          reason: Type.String(),
+          evidence: Type.Array(Type.Number()),
+        }),
+      ),
+    ],
+    [
+      "goal.revise",
+      tool(
+        "revise_goal",
+        "Revise a Child Goal objective, observation method, and verification method as one new revision.",
+        "goal.revise",
+        Type.Object({
+          goalId: Type.String(),
+          objective: Type.String(),
+          observationMethod: Type.String(),
+          verificationMethod: Type.String(),
+          reason: Type.String(),
+          evidence: Type.Array(Type.Number()),
+        }),
+      ),
+    ],
+    [
+      "goal.pause",
+      tool(
+        "pause_goal",
+        "Pause a child goal and suppress queued motion.",
+        "goal.pause",
+        Type.Object({ goalId: Type.String() }),
+      ),
+    ],
+    [
+      "goal.resume",
+      tool(
+        "resume_goal",
+        "Resume a Goal. A direct Human Root resume binds the current Turn; Child Goal resume requires an already bound parent Turn.",
+        "goal.resume",
+        Type.Object({ goalId: Type.String() }),
+      ),
+    ],
+    [
+      "goal.complete",
+      tool(
+        "complete_goal",
+        "Complete a child goal only after its owner committed a current Work Record and Handoff; cite that Work Record or Handoff in evidence. Root completion remains human authority.",
+        "goal.complete",
+        Type.Object({
+          goalId: Type.String(),
+          revision: Type.Number(),
+          reason: Type.String(),
+          evidence: Type.Array(Type.Number()),
+        }),
+      ),
+    ],
+    [
+      "work_record.list",
+      tool(
+        "work_record_list",
+        "List the current Work Record for every Goal in the organization.",
+        "work_record.list",
+        Type.Object({}),
+      ),
+    ],
+    [
+      "work_record.read",
+      tool(
+        "work_record_read",
+        "Read one current Goal Work Record. Omit goalId to use the committed or visible Goal.",
+        "work_record.read",
+        Type.Object({ goalId: Type.Optional(Type.String()) }),
+      ),
+    ],
+    [
+      "work_record.history",
+      tool(
+        "work_record_history",
+        "Read the version timeline for a Goal Work Record.",
+        "work_record.history",
+        Type.Object({ goalId: Type.Optional(Type.String()) }),
+      ),
+    ],
+    [
+      "work_record.diff",
+      tool(
+        "work_record_diff",
+        "Compare two revisions of a Goal Work Record.",
+        "work_record.diff",
+        Type.Object({
+          goalId: Type.Optional(Type.String()),
+          fromRevision: Type.Number(),
+          toRevision: Type.Number(),
+        }),
+      ),
+    ],
+    [
+      "work_record.search",
+      tool(
+        "work_record_search",
+        "Search every Goal Work Record.",
+        "work_record.search",
+        Type.Object({ query: Type.String(), limit: Type.Optional(Type.Number()) }),
+      ),
+    ],
+    [
+      "work_record.update",
+      tool(
+        "work_record_update",
+        "Create the next version of the Work Record committed to this Turn with Ledger evidence.",
+        "work_record.update",
+        Type.Object({
+          expectedRevision: Type.Number(),
+          content: Type.String(),
+          reason: Type.String(),
+          evidence: Type.Array(Type.Number()),
+        }),
+      ),
+    ],
+    [
+      "goal.put",
+      tool(
+        "put_goal",
+        "Create or update a Goal through the authoritative goal.changed protocol using parent-layer authority.",
+        "goal.put",
+        Type.Object({
+          goal: Type.Any(),
+          reason: Type.String(),
+          evidence: Type.Array(Type.Number()),
+        }),
+      ),
+    ],
   ];
-  return definitions.filter(([capability]) => !allowed || allowed.has(capability)).map(([, value]) => value);
+  return definitions
+    .filter(([capability]) => !allowed || allowed.has(capability))
+    .map(([, value]) => value);
 }
 
-function estimateMessages(messages: AgentMessage[]): number { return Math.ceil(JSON.stringify(messages).length / 4); }
+function estimateMessages(messages: AgentMessage[]): number {
+  return Math.ceil(JSON.stringify(messages).length / 4);
+}
 function integerSetting(value: string | undefined, fallback: number): number {
   if (value === undefined) return fallback;
   const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) throw new Error("Pi token settings must be positive integers");
+  if (!Number.isInteger(parsed) || parsed <= 0)
+    throw new Error("Pi token settings must be positive integers");
   return parsed;
 }
 function messageText(message: AgentMessage): string {
   const value = message as Message;
-  if (value.role === "user") return typeof value.content === "string" ? value.content : value.content.map((item) => item.type === "text" ? item.text : "[image]").join(" ");
-  if (value.role === "assistant") return value.content.map((item) => item.type === "text" ? item.text : item.type === "thinking" ? item.thinking : `[tool:${item.name}]`).join(" ");
-  return value.content.map((item) => item.type === "text" ? item.text : "[image]").join(" ");
+  if (value.role === "user")
+    return typeof value.content === "string"
+      ? value.content
+      : value.content.map((item) => (item.type === "text" ? item.text : "[image]")).join(" ");
+  if (value.role === "assistant")
+    return value.content
+      .map((item) =>
+        item.type === "text"
+          ? item.text
+          : item.type === "thinking"
+            ? item.thinking
+            : `[tool:${item.name}]`,
+      )
+      .join(" ");
+  return value.content.map((item) => (item.type === "text" ? item.text : "[image]")).join(" ");
 }
 
 /** User-visible assistant prose only; reasoning and tool blocks stay structured in the ledger. */
@@ -343,6 +1062,18 @@ export function assistantResponseText(message: AgentMessage): string {
     .filter(Boolean)
     .join("\n");
 }
-function sameHandoff(left:AgentHandoff,right:AgentHandoff):boolean{return left.outcome===right.outcome&&left.evidence.length===right.evidence.length&&left.evidence.every((value,index)=>value===right.evidence[index]);}
-function hasAgentToolCall(message:AgentMessage,name:string):boolean{return message.role==="assistant"&&message.content.some((item)=>item.type==="toolCall"&&item.name===name);}
-if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) await runPiWorker();
+function sameHandoff(left: AgentHandoff, right: AgentHandoff): boolean {
+  return (
+    left.outcome === right.outcome &&
+    left.evidence.length === right.evidence.length &&
+    left.evidence.every((value, index) => value === right.evidence[index])
+  );
+}
+function hasAgentToolCall(message: AgentMessage, name: string): boolean {
+  return (
+    message.role === "assistant" &&
+    message.content.some((item) => item.type === "toolCall" && item.name === name)
+  );
+}
+if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url)))
+  await runPiWorker();

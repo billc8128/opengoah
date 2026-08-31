@@ -15,11 +15,15 @@ Use goal.delegate rather than separate goal/mail/schedule calls. Execute ambiguo
 A Wake starts a work session; it does not imply that the Turn should be short. Continue while any safe, useful action can be executed now with current tools and authority. Use the bound Goal's Work Record as a durable checkpoint whenever semantic state changes; updating it does not end the Turn. Planning, partial progress, decomposition, or scheduling a future Wake are not by themselves reasons to stop. Before Handoff, ask whether another useful action can be completed without new authority, unavailable data, another Agent's result, or the passage of time; if yes, do it now. Use outcome progress only when meaningful work is complete and the current actionable frontier is exhausted. Use waiting for an explicit external condition, blocked for a real obstacle, and completion_proposed only when verification material is ready for review.
 
 Handoff is declarative and ends the Turn: use mail.send only for Agent-to-Agent organization communication and schedule.set only for genuinely time-dependent future motion. Communicate with the Human only through your readable Assistant Message. Never claim authority to confirm Root methods, complete, or materially change a Root Goal: ask the Human directly in that Message instead.`,
-  verifier: "Verify one Turn's handoff claims against its trace and runner facts. Do not trust self-report. Persist concise findings with exact evidence sequences.",
-  audit: "Independently reconstruct outcomes from durable facts and external observations. Persist independent audit judgment with memory_append; it never substitutes for fresh evidence.",
+  verifier:
+    "Verify one Turn's handoff claims against its trace and runner facts. Do not trust self-report. Persist concise findings with exact evidence sequences.",
+  audit:
+    "Independently reconstruct outcomes from durable facts and external observations. Persist independent audit judgment with memory_append; it never substitutes for fresh evidence.",
 };
 
-export function defaultRolePrompt(role: AgentRole): string { return prompts[role]; }
+export function defaultRolePrompt(role: AgentRole): string {
+  return prompts[role];
+}
 
 export function defaultTurnPrompt(role: AgentRole, agent: string, turn: TurnContext): string {
   if (role === "ceo") {

@@ -34,14 +34,22 @@ export function parseEnvFile(text: string): Record<string, string> {
     const key = line.slice(0, equals).trim();
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
     let value = line.slice(equals + 1).trim();
-    if ((value.startsWith('"') && value.endsWith('"') && value.length >= 2) || (value.startsWith("'") && value.endsWith("'") && value.length >= 2)) value = value.slice(1, -1);
+    if (
+      (value.startsWith('"') && value.endsWith('"') && value.length >= 2) ||
+      (value.startsWith("'") && value.endsWith("'") && value.length >= 2)
+    )
+      value = value.slice(1, -1);
     values[key] = value;
   }
   return values;
 }
 
 function readEnvFile(path: string): Record<string, string> {
-  try { return parseEnvFile(readFileSync(path, "utf8")); } catch { return {}; }
+  try {
+    return parseEnvFile(readFileSync(path, "utf8"));
+  } catch {
+    return {};
+  }
 }
 
 export function envFileChain(source: EnvSpecSource | undefined): Array<Record<string, string>> {
@@ -49,7 +57,8 @@ export function envFileChain(source: EnvSpecSource | undefined): Array<Record<st
   const files = [join(source.root, ".env"), join(homedir(), ".goah", ".env")];
   // First match wins: earlier files in the chain shadow later ones.
   const merged: Record<string, string> = {};
-  for (let index = files.length - 1; index >= 0; index -= 1) Object.assign(merged, readEnvFile(files[index]!));
+  for (let index = files.length - 1; index >= 0; index -= 1)
+    Object.assign(merged, readEnvFile(files[index]!));
   return [merged];
 }
 
@@ -59,7 +68,10 @@ export function envFileChain(source: EnvSpecSource | undefined): Array<Record<st
  * variable name so the wake fails honestly instead of spawning a child that
  * would fail opaquely at its first model call.
  */
-export function resolveEnvSpec(spec: Record<string, string> | undefined, source: EnvSpecSource | undefined): Record<string, string> {
+export function resolveEnvSpec(
+  spec: Record<string, string> | undefined,
+  source: EnvSpecSource | undefined,
+): Record<string, string> {
   if (!spec) return {};
   const [fileLayer] = envFileChain(source);
   const resolved: Record<string, string> = {};
@@ -70,13 +82,24 @@ export function resolveEnvSpec(spec: Record<string, string> | undefined, source:
       if (optional !== undefined) resolved[key] = optional;
       continue;
     }
-    if (!value.startsWith(ENV_REFERENCE_PREFIX)) { resolved[key] = value; continue; }
+    if (!value.startsWith(ENV_REFERENCE_PREFIX)) {
+      resolved[key] = value;
+      continue;
+    }
     const name = value.slice(ENV_REFERENCE_PREFIX.length);
     const fromProcess = process.env[name];
-    if (fromProcess !== undefined) { resolved[key] = fromProcess; continue; }
+    if (fromProcess !== undefined) {
+      resolved[key] = fromProcess;
+      continue;
+    }
     const fromFile = fileLayer?.[name];
-    if (fromFile !== undefined) { resolved[key] = fromFile; continue; }
-    throw new Error(`environment variable is missing: ${name} (set it in your shell, <workspace>/.env, or ~/.goah/.env)`);
+    if (fromFile !== undefined) {
+      resolved[key] = fromFile;
+      continue;
+    }
+    throw new Error(
+      `environment variable is missing: ${name} (set it in your shell, <workspace>/.env, or ~/.goah/.env)`,
+    );
   }
   return resolved;
 }
