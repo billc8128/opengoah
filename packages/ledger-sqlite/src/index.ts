@@ -712,7 +712,7 @@ export class SqliteLedger implements Ledger {
     if (!request.id.trim() || !request.reason.trim())
       throw new Error("delegation id and reason are required");
     if (request.childGoal.owner === actor)
-      throw new Error("delegate to a distinct worker agent; use goal.put for self-owned subgoals");
+      throw new Error("delegate to a distinct worker agent");
     if (
       !request.childGoal.id.trim() ||
       !request.childGoal.objective.trim() ||

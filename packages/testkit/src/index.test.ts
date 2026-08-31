@@ -3691,7 +3691,7 @@ test("bidirectional runner RPC applies child capabilities and rejects parent-onl
 
   const denied = new Supervisor(
     ledger,
-    fauxRunner([{ rpc: { method: "goal.put", params: { goal: { ...goal(), revision: 1 } } } }]),
+    fauxRunner([{ rpc: { method: "goal.create", params: { objective: "denied" } } }]),
     clock,
     { profiles: [{ agent: "worker", role: "child" }] },
   );

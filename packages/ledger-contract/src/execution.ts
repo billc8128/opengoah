@@ -320,7 +320,6 @@ export type AgentCapability =
   | "ledger.search"
   | "mail.send"
   | "schedule.set"
-  | "goal.put"
   | "team.list"
   | "goal.get"
   | "goal.create"

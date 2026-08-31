@@ -995,19 +995,6 @@ function createRpcTools(
         }),
       ),
     ],
-    [
-      "goal.put",
-      tool(
-        "put_goal",
-        "Create or update a Goal through the authoritative goal.changed protocol using parent-layer authority.",
-        "goal.put",
-        Type.Object({
-          goal: Type.Any(),
-          reason: Type.String(),
-          evidence: Type.Array(Type.Number()),
-        }),
-      ),
-    ],
   ];
   return definitions
     .filter(([capability]) => !allowed || allowed.has(capability))

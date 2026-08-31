@@ -349,40 +349,6 @@ export async function dispatchAgentRpc(
         context.goalCommitment ?? undefined,
       ) ?? { scheduled: true }
     );
-  if (method === "goal.put") {
-    const candidate = input.goal;
-    if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate))
-      throw new Error(`missing parameter goal for goal.put`);
-    if (typeof candidate.owner !== "string" || !candidate.owner.trim())
-      throw new Error(`invalid parameter goal.owner for goal.put`);
-    if (typeof candidate.id !== "string" || !candidate.id.trim())
-      throw new Error(`invalid parameter goal.id for goal.put`);
-    const next = candidate as unknown as GoalSnapshot;
-    if (!deps.validGoalOwner(next.owner, next))
-      throw new Error("Goal owner role does not match Root/Child position");
-    const current = deps.ledger.goal(next.id);
-    const operation = !current
-      ? "create"
-      : current.phase !== next.phase
-        ? next.phase === "paused"
-          ? "pause"
-          : next.phase === "active"
-            ? "resume"
-            : next.phase === "blocked"
-              ? "block"
-              : "complete"
-        : current.owner !== next.owner
-          ? "reassign"
-          : "revise";
-    deps.ledger.putGoal(next, agent, sourceWakeId, {
-      operation,
-      reason: optionalString("goal.put", input, "reason") ?? "Advanced Goal mutation",
-      evidence: numberArray(input.evidence ?? []),
-      sourceTurnId: turnId,
-      ...(sourceWakeId ? { sourceWakeId } : {}),
-    });
-    return input.goal;
-  }
   if (method === "memory.append") {
     const note = optionalString("memory.append", input, "note")?.trim() ?? "";
     if (!note) throw new Error("memory note cannot be empty");
@@ -403,7 +369,6 @@ function goalBoundCapability(method: AgentCapability): boolean {
     "goal.delegate",
     "goal.reassign",
     "goal.revise",
-    "goal.put",
     "work_record.update",
     "schedule.set",
   ].includes(method);
