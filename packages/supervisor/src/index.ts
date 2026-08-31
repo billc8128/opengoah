@@ -1593,11 +1593,40 @@ export class Supervisor {
 
   async runAvailable(concurrency = 4, maxWakes = 100): Promise<WakeSnapshot[]> {
     const completed: WakeSnapshot[] = [];
+    const inFlight = new Set<Promise<void>>();
+    let drained = false;
+    const launch = (): void => {
+      const task: Promise<void> = this.tick().then(
+        (wake) => {
+          inFlight.delete(task);
+          if (wake) {
+            completed.push(wake);
+            drained = false;
+          } else {
+            // No Wake was claimable right now; stop launching until a completion
+            // proves new motion exists again.
+            drained = true;
+          }
+        },
+        (error) => {
+          inFlight.delete(task);
+          throw error;
+        },
+      );
+      inFlight.add(task);
+      // Each task is raced below, but a rejection that fires after runAvailable
+      // has already propagated must not surface as an unhandled rejection.
+      void task.catch(() => {});
+    };
     while (true) {
-      const batch = await Promise.all(Array.from({ length: concurrency }, () => this.tick()));
-      const wakes = batch.filter((wake): wake is WakeSnapshot => wake !== null);
-      completed.push(...wakes);
-      if (wakes.length === 0 || completed.length >= maxWakes) return completed;
+      while (
+        !drained &&
+        inFlight.size < concurrency &&
+        completed.length + inFlight.size < maxWakes
+      )
+        launch();
+      if (inFlight.size === 0) return completed;
+      await Promise.race(inFlight);
     }
   }
 

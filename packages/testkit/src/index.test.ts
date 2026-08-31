@@ -5155,3 +5155,83 @@ test("emergency Mail survives a bounded context budget that fyis would fill", as
   await supervisor.interruptTurn(accepted.turnId);
   ledger.close();
 });
+
+test("runAvailable backfills the work pool while a slow Turn still holds its lane", async () => {
+  const clock = new SimulatedClock();
+  const ledger = createMemoryLedger({ clock });
+  const slowLane = Promise.withResolvers<never>();
+  const runner: Runner = {
+    isolation: "process",
+    prepare: (request) => {
+      const stalled = request.agent === "slow";
+      return {
+        pid: null,
+        begin: () => undefined,
+        result: stalled ? slowLane.promise : Promise.reject(new Error("fast lane fails")),
+        terminate: async () => {
+          if (stalled) slowLane.reject(new Error("work-pool test finished"));
+        },
+      };
+    },
+    terminateProcess: async () => undefined,
+  };
+  const supervisor = new Supervisor(ledger, runner, clock, {
+    profiles: [
+      { agent: "slow", role: "child" },
+      { agent: "fast-a", role: "verifier" },
+      { agent: "fast-b", role: "verifier" },
+      { agent: "fast-c", role: "verifier" },
+    ],
+    retryPolicy: { maxAttempts: 0, baseDelayMs: 1 },
+    turnRetryPolicy: { maxAttempts: 0, baseDelayMs: 1 },
+  });
+  supervisor.createRootGoal("pool root", "root");
+  supervisor.createGoal(
+    {
+      id: "goal:slow",
+      parentId: "root",
+      objective: "slow",
+      observationMethod: "observe",
+      verificationMethod: "verify",
+      owner: "slow",
+      phase: "active",
+      revision: 0,
+    },
+    "ceo",
+  );
+  supervisor.planWake("slow", clock.now().toISOString(), "slow-wake");
+  for (const agent of ["fast-a", "fast-b", "fast-c"])
+    supervisor.planWake(agent, clock.now().toISOString(), `${agent}-wake`);
+
+  const draining = supervisor.runAvailable(2);
+  // With batch semantics the three fast wakes could not all finish before the
+  // slow Turn resolved; a backfilling pool drains the fast lanes meanwhile.
+  for (let spin = 0; spin < 100; spin++) {
+    await new Promise((resolve) => setImmediate(resolve));
+    const settled = ledger.turns().filter((turn) => turn.status !== "in_progress").length;
+    if (settled >= 3) break;
+  }
+  const fastTurns = ledger
+    .turns()
+    .filter((turn) => turn.triggerKind === "wake" && turn.status !== "in_progress");
+  assert.equal(fastTurns.length, 3, "fast lanes should drain while the slow Turn is in flight");
+  const slowTurn = ledger
+    .turns()
+    .find((turn) => turn.triggerKind === "wake" && turn.status === "in_progress");
+  assert.ok(slowTurn, "the slow Turn should still be in flight");
+  assert.equal(
+    ledger.turns().filter((turn) => turn.status === "in_progress").length,
+    1,
+    "only the slow lane is occupied",
+  );
+
+  slowLane.reject(new Error("slow lane done"));
+  const completed = await draining;
+  // Three fast wakes, the slow wake, and the child-retry-exhausted escalation
+  // Wake that the slow failure legitimately enqueues for the CEO parent.
+  assert.equal(completed.length, 5);
+  assert.equal(completed.at(-1)?.agent, "ceo");
+  assert.ok(completed.some((wake) => wake.agent === "slow"));
+  assert.ok(completed.every((wake) => wake.status === "consumed"));
+  ledger.close();
+});
