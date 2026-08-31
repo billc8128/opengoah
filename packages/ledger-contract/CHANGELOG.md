@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.14.0
 
 - Replaced semantic `fyi|decision|emergency` Mail levels with mechanical `low|normal|high` delivery priority selected by the sending Agent.
 - Transcript v2 replaces repeated full request payloads with SHA-256-addressed prompt/context/message/toolset components and ordered `request.prepared` references.

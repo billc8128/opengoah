@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.14.0
 
 - Mail tools expose optional `high|normal|low` delivery priority instead of semantic message levels, and the Verifier worker selects priority in its structured report.
 - Registers Pi's static OAuth flow loaders so standalone Goah bundles include subscription login and token refresh modules.

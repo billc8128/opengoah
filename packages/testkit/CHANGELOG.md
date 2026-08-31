@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.14.0
 
 - Covers Mail priority validation, defaulting, bounded delivery order, and high-priority visibility under a constrained context budget.
 - Added Agent-owned decision tests for declarative outcomes, explicit Mail/Schedule effects, parent-targeted Mail, and admission-time Goal revision binding.

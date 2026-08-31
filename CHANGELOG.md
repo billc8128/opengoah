@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.14.0
 
 - Replaced semantic Mail levels with Agent-selected `high|normal|low` delivery priority; Supervisor now only applies priority and arrival order mechanically, and SQLite schema v29 intentionally recreates earlier development state.
 - Reworked the TUI into a Turn-oriented Ledger presentation with a stable Human composer and a compact organization status read model; reasoning, tools, replies, receipts, and errors no longer collapse into one visual log.

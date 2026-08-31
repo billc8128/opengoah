@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.14.0
 
 - Applies sending-Agent Mail priority mechanically within bounded context delivery; `normal` is the default, `high|normal` may trigger Goal motion, and `low` waits for another interaction. Verification/Audit priority is part of the Verifier model's validated structured result rather than inferred from finding count.
 - Deduplicates request components across Runner retries while leaving Child Work Record repair decisions to the Agents.

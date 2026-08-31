@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.14.0
 
 - Schema v29 renames Mail `level` to Agent-selected `priority` and constrains it to `low|normal|high`; earlier development schemas are intentionally recreated.
 - Schema v28 adopts Transcript v2 request components and requires a current owner-written Work Record plus matching evidence before Child Goal completion.
