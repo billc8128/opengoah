@@ -436,10 +436,23 @@ test("TUI header is a stable full-width brand rail", () => {
   assert.doesNotMatch(narrow, /v0\.11\.2/);
 });
 
-test("user messages render as terminal-native prompt lines", () => {
-  const rendered = renderUserMessage("你好", 30);
-  assert.deepEqual(rendered.map(stripAnsi), [`  › 你好${" ".repeat(22)}`]);
-  assert.doesNotMatch(rendered.join("\n"), /you/i);
+test("user messages render as compact, background-separated prompt lines", () => {
+  const previousTerm = process.env.TERM;
+  const previousNoColor = process.env.NO_COLOR;
+  process.env.TERM = "xterm-256color";
+  delete process.env.NO_COLOR;
+  try {
+    const rendered = renderUserMessage("你好", 30);
+    assert.deepEqual(rendered.map(stripAnsi), [`  › 你好${" ".repeat(22)}`]);
+    assert.match(rendered.join("\n"), /\u001b\[38;5;17;48;5;153m/);
+    assert.match(rendered.join("\n"), /\u001b\[1;38;5;33;48;5;153m›/);
+    assert.doesNotMatch(rendered.join("\n"), /you/i);
+  } finally {
+    if (previousTerm === undefined) delete process.env.TERM;
+    else process.env.TERM = previousTerm;
+    if (previousNoColor === undefined) delete process.env.NO_COLOR;
+    else process.env.NO_COLOR = previousNoColor;
+  }
 });
 
 test("organization status keeps only Goal, Model, Child, and Wake fields", () => {

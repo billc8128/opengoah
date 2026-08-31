@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Restores a compact full-width background band for Human messages so prompts remain visually distinct from Goah replies without adding vertical padding.
+
 ## 0.13.8
 
 - Rebuilt the full-screen transcript around terminal-native Turn ledgers: Human prompts, bounded thinking, grouped tool timelines, Assistant replies, and receipts retain separate visual roles, with `Ctrl+O` toggling activity detail.

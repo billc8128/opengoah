@@ -527,14 +527,11 @@ export class StreamCoordinator {
 }
 export function renderUserMessage(content: string, width: number): string[] {
   const body = new Text(content, 0, 0).render(Math.max(1, width - 4));
-  return body.map((line, index) =>
-    truncateToWidth(
-      `${index === 0 ? `  ${tuiTheme.accent("›")} ` : "    "}${line}`,
-      width,
-      "",
-      true,
-    ),
-  );
+  return body.map((line, index) => {
+    const rendered = truncateToWidth(`${index === 0 ? "  › " : "    "}${line}`, width, "", true);
+    if (index !== 0) return tuiTheme.userMessage(rendered);
+    return `${tuiTheme.userMessage(rendered.slice(0, 2))}${tuiTheme.userMessageAccent("›")}${tuiTheme.userMessage(rendered.slice(3))}`;
+  });
 }
 export function organizationStatusFromValue(
   value: unknown,
