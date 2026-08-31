@@ -4,8 +4,6 @@ Status: implemented through Milestones A–C and E; deterministic Milestone D ca
 Version: 0.4
 Date: 2026-08-20
 
-Rendered document: [`../../Goah-CEO-Agent-Operating-Layer.html`](../../Goah-CEO-Agent-Operating-Layer.html)
-
 Implementation note: the contracts, atomic SQLite transactions, CEO tool surface and policy, interactive `goah` shell, resident Supervisor control socket, universal Pi coding tools, durable Goal observation methods, derived roster, motion/revision validation, recovery injection, and deterministic two-child canary are implemented for `0.5.0`. A long-running real-model Milestone D canary remains operational validation rather than an architectural dependency.
 
 External Action, Connector, approval, and audit-advice sections in this historical proposal are superseded by [ADR 0013](../adr/0013-runtime-lifecycle-closure.md). The current runtime uses Turn Tool Calls only; an isolated ExternalEffect layer is deferred.

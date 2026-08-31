@@ -133,6 +133,4 @@ Goah currently has no Action or Connector aggregate. Runner Tool Calls are the o
 
 ## Historical documents
 
-- [`Goah-架构设计-v2.html`](../Goah-%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1-v2.html) — previous implemented architecture.
-- [`Goah-CEO-Agent-Operating-Layer.html`](../Goah-CEO-Agent-Operating-Layer.html) — previous universal CEO Wake policy.
-- [`北辰-harness-设计稿.html`](../%E5%8C%97%E8%BE%B0-harness-%E8%AE%BE%E8%AE%A1%E7%A8%BF.html) — historical v0.10 proposal.
+The superseded root-level design mockups (`Goah-架构设计-v2.html`, `Goah-CEO-Agent-Operating-Layer.html`, `北辰-harness-设计稿.html`) were removed from the repository and remain recoverable from Git history. Current documents live in [`docs/proposals/`](./proposals/) and [`docs/adr/`](./adr/).

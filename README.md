@@ -228,9 +228,9 @@ Not guaranteed, by design honesty:
 
 ## Design
 
-The current architecture source is [`docs/architecture.md`](./docs/architecture.md), with the complete Goal model in [`docs/proposals/goal-bound-agent-operating-model.md`](./docs/proposals/goal-bound-agent-operating-model.md); [ADR 0011](./docs/adr/0011-goal-bound-turns-and-work-record-filesystem.md) records the transition. [`Goah-架构设计-v2.html`](./Goah-架构设计-v2.html), [`Goah-CEO-Agent-Operating-Layer.html`](./Goah-CEO-Agent-Operating-Layer.html), and [`北辰-harness-设计稿.html`](./北辰-harness-设计稿.html) are preserved as historical designs. Decisions are recorded as ADRs in [`docs/adr/`](./docs/adr/).
+The current architecture source is [`docs/architecture.md`](./docs/architecture.md), with the complete Goal model in [`docs/proposals/goal-bound-agent-operating-model.md`](./docs/proposals/goal-bound-agent-operating-model.md); [ADR 0011](./docs/adr/0011-goal-bound-turns-and-work-record-filesystem.md) records the transition. Decisions are recorded as ADRs in [`docs/adr/`](./docs/adr/). Superseded design mockups were removed from the repository and remain recoverable from Git history.
 
-The user-facing organization layer is documented in [`Goah-CEO-Agent-Operating-Layer.html`](./Goah-CEO-Agent-Operating-Layer.html), with the reviewable Markdown source in [`docs/proposals/ceo-agent-operating-layer.md`](./docs/proposals/ceo-agent-operating-layer.md). Milestones A–C and E are implemented: CEO is the interactive normal entry, every Agent receives the Pi coding baseline, Goal observation methods persist across wakes, team state is derived from Ledger facts, and delegation/reassignment is atomic. The deterministic multi-Agent canary is covered by the test suite; a long-running real-model canary remains operational validation.
+The user-facing organization layer is documented in [`docs/proposals/ceo-agent-operating-layer.md`](./docs/proposals/ceo-agent-operating-layer.md). Milestones A–C and E are implemented: CEO is the interactive normal entry, every Agent receives the Pi coding baseline, Goal observation methods persist across wakes, team state is derived from Ledger facts, and delegation/reassignment is atomic. The deterministic multi-Agent canary is covered by the test suite; a long-running real-model canary remains operational validation.
 
 ## Contributing
 
