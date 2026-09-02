@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.14.2
 
 - Preserves Turn boundaries in restart history, renders automatic Goal Wakes as independent blocks, restores failed Human messages with their errors, and replays the user message when attaching to an already-running Human Turn.
 
