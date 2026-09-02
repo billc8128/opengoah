@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.14.1
 
 - Shows an animated working indicator for active Turns, including the interval before the first reasoning or Tool event, and cleans the animation up with the Turn lifecycle.
 

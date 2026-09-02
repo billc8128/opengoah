@@ -23,7 +23,7 @@
   "dependencies": {
     "goah-ledger-contract": "0.14.0",
     "goah-ledger-sqlite": "0.14.0",
-    "goah-runner-pi": "0.14.0",
+    "goah-runner-pi": "0.14.1",
     "goah-supervisor": "0.14.0"
   }
 }

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.14.1
 
 - Frames legitimate Runner messages larger than 1 MB into ordered bounded chunks so image Tool Results and exact multimodal request snapshots cross the process boundary without weakening raw-line protection.
 

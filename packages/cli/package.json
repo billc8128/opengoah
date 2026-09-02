@@ -1,6 +1,6 @@
 {
   "name": "@goah/cli",
-  "version": "0.14.0",
+  "version": "0.14.1",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -44,7 +44,7 @@
     "@earendil-works/pi-tui": "^0.84.2",
     "goah-ledger-contract": "0.14.0",
     "goah-ledger-sqlite": "0.14.0",
-    "goah-runner-pi": "0.14.0",
+    "goah-runner-pi": "0.14.1",
     "goah-supervisor": "0.14.0",
     "goah-testkit": "0.14.0"
   },
