@@ -32,7 +32,12 @@ import {
 } from "./control.js";
 import { loadConfig, readConsoleMetadata, readDefaultRunnerProfile } from "./index.js";
 import { switchModel, reloadDaemon, readRunnerDisplay } from "./live-config.js";
-import { GOAH_TERMINAL_MARK, welcomeSnapshot, type WelcomeSnapshot } from "./welcome.js";
+import {
+  GOAH_TERMINAL_MARK,
+  welcomeSnapshot,
+  type WelcomeSnapshot,
+  type WelcomeTurnSnapshot,
+} from "./welcome.js";
 import {
   chooseSetupSection,
   runRunnerCommandWizard,
@@ -130,6 +135,7 @@ interface StoredToolActivity extends ToolActivity {
 }
 interface TurnPresentation {
   kind: "turn";
+  triggerKind: "user_message" | "wake" | null;
   users: string[];
   running: boolean;
   thinking: string;
@@ -140,6 +146,7 @@ interface TurnPresentation {
   responses: Array<{ content: string; messageId?: string }>;
   liveMarkdown: string;
   notices: string[];
+  terminalError: string | null;
 }
 type ConversationEntry =
   | { kind: "component"; component: Component }
@@ -168,9 +175,19 @@ export class ConversationView implements Component {
   }
   addUser(content: string): void {
     const previous = this.lastTurn();
-    if (previous && previous.responses.length === 0 && previous.notices.length === 0)
+    if (previous && previous.responses.length === 0 && previous.notices.length === 0) {
+      previous.triggerKind ??= "user_message";
       previous.users.push(content);
-    else this.entries.push(newTurn(content));
+    } else this.entries.push(newTurn(content));
+    this.trim();
+  }
+  restoreTurn(snapshot: WelcomeTurnSnapshot): void {
+    const turn = newTurn();
+    turn.triggerKind = snapshot.triggerKind;
+    turn.users = [...snapshot.users];
+    turn.responses = snapshot.responses.map((content) => ({ content }));
+    turn.terminalError = snapshot.error;
+    this.entries.push(turn);
     this.trim();
   }
   startTurn(newEntry = false): void {
@@ -310,6 +327,7 @@ export class ConversationView implements Component {
 function newTurn(user?: string): TurnPresentation {
   return {
     kind: "turn",
+    triggerKind: user ? "user_message" : null,
     users: user ? [user] : [],
     running: false,
     thinking: "",
@@ -318,11 +336,14 @@ function newTurn(user?: string): TurnPresentation {
     responses: [],
     liveMarkdown: "",
     notices: [],
+    terminalError: null,
   };
 }
 
 function renderTurn(turn: TurnPresentation, width: number, details: boolean): string[] {
   const lines: string[] = [];
+  if (turn.triggerKind === "wake")
+    lines.push(`  ${tuiTheme.accent("↻")} ${tuiTheme.muted("Goal wake")}`, "");
   for (const user of turn.users) lines.push(...renderUserMessage(user, width), "");
   const hasActivity =
     turn.running || turn.thinkingActive || Boolean(turn.thinking) || turn.tools.length > 0;
@@ -336,12 +357,20 @@ function renderTurn(turn: TurnPresentation, width: number, details: boolean): st
   if (turn.liveMarkdown)
     lines.push(...new Markdown(turn.liveMarkdown, 4, 0, markdownTheme).render(width));
   for (const notice of turn.notices) lines.push(...new Text(notice, 4, 0).render(width));
+  if (turn.terminalError)
+    lines.push(
+      ...new Text(`${tuiTheme.error("error")}  ${safeError(turn.terminalError)}`, 4, 0).render(
+        width,
+      ),
+    );
   if (
+    turn.triggerKind === "wake" ||
     turn.users.length ||
     hasActivity ||
     turn.responses.length ||
     turn.liveMarkdown ||
-    turn.notices.length
+    turn.notices.length ||
+    turn.terminalError
   )
     lines.push("");
   return lines;
@@ -857,15 +886,13 @@ export async function runGoahTui(
     return runNonInteractive(configPath, stateDir, initialMessage);
   const runner = readRunnerDisplay(configPath);
   const currentModel = (): string => readRunnerDisplay(configPath).target;
-  const snapshot = welcomeSnapshot(stateDir, runner);
-  const hasHistory = Boolean(
-    snapshot.root || snapshot.handoffs.length || snapshot.conversation.length,
-  );
   await ensureDaemon(configPath, stateDir);
   const liveSnapshot = await requestControl(stateDir, { op: "status" }).catch(() => null);
   const initialOrganization = await requestControl(stateDir, { op: "ceo.status" }).catch(
     () => null,
   );
+  const snapshot = welcomeSnapshot(stateDir, runner);
+  const hasHistory = Boolean(snapshot.root || snapshot.handoffs.length || snapshot.turns.length);
   const liveTurns =
     liveSnapshot &&
     typeof liveSnapshot === "object" &&
@@ -880,9 +907,7 @@ export async function runGoahTui(
   const headerView = new HeaderBar(runner.runner, runner.target, installedVersion());
   const transcriptView = new ConversationView([]);
   transcriptView.addComponent(new WelcomeLockup(snapshot, hasHistory, terminalLogoData()));
-  for (const row of snapshot.conversation)
-    if (row.speaker === "You") transcriptView.addUser(row.text);
-    else transcriptView.addMarkdown(row.text);
+  for (const turn of snapshot.turns) transcriptView.restoreTurn(turn);
   const conversationScroll = new ScrollView(transcriptView, {
     follow: "end",
     primary: true,
@@ -1375,7 +1400,10 @@ export async function runGoahTui(
       push(sensitiveMessageWarning());
     } else if (initialMessage) void send(initialMessage);
     else if (typeof liveInteractionTurnId === "string")
-      void attachTurn(liveInteractionTurnId, true);
+      void attachTurn(
+        liveInteractionTurnId,
+        !snapshot.turns.some((turn) => turn.id === liveInteractionTurnId),
+      );
     await exited;
   } finally {
     clearInterval(spinnerTimer);

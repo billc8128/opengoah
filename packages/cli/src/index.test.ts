@@ -598,14 +598,33 @@ test("welcome snapshot restores ordinary Human conversation", async () => {
   });
   ledger.close();
   assert.deepEqual(
-    welcomeSnapshot(state, { runner: "pi", target: "test/model" }).conversation.map(
-      (row) => row.text,
-    ),
-    ["remember this question", "restored answer", "Please choose the deployment timing."],
+    welcomeSnapshot(state, { runner: "pi", target: "test/model" }).turns.map((turn) => ({
+      triggerKind: turn.triggerKind,
+      status: turn.status,
+      users: turn.users,
+      responses: turn.responses,
+      error: turn.error,
+    })),
+    [
+      {
+        triggerKind: "user_message",
+        status: "completed",
+        users: ["remember this question"],
+        responses: ["restored answer"],
+        error: null,
+      },
+      {
+        triggerKind: "wake",
+        status: "completed",
+        users: [],
+        responses: ["Please choose the deployment timing."],
+        error: null,
+      },
+    ],
   );
 });
 
-test("welcome snapshot excludes every Item from a failed Human Turn", () => {
+test("welcome snapshot restores a failed Human Turn without provisional Assistant text", () => {
   const state = mkdtempSync(join(tmpdir(), "goah-welcome-provisional-"));
   const clock: Clock = { now: () => new Date("2030-01-01T00:00:00.000Z") };
   const ledger = new SqliteLedger(join(state, "ledger.sqlite"), { clock });
@@ -675,9 +694,28 @@ test("welcome snapshot excludes every Item from a failed Human Turn", () => {
     },
     "ceo",
   );
+  assert.deepEqual(welcomeSnapshot(state, { runner: "pi", target: "test/model" }).turns, [
+    {
+      id: "t",
+      triggerKind: "user_message",
+      status: "in_progress",
+      users: ["work"],
+      responses: [],
+      error: null,
+    },
+  ]);
   ledger.finishTurn("t", "failed", { message: "Handoff rejected" }, now, "supervisor");
   ledger.close();
-  assert.deepEqual(welcomeSnapshot(state, { runner: "pi", target: "test/model" }).conversation, []);
+  assert.deepEqual(welcomeSnapshot(state, { runner: "pi", target: "test/model" }).turns, [
+    {
+      id: "t",
+      triggerKind: "user_message",
+      status: "failed",
+      users: ["work"],
+      responses: [],
+      error: "Handoff rejected",
+    },
+  ]);
 });
 
 test("version-one Pi config migrates in memory to an opaque Runner Profile", () => {

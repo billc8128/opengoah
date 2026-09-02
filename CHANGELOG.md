@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Reconstructs TUI history as durable Turn groups on restart: automatic Goal Wakes no longer attach to the preceding Human message, and failed/interrupted Human Turns retain their committed user messages and terminal errors without replaying provisional Assistant text.
+- Isolates installed-package smoke-test state under its temporary root so release verification never creates fake workspaces in the user's `~/.goah/state`.
+
 ## 0.14.1
 
 - Shows an animated Turn activity row from submission through completion so the TUI remains visibly alive before the first model or tool event.

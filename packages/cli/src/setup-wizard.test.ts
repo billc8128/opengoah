@@ -33,7 +33,7 @@ test("fresh-workspace welcome is compact and has no placeholder rows", () => {
     root: null,
     team: [],
     handoffs: [],
-    conversation: [],
+    turns: [],
     runner: "pi",
     target: "zai/glm",
   };
@@ -50,7 +50,7 @@ test("active Goal state lives only in the fixed Goal bar, not the welcome transc
     root: { id: "g", objective: "Do not duplicate me", phase: "active" },
     team: [],
     handoffs: [],
-    conversation: [],
+    turns: [],
     runner: "pi",
     target: "zai/glm",
   };

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Preserves Turn boundaries in restart history, renders automatic Goal Wakes as independent blocks, restores failed Human messages with their errors, and replays the user message when attaching to an already-running Human Turn.
+
 ## 0.14.1
 
 - Shows an animated working indicator for active Turns, including the interval before the first reasoning or Tool event, and cleans the animation up with the Turn lifecycle.

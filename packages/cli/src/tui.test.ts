@@ -123,7 +123,7 @@ test("welcome lockup is horizontal, compact, and falls back to the official Brai
     root: null,
     team: [],
     handoffs: [],
-    conversation: [],
+    turns: [],
     runner: "pi",
     target: "zai/glm-5.3",
   };
@@ -516,6 +516,40 @@ test("starting a replacement Turn retires every older spinner", () => {
   const rendered = stripAnsi(view.render(60).join("\n"));
   assert.equal(rendered.match(/working · Ctrl\+C to stop/g)?.length, 1);
   assert.match(rendered, /replacement[\s\S]*working · Ctrl\+C to stop/);
+});
+
+test("restored history keeps Human, automatic Wake, and failed Turn boundaries", () => {
+  const view = new ConversationView([]);
+  view.restoreTurn({
+    id: "human",
+    triggerKind: "user_message",
+    status: "completed",
+    users: ["initial request"],
+    responses: ["initial answer"],
+    error: null,
+  });
+  view.restoreTurn({
+    id: "wake",
+    triggerKind: "wake",
+    status: "completed",
+    users: [],
+    responses: ["automatic progress"],
+    error: null,
+  });
+  view.restoreTurn({
+    id: "failed",
+    triggerKind: "user_message",
+    status: "failed",
+    users: ["latest request"],
+    responses: [],
+    error: "runner failed",
+  });
+  const rendered = stripAnsi(view.render(80).join("\n"));
+  assert.ok(rendered.indexOf("initial request") < rendered.indexOf("initial answer"));
+  assert.ok(rendered.indexOf("initial answer") < rendered.indexOf("Goal wake"));
+  assert.ok(rendered.indexOf("Goal wake") < rendered.indexOf("automatic progress"));
+  assert.ok(rendered.indexOf("automatic progress") < rendered.indexOf("latest request"));
+  assert.match(rendered, /latest request[\s\S]*error  runner failed/);
 });
 
 test("Ledger presentation groups thinking and tools while Ctrl+O collapses activity", () => {

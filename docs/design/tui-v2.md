@@ -145,6 +145,17 @@ The comparison prototype lives in `docs/design/tui-v2-variants.html`.
 - Mouse/keyboard focus on an Activity header toggles only that Turn.
 - New output follows the end only while the user is already at the bottom.
 
+## Restart reconstruction
+
+- Rebuild history by Turn, never as a flat speaker/text list.
+- A Human Turn keeps its committed user messages, canonical committed response,
+  and terminal error even when the Turn failed or was interrupted.
+- An automatic CEO Goal Wake renders as its own Turn block without borrowing the
+  preceding Human prompt.
+- Provisional Assistant content remains hidden after failure; an in-progress
+  Human Turn is attached live and replays its durable user message before new
+  activity.
+
 ## Theme and accessibility
 
 - Resolve light/dark terminal scheme and choose separate ANSI palettes.

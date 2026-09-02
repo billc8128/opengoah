@@ -14,14 +14,23 @@ export interface WelcomeSnapshot {
   root: { id: string; objective: string; phase: string } | null;
   team: Array<{ agent: string }>;
   handoffs: Array<{ agent: string; result: string }>;
-  conversation: Array<{ speaker: string; text: string }>;
+  turns: WelcomeTurnSnapshot[];
   runner: string;
   target: string;
 }
 
+export interface WelcomeTurnSnapshot {
+  id: string;
+  triggerKind: "user_message" | "wake";
+  status: "in_progress" | "completed" | "failed" | "interrupted";
+  users: string[];
+  responses: string[];
+  error: string | null;
+}
+
 export const WELCOME_TEAM_SLOTS = 3;
 export const WELCOME_HANDOFF_SLOTS = 2;
-export const WELCOME_CONVERSATION_SLOTS = 240;
+export const WELCOME_TURN_SLOTS = 120;
 export const GOAH_TERMINAL_MARK = [
   "⠀⠀⠀⢀⣴⠟⠛⠲⡀⠀⠀⠀",
   "⠀⠀⢀⣿⣥⠶⠶⠞⢻⠛⠒⠀",
@@ -42,6 +51,12 @@ interface HandoffRow {
   actor: string;
   data: string;
 }
+interface ConversationTurnRow {
+  id: string;
+  trigger_kind: "user_message" | "wake";
+  status: "in_progress" | "completed" | "failed" | "interrupted";
+  error: string | null;
+}
 
 /** Read workspace facts from the ledger file; a missing or unreadable ledger yields an empty snapshot. */
 export function welcomeSnapshot(stateDir: string, runner: RunnerDisplay): WelcomeSnapshot {
@@ -51,7 +66,7 @@ export function welcomeSnapshot(stateDir: string, runner: RunnerDisplay): Welcom
       root: null,
       team: [],
       handoffs: [],
-      conversation: [],
+      turns: [],
       runner: runner.runner,
       target: runner.target,
     };
@@ -85,31 +100,63 @@ export function welcomeSnapshot(stateDir: string, runner: RunnerDisplay): Welcom
         return [{ agent: row.actor, result: "" }];
       }
     });
-    const itemRows = db
-      .prepare(
-        "SELECT i.type,i.data FROM turn_items i JOIN turns t ON t.id=i.turn_id JOIN threads th ON th.id=t.thread_id WHERE th.agent='ceo' AND t.status='completed' AND i.status='completed' AND i.type IN ('user_message','assistant_message') AND ((i.type='user_message' AND t.trigger_kind='user_message') OR (i.type='assistant_message' AND EXISTS (SELECT 1 FROM events e WHERE e.stream_id='turn:'||t.id AND e.type='response.committed' AND json_extract(e.data,'$.messageItemId')=i.id))) ORDER BY i.rowid DESC LIMIT ?",
-      )
-      .all(WELCOME_CONVERSATION_SLOTS) as unknown as Array<{ type: string; data: string }>;
-    const conversation = itemRows.reverse().flatMap((row) => {
-      try {
-        const data = JSON.parse(row.data) as { text?: unknown };
-        return typeof data.text === "string"
-          ? [{ speaker: row.type === "user_message" ? "You" : "Goah", text: data.text }]
-          : [];
-      } catch {
-        return [];
+    const turnRows = (
+      db
+        .prepare(
+          "SELECT t.id,t.trigger_kind,t.status,t.error FROM turns t JOIN threads th ON th.id=t.thread_id WHERE th.agent='ceo' AND t.status IN ('in_progress','completed','failed','interrupted') ORDER BY t.rowid DESC LIMIT ?",
+        )
+        .all(WELCOME_TURN_SLOTS) as unknown as ConversationTurnRow[]
+    ).reverse();
+    const itemStatement = db.prepare(
+      "SELECT i.type,i.data FROM turn_items i WHERE i.turn_id=? AND i.status='completed' AND i.type IN ('user_message','assistant_message') AND (i.type='user_message' OR EXISTS (SELECT 1 FROM events e WHERE e.stream_id='turn:'||i.turn_id AND e.type='response.committed' AND json_extract(e.data,'$.messageItemId')=i.id)) ORDER BY i.ordinal",
+    );
+    const turns = turnRows.flatMap((turn): WelcomeTurnSnapshot[] => {
+      const items = itemStatement.all(turn.id) as unknown as Array<{ type: string; data: string }>;
+      const users: string[] = [];
+      const responses: string[] = [];
+      for (const item of items) {
+        try {
+          const data = JSON.parse(item.data) as { text?: unknown };
+          if (typeof data.text !== "string") continue;
+          if (item.type === "user_message" && turn.trigger_kind === "user_message")
+            users.push(data.text);
+          else if (item.type === "assistant_message") responses.push(data.text);
+        } catch {}
       }
+      const error = turnError(turn.error);
+      return users.length || responses.length || error
+        ? [
+            {
+              id: turn.id,
+              triggerKind: turn.trigger_kind,
+              status: turn.status,
+              users,
+              responses,
+              error,
+            },
+          ]
+        : [];
     });
     return {
       root: root ? { id: root.id, objective: root.objective, phase: root.phase } : null,
       team,
       handoffs,
-      conversation,
+      turns,
       runner: runner.runner,
       target: runner.target,
     };
   } finally {
     db.close();
+  }
+}
+
+function turnError(raw: string | null): string | null {
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw) as { message?: unknown };
+    return typeof value.message === "string" && value.message.trim() ? value.message : null;
+  } catch {
+    return raw.trim() || null;
   }
 }
 
