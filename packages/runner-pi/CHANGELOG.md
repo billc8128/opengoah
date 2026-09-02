@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Frames legitimate Runner messages larger than 1 MB into ordered bounded chunks so image Tool Results and exact multimodal request snapshots cross the process boundary without weakening raw-line protection.
+
 ## 0.14.0
 
 - Mail tools expose optional `high|normal|low` delivery priority instead of semantic message levels, and the Verifier worker selects priority in its structured report.

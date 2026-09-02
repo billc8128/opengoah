@@ -8,6 +8,7 @@ import {
   goalAutomaticTarget,
   type AgentHandoff,
   type GoalSnapshot,
+  type JsonValue,
   type RunRequest,
   type TurnSnapshot,
   type WakeSnapshot,
@@ -500,6 +501,48 @@ test("ProcessRunner kills an oversized protocol line", async () => {
   const result = await handle.result;
   assert.equal(result.outcome, "abnormal");
   if (result.outcome === "abnormal") assert.match(result.reason, /protocol line exceeded 1 MB/);
+});
+
+test("ProcessRunner reassembles large image results and exact request snapshots", async () => {
+  const events: Array<{ type: string; data: JsonValue }> = [];
+  const runner = new ProcessRunner({
+    command: process.execPath,
+    args: [fileURLToPath(new URL("./large-message-worker.test-fixture.js", import.meta.url))],
+  });
+  const handle = runner.prepare({
+    ...requestBase,
+    turn: { trigger: { kind: "user_message" }, activeGoal: goal, goalCommitment: null },
+    context: {
+      text: "",
+      sourceSeqs: [],
+      activeGoal: null,
+      capabilities: [],
+      systemPrompt: "",
+    },
+    now: () => execution.startedAt,
+    emit: (event) => events.push(event),
+  });
+  handle.begin();
+  assert.deepEqual(await handle.result, {
+    outcome: "completed",
+    finalMessageId: "large-message",
+  });
+  assert.equal(
+    (
+      events[0]?.data as {
+        result?: { content?: Array<{ data?: string }> };
+      }
+    ).result?.content?.[0]?.data?.length,
+    1_100_000,
+  );
+  assert.equal(
+    (
+      events[1]?.data as {
+        content?: { content?: Array<{ data?: string }> };
+      }
+    ).content?.content?.[0]?.data?.length,
+    1_100_000,
+  );
 });
 
 test("the Pi worker rejects a legacy Goal request without live Handoff validation", async () => {

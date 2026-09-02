@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Shows an animated Turn activity row from submission through completion so the TUI remains visibly alive before the first model or tool event.
+- Adds bounded chunked Runner protocol framing for legitimate large trace messages such as image Tool Results and exact request snapshots, while retaining the 1 MB per-line and 32 MB per-message safety limits.
+
 ## 0.14.0
 
 - Replaced semantic Mail levels with Agent-selected `high|normal|low` delivery priority; Supervisor now only applies priority and arrival order mechanically, and SQLite schema v29 intentionally recreates earlier development state.

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Shows an animated working indicator for active Turns, including the interval before the first reasoning or Tool event, and cleans the animation up with the Turn lifecycle.
+
 ## 0.14.0
 
 - Replaces Mail content levels with optional Agent-selected `high|normal|low` delivery priority, defaulting to `normal`.

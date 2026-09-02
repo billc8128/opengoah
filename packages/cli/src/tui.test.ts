@@ -18,6 +18,7 @@ import {
   renderTuiHeader,
   renderUserMessage,
   sensitiveMessageWarning,
+  spinnerFrame,
   StreamCoordinator,
   TUI_COMMANDS,
   WelcomeLockup,
@@ -494,6 +495,29 @@ test("message composer uses one stable Human-message placeholder", () => {
   assert.doesNotMatch(line, /Steer|retry|working/i);
 });
 
+test("an active Turn shows an animated spinner before model activity", () => {
+  assert.notEqual(spinnerFrame(0), spinnerFrame(80));
+  const view = new ConversationView([]);
+  view.addUser("开始工作");
+  view.startTurn();
+  assert.match(stripAnsi(view.render(60).join("\n")), /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] working · Ctrl\+C to stop/);
+  view.addText("standalone notice");
+  view.finishTurn();
+  assert.doesNotMatch(stripAnsi(view.render(60).join("\n")), /working · Ctrl\+C to stop/);
+});
+
+test("starting a replacement Turn retires every older spinner", () => {
+  const view = new ConversationView([]);
+  view.addUser("first");
+  view.startTurn();
+  view.addMarkdown("partial response");
+  view.addUser("replacement");
+  view.startTurn();
+  const rendered = stripAnsi(view.render(60).join("\n"));
+  assert.equal(rendered.match(/working · Ctrl\+C to stop/g)?.length, 1);
+  assert.match(rendered, /replacement[\s\S]*working · Ctrl\+C to stop/);
+});
+
 test("Ledger presentation groups thinking and tools while Ctrl+O collapses activity", () => {
   const view = new ConversationView([]);
   view.addUser("核实收入");
@@ -521,7 +545,7 @@ test("Ledger presentation groups thinking and tools while Ctrl+O collapses activ
   assert.match(expanded, /正在核实/);
   view.toggleDetails();
   const collapsed = stripAnsi(view.render(100).join("\n"));
-  assert.match(collapsed, /work · 1\/2 done · work_record_update/);
+  assert.match(collapsed, /work · running · work_record_update/);
   assert.doesNotMatch(collapsed, /ledger_search/);
 });
 

@@ -208,10 +208,45 @@ type WorkerMessage =
   | { type: "rpc_request"; id: string; method: RunnerRpcMethod; params: JsonValue }
   | { type: "steer_ack"; id: string; accepted: boolean }
   | { type: "result"; result: RunnerCandidateResult };
+type WorkerChunkMessage = {
+  type: "chunk";
+  id: string;
+  index: number;
+  total: number;
+  data: string;
+};
+type WorkerWireMessage = WorkerMessage | WorkerChunkMessage;
 type ParentMessage =
   | { type: "start"; request: WorkerRequest }
   | { type: "rpc_response"; id: string; result?: unknown; error?: string }
   | { type: "steer"; id: string; message: string };
+
+const PROTOCOL_LINE_MAX_BYTES = 1_000_000;
+const PROTOCOL_MESSAGE_MAX_BYTES = 32_000_000;
+const PROTOCOL_CHUNK_BYTES = 256_000;
+
+function writeWorkerMessage(message: WorkerMessage): void {
+  const payload = Buffer.from(JSON.stringify(message));
+  if (payload.byteLength > PROTOCOL_MESSAGE_MAX_BYTES)
+    throw new Error(
+      `runner protocol message exceeded ${PROTOCOL_MESSAGE_MAX_BYTES / 1_000_000} MB`,
+    );
+  if (payload.byteLength <= PROTOCOL_LINE_MAX_BYTES) {
+    process.stdout.write(payload);
+    process.stdout.write("\n");
+    return;
+  }
+  const id = crypto.randomUUID();
+  const total = Math.ceil(payload.byteLength / PROTOCOL_CHUNK_BYTES);
+  for (let index = 0; index < total; index += 1) {
+    const data = payload
+      .subarray(index * PROTOCOL_CHUNK_BYTES, (index + 1) * PROTOCOL_CHUNK_BYTES)
+      .toString("base64");
+    process.stdout.write(
+      `${JSON.stringify({ type: "chunk", id, index, total, data } satisfies WorkerChunkMessage)}\n`,
+    );
+  }
+}
 
 /** Real process boundary. The child stays idle until begin() sends its request. */
 export class ProcessRunner implements Runner {
@@ -257,47 +292,92 @@ export class ProcessRunner implements Runner {
       stderr = `${stderr}${chunk.toString()}`.slice(-65_536);
     });
     let protocolLineBytes = 0;
+    let chunkAssembly: { id: string; total: number; parts: Buffer[]; bytes: number } | null = null;
     child.stdout?.on("data", (chunk: Buffer) => {
       for (const byte of chunk) {
         if (byte === 10) protocolLineBytes = 0;
-        else if (++protocolLineBytes > 1_000_000 && !protocolError) {
+        else if (++protocolLineBytes > PROTOCOL_LINE_MAX_BYTES && !protocolError) {
           protocolError = "runner protocol line exceeded 1 MB";
           void terminate();
           break;
         }
       }
     });
+    const handleMessage = (message: WorkerMessage): void => {
+      if (message.type === "trace") request.emit(message.event);
+      else if (message.type === "live") request.emitLive?.(message.event);
+      else if (message.type === "steer_ack") {
+        const pending = pendingSteering.get(message.id);
+        if (pending) {
+          pendingSteering.delete(message.id);
+          clearTimeout(pending.timer);
+          if (message.accepted) pending.resolve();
+          else pending.reject(new Error("runner is no longer accepting steering messages"));
+        }
+      } else if (message.type === "rpc_request") {
+        void Promise.resolve(
+          request.rpc?.(message.method, message.params) ??
+            Promise.reject(new Error("runner RPC is unavailable")),
+        )
+          .then((result) =>
+            child.stdin?.write(
+              `${JSON.stringify({ type: "rpc_response", id: message.id, result } satisfies ParentMessage)}\n`,
+            ),
+          )
+          .catch((error) =>
+            child.stdin?.write(
+              `${JSON.stringify({ type: "rpc_response", id: message.id, error: error instanceof Error ? error.message : String(error) } satisfies ParentMessage)}\n`,
+            ),
+          );
+      } else messageResult = message.result;
+    };
     const lines = createInterface({ input: child.stdout! });
     lines.on("line", (line) => {
       if (protocolError) return;
       try {
-        const message = JSON.parse(line) as WorkerMessage;
-        if (message.type === "trace") request.emit(message.event);
-        else if (message.type === "live") request.emitLive?.(message.event);
-        else if (message.type === "steer_ack") {
-          const pending = pendingSteering.get(message.id);
-          if (pending) {
-            pendingSteering.delete(message.id);
-            clearTimeout(pending.timer);
-            if (message.accepted) pending.resolve();
-            else pending.reject(new Error("runner is no longer accepting steering messages"));
-          }
-        } else if (message.type === "rpc_request") {
-          void Promise.resolve(
-            request.rpc?.(message.method, message.params) ??
-              Promise.reject(new Error("runner RPC is unavailable")),
-          )
-            .then((result) =>
-              child.stdin?.write(
-                `${JSON.stringify({ type: "rpc_response", id: message.id, result } satisfies ParentMessage)}\n`,
-              ),
-            )
-            .catch((error) =>
-              child.stdin?.write(
-                `${JSON.stringify({ type: "rpc_response", id: message.id, error: error instanceof Error ? error.message : String(error) } satisfies ParentMessage)}\n`,
-              ),
-            );
-        } else messageResult = message.result;
+        const message = JSON.parse(line) as WorkerWireMessage;
+        if (message.type !== "chunk") {
+          if (chunkAssembly) throw new Error("runner protocol chunk stream was interrupted");
+          handleMessage(message);
+          return;
+        }
+        const maxChunks = Math.ceil(PROTOCOL_MESSAGE_MAX_BYTES / PROTOCOL_CHUNK_BYTES);
+        if (
+          !message.id ||
+          !Number.isInteger(message.index) ||
+          !Number.isInteger(message.total) ||
+          message.total < 2 ||
+          message.total > maxChunks ||
+          message.index < 0 ||
+          message.index >= message.total ||
+          typeof message.data !== "string"
+        )
+          throw new Error("runner protocol chunk metadata is invalid");
+        if (!chunkAssembly) {
+          if (message.index !== 0) throw new Error("runner protocol chunk stream is out of order");
+          chunkAssembly = { id: message.id, total: message.total, parts: [], bytes: 0 };
+        }
+        if (
+          chunkAssembly.id !== message.id ||
+          chunkAssembly.total !== message.total ||
+          message.index !== chunkAssembly.parts.length
+        )
+          throw new Error("runner protocol chunk stream is out of order");
+        const part = Buffer.from(message.data, "base64");
+        if (part.byteLength > PROTOCOL_CHUNK_BYTES)
+          throw new Error("runner protocol chunk exceeded its size limit");
+        chunkAssembly.parts.push(part);
+        chunkAssembly.bytes += part.byteLength;
+        if (chunkAssembly.bytes > PROTOCOL_MESSAGE_MAX_BYTES)
+          throw new Error("runner protocol chunked message exceeded 32 MB");
+        if (chunkAssembly.parts.length === chunkAssembly.total) {
+          const payload = Buffer.concat(chunkAssembly.parts, chunkAssembly.bytes).toString("utf8");
+          chunkAssembly = null;
+          const reassembled = JSON.parse(payload) as WorkerMessage;
+          if ((reassembled as WorkerWireMessage).type === "chunk")
+            throw new Error("runner protocol nested chunk message is invalid");
+          handleMessage(reassembled);
+        }
       } catch (error) {
         protocolError = error instanceof Error ? error.message : String(error);
         void terminate();
@@ -310,6 +390,8 @@ export class ProcessRunner implements Runner {
     });
     child.once("close", (code, signal) => {
       resolveStartReady();
+      if (chunkAssembly && !protocolError)
+        protocolError = "runner protocol chunk stream ended before completion";
       for (const pending of pendingSteering.values()) {
         clearTimeout(pending.timer);
         pending.reject(new Error("runner closed before acknowledging the steering message"));
@@ -444,9 +526,7 @@ export async function runProcessWorker(run: WorkerRun): Promise<void> {
     try {
       accepted = steerListener?.(message) === true;
     } catch {}
-    process.stdout.write(
-      `${JSON.stringify({ type: "steer_ack", id, accepted } satisfies WorkerMessage)}\n`,
-    );
+    writeWorkerMessage({ type: "steer_ack", id, accepted });
   };
   void (async () => {
     for await (const line of { [Symbol.asyncIterator]: () => iterator }) {
@@ -468,7 +548,7 @@ export async function runProcessWorker(run: WorkerRun): Promise<void> {
     new Promise((resolve, reject) => {
       const id = crypto.randomUUID();
       pending.set(id, { resolve, reject });
-      process.stdout.write(`${JSON.stringify({ type: "rpc_request", id, method, params })}\n`);
+      writeWorkerMessage({ type: "rpc_request", id, method, params });
     });
   const controls: WorkerControls = {
     onSteer: (listener) => {
@@ -478,13 +558,12 @@ export async function runProcessWorker(run: WorkerRun): Promise<void> {
   };
   const result = await run(
     start.request,
-    (event) => process.stdout.write(`${JSON.stringify({ type: "trace", event })}\n`),
+    (event) => writeWorkerMessage({ type: "trace", event }),
     rpc,
     controls,
-    (event) =>
-      process.stdout.write(`${JSON.stringify({ type: "live", event } satisfies WorkerMessage)}\n`),
+    (event) => writeWorkerMessage({ type: "live", event }),
   );
-  process.stdout.write(`${JSON.stringify({ type: "result", result })}\n`);
+  writeWorkerMessage({ type: "result", result });
   input.close();
   process.stdin.unref();
   clearInterval(monitor);

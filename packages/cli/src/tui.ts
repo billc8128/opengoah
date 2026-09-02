@@ -131,6 +131,7 @@ interface StoredToolActivity extends ToolActivity {
 interface TurnPresentation {
   kind: "turn";
   users: string[];
+  running: boolean;
   thinking: string;
   thinkingActive: boolean;
   thinkingStartedAt?: number;
@@ -171,6 +172,18 @@ export class ConversationView implements Component {
       previous.users.push(content);
     else this.entries.push(newTurn(content));
     this.trim();
+  }
+  startTurn(newEntry = false): void {
+    const turn = newEntry ? newTurn() : this.currentTurn();
+    if (newEntry) {
+      this.entries.push(turn);
+      this.trim();
+    }
+    for (const entry of this.entries) if (entry.kind === "turn") entry.running = false;
+    turn.running = true;
+  }
+  finishTurn(): void {
+    for (const entry of this.entries) if (entry.kind === "turn") entry.running = false;
   }
   addMarkdown(content: string, messageId?: string): void {
     content = content.trim();
@@ -258,6 +271,7 @@ export class ConversationView implements Component {
     this.details = !this.details;
   }
   endTransientTurn(): void {
+    this.finishTurn();
     const turn = this.lastTurn();
     if (turn) {
       turn.liveMarkdown = "";
@@ -297,6 +311,7 @@ function newTurn(user?: string): TurnPresentation {
   return {
     kind: "turn",
     users: user ? [user] : [],
+    running: false,
     thinking: "",
     thinkingActive: false,
     tools: [],
@@ -309,7 +324,8 @@ function newTurn(user?: string): TurnPresentation {
 function renderTurn(turn: TurnPresentation, width: number, details: boolean): string[] {
   const lines: string[] = [];
   for (const user of turn.users) lines.push(...renderUserMessage(user, width), "");
-  const hasActivity = turn.thinkingActive || Boolean(turn.thinking) || turn.tools.length > 0;
+  const hasActivity =
+    turn.running || turn.thinkingActive || Boolean(turn.thinking) || turn.tools.length > 0;
   if (hasActivity)
     lines.push(
       ...(details ? renderLedgerActivity(turn, width) : renderActivitySummary(turn, width)),
@@ -333,6 +349,15 @@ function renderTurn(turn: TurnPresentation, width: number, details: boolean): st
 
 function renderLedgerActivity(turn: TurnPresentation, width: number): string[] {
   const lines: string[] = [];
+  if (turn.running)
+    lines.push(
+      truncateToWidth(
+        `  ${tuiTheme.accent(spinnerFrame())} ${tuiTheme.muted("working · Ctrl+C to stop")}`,
+        width,
+        "…",
+        true,
+      ),
+    );
   const thinking = turn.thinkingActive || Boolean(turn.thinking);
   if (thinking) {
     const elapsed = formatDuration(
@@ -359,13 +384,15 @@ function renderActivitySummary(turn: TurnPresentation, width: number): string[] 
   const done = turn.tools.filter((tool) => tool.status === "done").length;
   const failed = turn.tools.filter((tool) => tool.status === "failed").length;
   const running = turn.tools.find((tool) => tool.status === "running");
+  const active = turn.running || Boolean(running) || turn.thinkingActive;
   const marker = failed
     ? tuiTheme.error("×")
-    : running || turn.thinkingActive
-      ? tuiTheme.accent("●")
+    : active
+      ? tuiTheme.accent(spinnerFrame())
       : tuiTheme.success("✓");
-  const state = failed ? "failed" : `${done}/${turn.tools.length || 1} done`;
-  const detail = running?.name ?? (turn.thinkingActive ? "thinking" : "work");
+  const state = failed ? "failed" : active ? "running" : `${done}/${turn.tools.length || 1} done`;
+  const detail =
+    running?.name ?? (turn.thinkingActive ? "thinking" : turn.running ? "working" : "work");
   return [
     truncateToWidth(
       `  ${marker} ${tuiTheme.muted(`work · ${state} · ${detail}`)}  ${tuiTheme.muted("^O details")}`,
@@ -374,6 +401,11 @@ function renderActivitySummary(turn: TurnPresentation, width: number): string[] 
       true,
     ),
   ];
+}
+
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
+export function spinnerFrame(now = Date.now()): string {
+  return SPINNER_FRAMES[Math.floor(now / 80) % SPINNER_FRAMES.length]!;
 }
 
 function renderLedgerTool(tool: StoredToolActivity, branch: "├" | "└", width: number): string {
@@ -887,6 +919,10 @@ export async function runGoahTui(
     { component: composer, basis: "auto", minSize: 3, maxSize: 11, shrink: 0 },
   ]);
   const busy: CancellableState = { active: false };
+  const spinnerTimer = setInterval(() => {
+    if (busy.active) tui.requestRender();
+  }, 80);
+  spinnerTimer.unref();
   const queued: string[] = [];
   const queuedTurnIds: string[] = [];
   const streams = new StreamCoordinator();
@@ -926,9 +962,13 @@ export async function runGoahTui(
     transcriptView.setLive(text, thinking, thinkingActive);
     tui.requestRender();
   };
-  const setWakeState = (): void => {};
+  const setWakeState = (): void => {
+    transcriptView.startTurn();
+    tui.requestRender();
+  };
   const finishIdle = async (): Promise<void> => {
     busy.active = false;
+    transcriptView.finishTurn();
     interrupting = false;
     await refreshOrganizationStatus(stateDir, organizationView, tui, currentModel());
     continuePending();
@@ -964,8 +1004,9 @@ export async function runGoahTui(
     if (ownsStream) busy.active = true;
     if (showUser) {
       transcriptView.addUser(message);
-      tui.requestRender();
     }
+    if (ownsStream) transcriptView.startTurn();
+    tui.requestRender();
     try {
       await streamControl(
         stateDir,
@@ -1025,8 +1066,10 @@ export async function runGoahTui(
       await finishIdle();
     }
   };
-  const attachTurn = async (turnId: string): Promise<void> => {
+  const attachTurn = async (turnId: string, newEntry = false): Promise<void> => {
     busy.active = true;
+    transcriptView.startTurn(newEntry);
+    tui.requestRender();
     activeInteractionTurnId = turnId;
     const controller = new AbortController();
     try {
@@ -1034,6 +1077,7 @@ export async function runGoahTui(
         throw new Error("Cannot attach a Turn while another stream is active.");
     } catch (error) {
       busy.active = false;
+      transcriptView.finishTurn();
       push(errorLine(error));
       continuePending();
       return;
@@ -1330,9 +1374,11 @@ export async function runGoahTui(
       input.setText(initialMessage);
       push(sensitiveMessageWarning());
     } else if (initialMessage) void send(initialMessage);
-    else if (typeof liveInteractionTurnId === "string") void attachTurn(liveInteractionTurnId);
+    else if (typeof liveInteractionTurnId === "string")
+      void attachTurn(liveInteractionTurnId, true);
     await exited;
   } finally {
+    clearInterval(spinnerTimer);
     unbindTerminationSignals();
     streams.abortAll();
     tui.stop();
